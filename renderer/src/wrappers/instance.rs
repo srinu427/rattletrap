@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use ash::{ext, khr, vk};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use thiserror::Error;
+use winit::window::Window;
 
 fn get_instance_extensions() -> Vec<*const i8> {
     vec![
@@ -34,16 +38,23 @@ pub enum InstanceError {
     #[error("Vulkan loading error: {0}")]
     VkLoadError(#[from] ash::LoadingError),
     #[error("Vulkan instance creation error: {0}")]
-    CreateError(#[from] vk::Result),
+    InstanceCreateError(vk::Result),
+    #[error("Raw window handle error: {0}")]
+    RawWindowHandleError(#[from] raw_window_handle::HandleError),
+    #[error("Vulkan surface creation error: {0}")]
+    SurfaceCreationError(vk::Result),
 }
 
 pub struct Instance {
-    instance: ash::Instance,
+    pub(crate) surface: vk::SurfaceKHR,
+    pub(crate) surface_instance: khr::surface::Instance,
+    pub(crate) window: Arc<Window>,
+    pub(crate) instance: ash::Instance,
     _entry: ash::Entry,
 }
 
 impl Instance {
-    pub fn new() -> Result<Self, InstanceError> {
+    pub fn new(window: Arc<Window>) -> Result<Self, InstanceError> {
         let entry = unsafe { ash::Entry::load()? };
 
         let app_info = vk::ApplicationInfo::default()
@@ -69,9 +80,26 @@ impl Instance {
             .enabled_layer_names(&layers)
             .enabled_extension_names(&extensions);
 
-        let instance = unsafe { entry.create_instance(&create_info, None)? };
+        let instance = unsafe { entry.create_instance(&create_info, None) }
+            .map_err(InstanceError::InstanceCreateError)?;
+
+        let surface_instance = khr::surface::Instance::new(&entry, &instance);
+
+        let surface = unsafe {
+            ash_window::create_surface(
+                &entry,
+                &instance,
+                window.display_handle()?.as_raw(),
+                window.window_handle()?.as_raw(),
+                None,
+            )
+            .map_err(InstanceError::SurfaceCreationError)
+        }?;
 
         Ok(Self {
+            surface,
+            surface_instance,
+            window,
             instance,
             _entry: entry,
         })
@@ -81,6 +109,7 @@ impl Instance {
 impl Drop for Instance {
     fn drop(&mut self) {
         unsafe {
+            self.surface_instance.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
         }
     }
