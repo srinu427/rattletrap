@@ -45,11 +45,16 @@ pub enum InstanceError {
     SurfaceCreationError(vk::Result),
 }
 
+#[derive(getset::Getters, getset::CopyGetters)]
 pub struct Instance {
-    pub(crate) surface: vk::SurfaceKHR,
-    pub(crate) surface_instance: khr::surface::Instance,
-    pub(crate) window: Arc<Window>,
-    pub(crate) instance: ash::Instance,
+    #[get_copy = "pub"]
+    surface: vk::SurfaceKHR,
+    #[get = "pub"]
+    surface_instance: khr::surface::Instance,
+    #[get = "pub"]
+    window: Arc<Window>,
+    #[get = "pub"]
+    instance: ash::Instance,
     _entry: ash::Entry,
 }
 

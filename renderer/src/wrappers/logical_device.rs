@@ -1,12 +1,7 @@
 use std::sync::Arc;
 
-use ash::{
-    ext,
-    khr::{self, swapchain},
-    vk,
-};
+use ash::{ext, khr, vk};
 use thiserror::Error;
-use winit::window::Window;
 
 use crate::wrappers::instance::Instance;
 
@@ -30,23 +25,27 @@ pub enum LogicalDeviceInitError {
     DeviceCreateError(vk::Result),
 }
 
+#[derive(getset::Getters, getset::CopyGetters)]
 pub struct LogicalDevice {
-    pub(crate) swapchain_device: khr::swapchain::Device,
-    pub(crate) graphics_queue: vk::Queue,
-    pub(crate) graphics_qf_id: u32,
-    pub(crate) device: ash::Device,
-    pub(crate) gpu: vk::PhysicalDevice,
-    pub(crate) instance: Arc<Instance>,
+    #[get = "pub"]
+    swapchain_device: khr::swapchain::Device,
+    #[get_copy = "pub"]
+    graphics_queue: vk::Queue,
+    #[get_copy = "pub"]
+    graphics_qf_id: u32,
+    #[get = "pub"]
+    device: ash::Device,
+    #[get_copy = "pub"]
+    gpu: vk::PhysicalDevice,
+    #[get = "pub"]
+    instance: Arc<Instance>,
 }
 
 impl LogicalDevice {
-    pub fn new(
-        instance: Arc<Instance>,
-        window: Arc<Window>,
-    ) -> Result<Self, LogicalDeviceInitError> {
+    pub fn new(instance: Arc<Instance>) -> Result<Self, LogicalDeviceInitError> {
         let gpus = unsafe {
             instance
-                .instance
+                .instance()
                 .enumerate_physical_devices()
                 .map_err(LogicalDeviceInitError::ListDevicesError)?
         };
@@ -88,14 +87,14 @@ impl LogicalDevice {
 
         let device = unsafe {
             instance
-                .instance
+                .instance()
                 .create_device(gpu, &device_create_info, None)
                 .map_err(LogicalDeviceInitError::DeviceCreateError)?
         };
 
         let graphics_queue = unsafe { device.get_device_queue(graphics_qf_id, 0) };
 
-        let swapchain_device = khr::swapchain::Device::new(&instance.instance, &device);
+        let swapchain_device = khr::swapchain::Device::new(&instance.instance(), &device);
 
         Ok(Self {
             swapchain_device,
@@ -119,7 +118,7 @@ impl Drop for LogicalDevice {
 fn select_graphics_queue(instance: &Instance, gpu: vk::PhysicalDevice) -> Option<u32> {
     let queue_families = unsafe {
         instance
-            .instance
+            .instance()
             .get_physical_device_queue_family_properties(gpu)
     };
     queue_families
@@ -129,8 +128,8 @@ fn select_graphics_queue(instance: &Instance, gpu: vk::PhysicalDevice) -> Option
             let supports_graphics = queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS);
             let supports_present = unsafe {
                 instance
-                    .surface_instance
-                    .get_physical_device_surface_support(gpu, *i as u32, instance.surface)
+                    .surface_instance()
+                    .get_physical_device_surface_support(gpu, *i as u32, instance.surface())
                     .unwrap_or(false)
             };
             supports_graphics && supports_present
@@ -140,7 +139,7 @@ fn select_graphics_queue(instance: &Instance, gpu: vk::PhysicalDevice) -> Option
 }
 
 fn gpu_weight(instance: &Instance, gpu: vk::PhysicalDevice) -> u32 {
-    let properties = unsafe { instance.instance.get_physical_device_properties(gpu) };
+    let properties = unsafe { instance.instance().get_physical_device_properties(gpu) };
 
     let mut weight = 0;
 

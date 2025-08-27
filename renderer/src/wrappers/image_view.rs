@@ -1,15 +1,8 @@
 use std::sync::Arc;
 
 use ash::vk;
-use thiserror::Error;
 
 use crate::wrappers::image::Image;
-
-#[derive(Debug, Error)]
-pub enum ImageViewError {
-    #[error("Error creating image view: {0}")]
-    CreateError(vk::Result),
-}
 
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct ImageView {
@@ -26,7 +19,7 @@ impl ImageView {
         image: Arc<Image>,
         type_: vk::ImageViewType,
         subresource_range: vk::ImageSubresourceRange,
-    ) -> Result<Self, ImageViewError> {
+    ) -> Result<Self, vk::Result> {
         let create_info = vk::ImageViewCreateInfo::default()
             .image(image.image())
             .view_type(type_)
@@ -36,9 +29,8 @@ impl ImageView {
         let image_view = unsafe {
             image
                 .device()
-                .device
-                .create_image_view(&create_info, None)
-                .map_err(ImageViewError::CreateError)?
+                .device()
+                .create_image_view(&create_info, None)?
         };
         Ok(Self {
             image_view,
@@ -53,7 +45,7 @@ impl Drop for ImageView {
         unsafe {
             self.image
                 .device()
-                .device
+                .device()
                 .destroy_image_view(self.image_view, None);
         }
     }

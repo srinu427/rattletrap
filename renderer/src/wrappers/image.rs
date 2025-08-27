@@ -12,8 +12,6 @@ use crate::wrappers::{
 
 #[derive(Debug, Error)]
 pub enum Image2dError {
-    #[error("Error creating image: {0}")]
-    CreateError(vk::Result),
     #[error("GPU Allocation error: {0}")]
     AllocationError(#[from] GpuAllocationError),
     #[error("Error binding memory to image: {0}")]
@@ -51,7 +49,7 @@ impl Image {
         mip_levels: u32,
         array_layers: u32,
         usage: vk::ImageUsageFlags,
-    ) -> Result<Self, Image2dError> {
+    ) -> Result<Self, vk::Result> {
         let image_create_info = vk::ImageCreateInfo::default()
             .image_type(type_)
             .format(format)
@@ -64,9 +62,8 @@ impl Image {
         let image = unsafe {
             context
                 .logical_device()
-                .device
-                .create_image(&image_create_info, None)
-                .map_err(Image2dError::CreateError)?
+                .device()
+                .create_image(&image_create_info, None)?
         };
 
         Ok(Self {
@@ -89,7 +86,7 @@ impl Image {
         mip_levels: u32,
         array_layers: u32,
         usage: vk::ImageUsageFlags,
-    ) -> Result<Self, Image2dError> {
+    ) -> Result<Self, vk::Result> {
         Self::new(
             context,
             vk::ImageType::TYPE_2D,
@@ -110,7 +107,11 @@ impl Image {
         allocator: Arc<Mutex<Allocator>>,
         gpu_only: bool,
     ) -> Result<(), Image2dError> {
-        let requirements = unsafe { self.device.device.get_image_memory_requirements(self.image) };
+        let requirements = unsafe {
+            self.device
+                .device()
+                .get_image_memory_requirements(self.image)
+        };
         let mem_location = if gpu_only {
             gpu_allocator::MemoryLocation::GpuOnly
         } else {
@@ -125,7 +126,7 @@ impl Image {
         )?;
         unsafe {
             self.device
-                .device
+                .device()
                 .bind_image_memory(
                     self.image,
                     allocation.allocation().memory(),
@@ -140,7 +141,7 @@ impl Image {
 impl Drop for Image {
     fn drop(&mut self) {
         unsafe {
-            self.device.device.destroy_image(self.image, None);
+            self.device.device().destroy_image(self.image, None);
         }
     }
 }

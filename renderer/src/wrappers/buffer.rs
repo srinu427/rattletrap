@@ -11,8 +11,6 @@ use crate::wrappers::{
 
 #[derive(Debug, Error)]
 pub enum BufferError {
-    #[error("Error creating buffer: {0}")]
-    CreateError(vk::Result),
     #[error("GPU Allocation error: {0}")]
     AllocationError(#[from] GpuAllocationError),
     #[error("Error binding memory to buffer: {0}")]
@@ -34,14 +32,13 @@ impl Buffer {
         device: Arc<LogicalDevice>,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
-    ) -> Result<Self, BufferError> {
+    ) -> Result<Self, vk::Result> {
         let buffer_create_info = vk::BufferCreateInfo::default().size(size).usage(usage);
 
         let buffer = unsafe {
             device
-                .device
-                .create_buffer(&buffer_create_info, None)
-                .map_err(BufferError::CreateError)?
+                .device()
+                .create_buffer(&buffer_create_info, None)?
         };
 
         Ok(Self {
@@ -58,7 +55,7 @@ impl Buffer {
     ) -> Result<(), BufferError> {
         let requirements = unsafe {
             self.device
-                .device
+                .device()
                 .get_buffer_memory_requirements(self.buffer)
         };
         let mem_location = if gpu_only {
@@ -75,7 +72,7 @@ impl Buffer {
         )?;
         unsafe {
             self.device
-                .device
+                .device()
                 .bind_buffer_memory(
                     self.buffer,
                     allocation.allocation().memory(),
@@ -91,7 +88,7 @@ impl Buffer {
 impl Drop for Buffer {
     fn drop(&mut self) {
         unsafe {
-            self.device.device.destroy_buffer(self.buffer, None);
+            self.device.device().destroy_buffer(self.buffer, None);
         }
     }
 }

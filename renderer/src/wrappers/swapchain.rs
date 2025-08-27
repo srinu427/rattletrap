@@ -19,34 +19,39 @@ pub enum SwapchainError {
     SwapchainCreateError(vk::Result),
 }
 
+#[derive(getset::Getters, getset::CopyGetters)]
 pub struct Swapchain {
+    #[get_copy = "pub"]
     swapchain: vk::SwapchainKHR,
+    #[get_copy = "pub"]
     format: vk::SurfaceFormatKHR,
+    #[get_copy = "pub"]
     extent: vk::Extent2D,
+    #[get = "pub"]
     device: Arc<LogicalDevice>,
 }
 
 impl Swapchain {
     pub fn new(device: Arc<LogicalDevice>) -> Result<Self, SwapchainError> {
-        let surface_instance = &device.instance.surface_instance;
-        let surface = device.instance.surface;
-        let instance = &device.instance.instance;
+        let surface_instance = &device.instance().surface_instance();
+        let surface = device.instance().surface();
+        let instance = &device.instance().instance();
 
         let formats = unsafe {
             surface_instance
-                .get_physical_device_surface_formats(device.gpu, surface)
+                .get_physical_device_surface_formats(device.gpu(), surface)
                 .map_err(SwapchainError::GetSurfaceFormatsError)?
         };
 
         let caps = unsafe {
             surface_instance
-                .get_physical_device_surface_capabilities(device.gpu, surface)
+                .get_physical_device_surface_capabilities(device.gpu(), surface)
                 .map_err(SwapchainError::GetSurfaceCapabilitiesError)?
         };
 
         let present_modes = unsafe {
             surface_instance
-                .get_physical_device_surface_present_modes(device.gpu, surface)
+                .get_physical_device_surface_present_modes(device.gpu(), surface)
                 .map_err(SwapchainError::GetPresentModesError)?
         };
 
@@ -56,7 +61,7 @@ impl Swapchain {
             .filter(|format| {
                 let supported = unsafe {
                     instance
-                        .get_physical_device_format_properties(device.gpu, format.format)
+                        .get_physical_device_format_properties(device.gpu(), format.format)
                         .optimal_tiling_features
                         .contains(
                             vk::FormatFeatureFlags::COLOR_ATTACHMENT
@@ -74,11 +79,11 @@ impl Swapchain {
             .cloned()
             .ok_or(SwapchainError::NoSuitableSurfaceFormat)?;
 
-        let mut resolution = caps.current_extent;
-        if resolution.width == u32::MAX || resolution.height == u32::MAX {
-            let window_res = device.instance.window.inner_size();
-            resolution.width = window_res.width;
-            resolution.height = window_res.height;
+        let mut extent = caps.current_extent;
+        if extent.width == u32::MAX || extent.height == u32::MAX {
+            let window_res = device.instance().window().inner_size();
+            extent.width = window_res.width;
+            extent.height = window_res.height;
         }
 
         let present_mode = present_modes
@@ -102,7 +107,7 @@ impl Swapchain {
             .min_image_count(swapchain_image_count)
             .image_format(format.format)
             .image_color_space(format.color_space)
-            .image_extent(resolution)
+            .image_extent(extent)
             .image_array_layers(1)
             .image_usage(
                 vk::ImageUsageFlags::COLOR_ATTACHMENT
@@ -117,12 +122,17 @@ impl Swapchain {
 
         let swapchain = unsafe {
             device
-                .swapchain_device
+                .swapchain_device()
                 .create_swapchain(&swapchain_create_info, None)
                 .map_err(SwapchainError::SwapchainCreateError)?
         };
 
-        todo!()
+        Ok(Self {
+            swapchain,
+            format,
+            extent,
+            device,
+        })
     }
 }
 
@@ -130,7 +140,7 @@ impl Drop for Swapchain {
     fn drop(&mut self) {
         unsafe {
             self.device
-                .swapchain_device
+                .swapchain_device()
                 .destroy_swapchain(self.swapchain, None);
         }
     }
