@@ -16,15 +16,20 @@ pub enum ContextInitError {
     LogicalDeviceError(#[from] LogicalDeviceInitError),
 }
 
-struct Context {
-    pub(crate) instance: Arc<Instance>,
-    pub(crate) window: Arc<Window>,
+#[derive(getset::Getters, getset::CopyGetters)]
+pub struct Context {
+    #[get = "pub"]
+    logical_device: Arc<LogicalDevice>,
+    #[get = "pub"]
+    instance: Arc<Instance>,
+    #[get = "pub"]
+    window: Arc<Window>,
 }
 
 impl Context {
     pub fn new(window: Arc<Window>) -> Result<Self, ContextInitError> {
         let instance = Arc::new(Instance::new(window.clone())?);
-        let logical_device = LogicalDevice::new(instance.clone(), window.clone())?;
+        let logical_device = Arc::new(LogicalDevice::new(instance.clone(), window.clone())?);
         todo!()
     }
 }
