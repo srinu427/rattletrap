@@ -1,4 +1,6 @@
 pub mod buffer;
+pub mod command_buffer;
+pub mod command_pool;
 pub mod context;
 pub mod fence;
 pub mod gpu_allocation;

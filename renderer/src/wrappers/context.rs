@@ -30,6 +30,11 @@ impl Context {
     pub fn new(window: Arc<Window>) -> Result<Self, ContextInitError> {
         let instance = Arc::new(Instance::new(window.clone())?);
         let logical_device = Arc::new(LogicalDevice::new(instance.clone())?);
-        todo!()
+        
+        Ok(Self {
+            logical_device,
+            instance,
+            window,
+        })
     }
 }
