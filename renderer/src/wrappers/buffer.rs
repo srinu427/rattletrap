@@ -35,11 +35,7 @@ impl Buffer {
     ) -> Result<Self, vk::Result> {
         let buffer_create_info = vk::BufferCreateInfo::default().size(size).usage(usage);
 
-        let buffer = unsafe {
-            device
-                .device()
-                .create_buffer(&buffer_create_info, None)?
-        };
+        let buffer = unsafe { device.device().create_buffer(&buffer_create_info, None)? };
 
         Ok(Self {
             buffer,

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ash::vk;
 
-use crate::wrappers::command_pool::CommandPool;
+use crate::wrappers::{command::RenderPassCommand, command_pool::CommandPool};
 
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct CommandBuffer {
@@ -34,15 +34,59 @@ impl CommandBuffer {
             })
             .collect())
     }
-}
 
-// impl Drop for CommandBuffer {
-//     fn drop(&mut self) {
-//         unsafe {
-//             self.command_pool.device().device().free_command_buffers(
-//                 self.command_pool.command_pool(),
-//                 &[self.command_buffer],
-//             );
-//         }
-//     }
-// }
+    pub fn begin(&self, one_time: bool) -> Result<(), vk::Result> {
+        let flags = if one_time {
+            vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
+        } else {
+            vk::CommandBufferUsageFlags::empty()
+        };
+        let begin_info = vk::CommandBufferBeginInfo::default().flags(flags);
+
+        unsafe {
+            self.command_pool
+                .device()
+                .device()
+                .begin_command_buffer(self.command_buffer, &begin_info)?
+        };
+
+        Ok(())
+    }
+
+    pub fn end(&self) -> Result<(), vk::Result> {
+        unsafe {
+            self.command_pool
+                .device()
+                .device()
+                .end_command_buffer(self.command_buffer)?
+        };
+
+        Ok(())
+    }
+
+    pub fn reset(&self) -> Result<(), vk::Result> {
+        unsafe {
+            self.command_pool
+                .device()
+                .device()
+                .reset_command_buffer(self.command_buffer, vk::CommandBufferResetFlags::empty())?
+        };
+
+        Ok(())
+    }
+
+    fn apply_render_pass_commands(
+        &self,
+        pipelines: &[vk::Pipeline],
+        pipeline_layouts: &[vk::PipelineLayout],
+        commands: &[RenderPassCommand],
+    ) {
+        for command in commands {
+            command.apply_command(
+                self,
+                pipelines,
+                pipeline_layouts,
+            );
+        }
+    }
+}

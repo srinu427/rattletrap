@@ -1,3 +1,5 @@
+pub mod pipelines;
+pub mod renderables;
 pub mod wrappers;
 
 pub fn add(left: u64, right: u64) -> u64 {

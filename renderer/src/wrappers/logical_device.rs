@@ -5,6 +5,11 @@ use thiserror::Error;
 
 use crate::wrappers::instance::Instance;
 
+#[derive(Debug, Clone, Copy)]
+pub enum QueueType {
+    Graphics,
+}
+
 pub fn get_device_extensions() -> Vec<*const i8> {
     vec![
         khr::swapchain::NAME.as_ptr(),
