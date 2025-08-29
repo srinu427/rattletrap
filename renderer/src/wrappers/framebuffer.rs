@@ -2,11 +2,18 @@ use std::sync::Arc;
 
 use ash::vk;
 
-use crate::wrappers::{image_view::ImageView, logical_device::LogicalDevice, render_pass::RenderPass};
+use crate::wrappers::{
+    image_view::ImageView, logical_device::LogicalDevice, render_pass::RenderPass,
+};
 
+#[derive(getset::Getters, getset::CopyGetters)]
 pub struct Framebuffer {
-    pub framebuffer: vk::Framebuffer,
+    #[get_copy = "pub"]
+    framebuffer: vk::Framebuffer,
     attachments: Vec<Arc<ImageView>>,
+    #[get_copy = "pub"]
+    extent: vk::Extent2D,
+    #[get = "pub"]
     render_pass: Arc<RenderPass>,
 }
 
@@ -32,7 +39,12 @@ impl Framebuffer {
 
         let framebuffer = unsafe { device.device().create_framebuffer(&create_info, None)? };
 
-        Ok(Self { framebuffer, attachments, render_pass } )
+        Ok(Self {
+            framebuffer,
+            attachments,
+            render_pass,
+            extent: vk::Extent2D { width, height },
+        })
     }
 }
 

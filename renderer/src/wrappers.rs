@@ -1,5 +1,4 @@
 pub mod buffer;
-pub mod command;
 pub mod command_buffer;
 pub mod command_pool;
 pub mod context;
@@ -14,6 +13,9 @@ pub mod image_access;
 pub mod image_view;
 pub mod instance;
 pub mod logical_device;
+pub mod pipeline;
+pub mod pipeline_layout;
 pub mod render_pass;
 pub mod semaphore;
+pub mod shader_module;
 pub mod swapchain;

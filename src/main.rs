@@ -56,8 +56,6 @@ fn main() {
     //
     // To change the log level, set the `RUST_LOG` environment variable. See the `env_logger`
     // documentation for more information.
-    env_logger::init();
-
     let event_loop = EventLoop::new().unwrap();
 
     // When the current loop iteration finishes, immediately begin a new

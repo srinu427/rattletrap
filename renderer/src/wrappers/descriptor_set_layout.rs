@@ -11,8 +11,11 @@ pub struct DescriptorSetLayoutBinding {
     pub partially_bound: bool,
 }
 
+#[derive(getset::Getters, getset::CopyGetters)]
 pub struct DescriptorSetLayout {
+    #[get_copy = "pub"]
     layout: vk::DescriptorSetLayout,
+    #[get = "pub"]
     device: Arc<LogicalDevice>,
 }
 

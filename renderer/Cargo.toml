@@ -6,9 +6,11 @@ edition = "2024"
 [dependencies]
 ash = "0.38.0"
 ash-window = "0.13.0"
+bytemuck = "1.23.2"
 getset = "0.1.6"
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"] }
 hashbrown = "0.15.5"
+include_bytes_aligned = "0.1.4"
 raw-window-handle = "0.6.2"
 thiserror = "2.0.16"
 winit = "0.30.12"

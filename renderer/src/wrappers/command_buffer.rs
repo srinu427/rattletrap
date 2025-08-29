@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ash::vk;
 
-use crate::wrappers::{command::RenderPassCommand, command_pool::CommandPool};
+use crate::wrappers::command_pool::CommandPool;
 
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct CommandBuffer {
@@ -73,20 +73,5 @@ impl CommandBuffer {
         };
 
         Ok(())
-    }
-
-    fn apply_render_pass_commands(
-        &self,
-        pipelines: &[vk::Pipeline],
-        pipeline_layouts: &[vk::PipelineLayout],
-        commands: &[RenderPassCommand],
-    ) {
-        for command in commands {
-            command.apply_command(
-                self,
-                pipelines,
-                pipeline_layouts,
-            );
-        }
     }
 }
