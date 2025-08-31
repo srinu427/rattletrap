@@ -1,19 +1,310 @@
-use std::sync::Arc;
+use std::{
+    mem,
+    sync::{Arc, Mutex},
+};
 
 use ash::vk;
+use gpu_allocator::vulkan::Allocator;
 use include_bytes_aligned::include_bytes_aligned;
 use thiserror::Error;
 
-use crate::wrappers::{
-    descriptor_set_layout::DescriptorSetLayout, logical_device::LogicalDevice, pipeline::Pipeline,
-    pipeline_layout::PipelineLayout, render_pass::RenderPass, shader_module::make_shader_module,
+use crate::{
+    renderables::tri_mesh::TriMesh,
+    wrappers::{
+        buffer::{Buffer, BufferError},
+        descriptor_pool::DescriptorPool,
+        descriptor_set::DescriptorSet,
+        descriptor_set_layout::DescriptorSetLayout,
+        framebuffer::Framebuffer,
+        image::{Image, ImageError},
+        image_view::ImageView,
+        logical_device::LogicalDevice,
+        pipeline::Pipeline,
+        pipeline_layout::PipelineLayout,
+        render_pass::RenderPass,
+        sampler::Sampler,
+        shader_module::make_shader_module,
+    },
 };
 
 static VERT_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/textured_tri_mesh.vert.spv");
 static FRAG_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/textured_tri_mesh.frag.spv");
+static MAX_VERTICES: u64 = 100_000;
+static MAX_MATERIALS: u64 = 10_000;
+
+#[repr(C)]
+pub struct MaterialInfo {
+    sampler_id: u32,
+    texture_id: u32,
+}
 
 #[derive(Debug, Error)]
-pub enum TexturedTriMeshInitError {
+pub enum TTMPSetsError {
+    #[error("Buffer creation error: {0}")]
+    BufferCreateError(vk::Result),
+    #[error("Buffer allocation error: {0}")]
+    BufferAllocError(#[from] BufferError),
+    #[error("Descriptor set allocation error: {0}")]
+    DescriptorSetAllocError(vk::Result),
+    #[error("Framebuffer creation error: {0}")]
+    FramebufferCreateError(vk::Result),
+}
+
+pub struct TTMPSets {
+    pub ssbo1: Arc<Buffer>,
+    pub ssbo2: Arc<Buffer>,
+    pub ssbo3: Arc<Buffer>,
+    pub staging_buffer: Arc<Buffer>,
+    pub descriptor_sets: Vec<Arc<DescriptorSet>>,
+    ttmp: Arc<TTMP>,
+}
+
+impl TTMPSets {
+    pub fn new(
+        ttmp: Arc<TTMP>,
+        allocator: Arc<Mutex<Allocator>>,
+        descriptor_pool: Arc<DescriptorPool>,
+    ) -> Result<Self, TTMPSetsError> {
+        let device = ttmp.pipeline.render_pass().device();
+
+        // Create SSBOs and staging buffer
+        let ssbo1_size = MAX_VERTICES * mem::size_of::<TriMesh>() as u64;
+        let ssbo2_size = mem::size_of::<u32>() as u64;
+        let ssbo3_size = MAX_MATERIALS * mem::size_of::<MaterialInfo>() as u64;
+        let staging_buffer_size = ssbo1_size + ssbo2_size + ssbo3_size;
+
+        let mut ssbo1 = Buffer::new(
+            device.clone(),
+            MAX_VERTICES * std::mem::size_of::<TriMesh>() as u64,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        )
+        .map_err(TTMPSetsError::BufferCreateError)?;
+        ssbo1.allocate_memory(allocator.clone(), true)?;
+
+        let mut ssbo2 = Buffer::new(
+            device.clone(),
+            std::mem::size_of::<u32>() as u64,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        )
+        .map_err(TTMPSetsError::BufferCreateError)?;
+        ssbo2.allocate_memory(allocator.clone(), true)?;
+
+        let mut ssbo3 = Buffer::new(
+            device.clone(),
+            MAX_MATERIALS * std::mem::size_of::<MaterialInfo>() as u64,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        )
+        .map_err(TTMPSetsError::BufferCreateError)?;
+        ssbo3.allocate_memory(allocator.clone(), true)?;
+
+        let mut staging_buffer = Buffer::new(
+            device.clone(),
+            staging_buffer_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+        )
+        .map_err(TTMPSetsError::BufferCreateError)?;
+        staging_buffer.allocate_memory(allocator, false)?;
+
+        // Allocate descriptor sets
+        let vk_set_layouts = ttmp
+            .pipeline
+            .layout()
+            .set_layouts()
+            .iter()
+            .map(|l| l.layout())
+            .collect::<Vec<_>>();
+        let descriptor_sets = unsafe {
+            device
+                .device()
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(descriptor_pool.pool())
+                        .set_layouts(&vk_set_layouts),
+                )
+                .map_err(TTMPSetsError::DescriptorSetAllocError)?
+        };
+        let descriptor_sets = descriptor_sets
+            .into_iter()
+            .map(|ds| Arc::new(DescriptorSet::new(descriptor_pool.clone(), ds)))
+            .collect::<Vec<_>>();
+
+        unsafe {
+            device.device().update_descriptor_sets(
+                &[
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_sets[0].set())
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(&[vk::DescriptorBufferInfo::default()
+                            .buffer(ssbo1.buffer())
+                            .offset(0)
+                            .range(vk::WHOLE_SIZE)]),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_sets[0].set())
+                        .dst_binding(1)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(&[vk::DescriptorBufferInfo::default()
+                            .buffer(ssbo2.buffer())
+                            .offset(0)
+                            .range(vk::WHOLE_SIZE)]),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_sets[0].set())
+                        .dst_binding(2)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(&[vk::DescriptorBufferInfo::default()
+                            .buffer(ssbo3.buffer())
+                            .offset(0)
+                            .range(vk::WHOLE_SIZE)]),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_sets[1].set())
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .image_info(&[
+                            vk::DescriptorImageInfo::default().sampler(ttmp.sampler.sampler())
+                        ]),
+                ],
+                &[],
+            );
+        }
+
+        Ok(Self {
+            ssbo1: Arc::new(ssbo1),
+            ssbo2: Arc::new(ssbo2),
+            ssbo3: Arc::new(ssbo3),
+            staging_buffer: Arc::new(staging_buffer),
+            descriptor_sets,
+            ttmp,
+        })
+    }
+
+    pub fn update_textures(&self, textures: &[Arc<ImageView>]) {
+        if textures.len() as u32 > self.ttmp.max_textures {
+            // TODO: Handle this error properly
+            panic!("Number of textures exceeds maximum supported by the pipeline");
+        }
+
+        // Update descriptor set for textures
+        let device = self.ttmp.pipeline.render_pass().device();
+        let image_infos: Vec<vk::DescriptorImageInfo> = textures
+            .iter()
+            .map(|tex| {
+                vk::DescriptorImageInfo::default()
+                    .image_view(tex.image_view())
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            })
+            .collect();
+
+        unsafe {
+            device.device().update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[2].set())
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .image_info(&image_infos)],
+                &[],
+            );
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum TTMPAttachmentsError {
+    #[error("Image view creation error: {0}")]
+    ImageViewCreateError(vk::Result),
+    #[error("Image allocation error: {0}")]
+    ImageAllocError(#[from] ImageError),
+    #[error("Framebuffer creation error: {0}")]
+    FramebufferCreateError(vk::Result),
+}
+
+pub struct TTMPAttachments {
+    color: Arc<ImageView>,
+    depth: Arc<ImageView>,
+    framebuffer: Arc<Framebuffer>,
+    extent: vk::Extent2D,
+    ttmp: Arc<TTMP>,
+}
+
+impl TTMPAttachments {
+    pub fn new(
+        ttmp: Arc<TTMP>,
+        allocator: Arc<Mutex<Allocator>>,
+        extent: vk::Extent2D,
+    ) -> Result<Self, TTMPAttachmentsError> {
+        let device = ttmp.pipeline.render_pass().device();
+
+        // Create color attachment
+        let mut color_image = Image::new_2d(
+            device.clone(),
+            vk::Format::R8G8B8A8_SRGB,
+            extent,
+            1,
+            1,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::STORAGE,
+        )
+        .map_err(TTMPAttachmentsError::ImageViewCreateError)?;
+        color_image.allocate_memory(allocator.clone(), true)?;
+        let color_image = Arc::new(color_image);
+        let color_view = ImageView::new(
+            color_image,
+            vk::ImageViewType::TYPE_2D,
+            vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1),
+        )
+        .map(Arc::new)
+        .map_err(TTMPAttachmentsError::ImageViewCreateError)?;
+
+        // Create depth attachment
+        let mut depth_image = Image::new_2d(
+            device.clone(),
+            vk::Format::D32_SFLOAT,
+            extent,
+            1,
+            1,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        )
+        .map_err(TTMPAttachmentsError::ImageViewCreateError)?;
+        depth_image.allocate_memory(allocator, true)?;
+        let depth_image = Arc::new(depth_image);
+        let depth_view = ImageView::new(
+            depth_image,
+            vk::ImageViewType::TYPE_2D,
+            vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1),
+        )
+        .map(Arc::new)
+        .map_err(TTMPAttachmentsError::ImageViewCreateError)?;
+
+        // Create framebuffer
+        let framebuffer = Framebuffer::new(
+            ttmp.pipeline.render_pass().clone(),
+            vec![color_view.clone(), depth_view.clone()],
+            extent,
+            1,
+        )
+        .map(Arc::new)
+        .map_err(TTMPAttachmentsError::FramebufferCreateError)?;
+
+        Ok(Self {
+            color: color_view,
+            depth: depth_view,
+            framebuffer,
+            extent,
+            ttmp,
+        })
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum TTMPInitError {
     #[error("Render pass creation error: {0}")]
     RenderPassCreateError(vk::Result),
     #[error("Descriptor set layout creation error: {0}")]
@@ -22,32 +313,51 @@ pub enum TexturedTriMeshInitError {
     PipelineLayoutCreateError(vk::Result),
     #[error("Pipeline creation error: {0}")]
     PipelineCreateError(vk::Result),
+    #[error("Sampler creation error: {0}")]
+    SamplerCreateError(vk::Result),
 }
 
-pub struct TexturedTriMesh {
+#[derive(getset::Getters, getset::CopyGetters)]
+pub struct TTMP {
+    #[get = "pub"]
     pipeline: Arc<Pipeline>,
+    sampler: Arc<Sampler>,
+    #[get_copy = "pub"]
+    max_textures: u32,
 }
 
-impl TexturedTriMesh {
-    pub fn new(
-        device: Arc<LogicalDevice>,
-        max_textures: u32,
-    ) -> Result<Self, TexturedTriMeshInitError> {
+impl TTMP {
+    pub fn new(device: Arc<LogicalDevice>) -> Result<Self, TTMPInitError> {
+        let device_limits = unsafe {
+            device
+                .instance()
+                .instance()
+                .get_physical_device_properties(device.gpu())
+        };
+        let max_textures = device_limits.limits.max_descriptor_set_sampled_images;
         let render_pass = make_render_pass(device.clone())
             .map(Arc::new)
-            .map_err(TexturedTriMeshInitError::RenderPassCreateError)?;
+            .map_err(TTMPInitError::RenderPassCreateError)?;
 
         let set_layouts = make_set_layouts(device.clone(), max_textures)
-            .map_err(TexturedTriMeshInitError::SetLayoutCreateError)?;
+            .map_err(TTMPInitError::SetLayoutCreateError)?;
 
         let pipeline_layout = PipelineLayout::new(device.clone(), set_layouts)
             .map(Arc::new)
-            .map_err(TexturedTriMeshInitError::PipelineLayoutCreateError)?;
+            .map_err(TTMPInitError::PipelineLayoutCreateError)?;
 
         let pipeline = make_pipeline(pipeline_layout, render_pass)
             .map(Arc::new)
-            .map_err(TexturedTriMeshInitError::PipelineCreateError)?;
-        Ok(Self { pipeline })
+            .map_err(TTMPInitError::PipelineCreateError)?;
+
+        let sampler = Sampler::new_nearest(device.clone())
+            .map(Arc::new)
+            .map_err(TTMPInitError::SamplerCreateError)?;
+        Ok(Self {
+            pipeline,
+            sampler,
+            max_textures,
+        })
     }
 }
 
@@ -61,8 +371,8 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> Result<RenderPass, vk::Result
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::STORE)
-                    .initial_layout(vk::ImageLayout::UNDEFINED)
-                    .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
+                    .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
                 vk::AttachmentDescription2::default()
                     .format(vk::Format::D32_SFLOAT)
                     .samples(vk::SampleCountFlags::TYPE_1)
@@ -70,8 +380,8 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> Result<RenderPass, vk::Result
                     .store_op(vk::AttachmentStoreOp::DONT_CARE)
                     .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                     .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                    .initial_layout(vk::ImageLayout::UNDEFINED)
-                    .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+                    .initial_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .final_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL),
             ])
             .subpasses(&[vk::SubpassDescription2::default()
                 .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
@@ -81,7 +391,7 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> Result<RenderPass, vk::Result
                 .depth_stencil_attachment(
                     &vk::AttachmentReference2::default()
                         .attachment(1)
-                        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+                        .layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL),
                 )]),
     )
 }

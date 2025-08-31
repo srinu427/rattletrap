@@ -19,11 +19,9 @@ pub struct Framebuffer {
 
 impl Framebuffer {
     pub fn new(
-        device: Arc<LogicalDevice>,
         render_pass: Arc<RenderPass>,
         attachments: Vec<Arc<ImageView>>,
-        width: u32,
-        height: u32,
+        extent: vk::Extent2D,
         layers: u32,
     ) -> Result<Self, vk::Result> {
         let vk_attachments = attachments
@@ -33,17 +31,22 @@ impl Framebuffer {
         let create_info = vk::FramebufferCreateInfo::default()
             .render_pass(render_pass.render_pass())
             .attachments(&vk_attachments)
-            .width(width)
-            .height(height)
+            .width(extent.width)
+            .height(extent.height)
             .layers(layers);
 
-        let framebuffer = unsafe { device.device().create_framebuffer(&create_info, None)? };
+        let framebuffer = unsafe {
+            render_pass
+                .device()
+                .device()
+                .create_framebuffer(&create_info, None)?
+        };
 
         Ok(Self {
             framebuffer,
             attachments,
             render_pass,
-            extent: vk::Extent2D { width, height },
+            extent,
         })
     }
 }

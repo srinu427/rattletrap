@@ -5,13 +5,12 @@ use gpu_allocator::vulkan::Allocator;
 use thiserror::Error;
 
 use crate::wrappers::{
-    context::Context,
     gpu_allocation::{GpuAllocation, GpuAllocationError},
     logical_device::LogicalDevice,
 };
 
 #[derive(Debug, Error)]
-pub enum Image2dError {
+pub enum ImageError {
     #[error("GPU Allocation error: {0}")]
     AllocationError(#[from] GpuAllocationError),
     #[error("Error binding memory to image: {0}")]
@@ -36,13 +35,14 @@ pub struct Image {
     usage: vk::ImageUsageFlags,
     #[get = "pub"]
     allocation: Option<GpuAllocation>,
+    need_delte: bool,
     #[get = "pub"]
     device: Arc<LogicalDevice>,
 }
 
 impl Image {
     pub fn new(
-        context: &Context,
+        device: Arc<LogicalDevice>,
         type_: vk::ImageType,
         format: vk::Format,
         extent: vk::Extent3D,
@@ -59,18 +59,14 @@ impl Image {
             .samples(vk::SampleCountFlags::TYPE_1)
             .usage(usage);
 
-        let image = unsafe {
-            context
-                .logical_device()
-                .device()
-                .create_image(&image_create_info, None)?
-        };
+        let image = unsafe { device.device().create_image(&image_create_info, None)? };
 
         Ok(Self {
             image,
+            need_delte: true,
             type_,
             allocation: None,
-            device: context.logical_device().clone(),
+            device,
             extent,
             format,
             usage,
@@ -80,7 +76,7 @@ impl Image {
     }
 
     pub fn new_2d(
-        context: &Context,
+        device: Arc<LogicalDevice>,
         format: vk::Format,
         extent: vk::Extent2D,
         mip_levels: u32,
@@ -88,7 +84,7 @@ impl Image {
         usage: vk::ImageUsageFlags,
     ) -> Result<Self, vk::Result> {
         Self::new(
-            context,
+            device,
             vk::ImageType::TYPE_2D,
             format,
             vk::Extent3D {
@@ -106,7 +102,7 @@ impl Image {
         &mut self,
         allocator: Arc<Mutex<Allocator>>,
         gpu_only: bool,
-    ) -> Result<(), Image2dError> {
+    ) -> Result<(), ImageError> {
         let requirements = unsafe {
             self.device
                 .device()
@@ -132,7 +128,7 @@ impl Image {
                     allocation.allocation().memory(),
                     allocation.allocation().offset(),
                 )
-                .map_err(Image2dError::MemoryBindError)?;
+                .map_err(ImageError::MemoryBindError)?;
         }
         Ok(())
     }
@@ -141,7 +137,9 @@ impl Image {
 impl Drop for Image {
     fn drop(&mut self) {
         unsafe {
-            self.device.device().destroy_image(self.image, None);
+            if self.need_delte {
+                self.device.device().destroy_image(self.image, None);
+            }
         }
     }
 }

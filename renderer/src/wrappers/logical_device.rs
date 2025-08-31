@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
 use ash::{ext, khr, vk};
+use gpu_allocator::{
+    AllocationError,
+    vulkan::{Allocator, AllocatorCreateDesc},
+};
 use thiserror::Error;
 
 use crate::wrappers::instance::Instance;
@@ -108,6 +112,17 @@ impl LogicalDevice {
             device,
             gpu,
             instance,
+        })
+    }
+
+    pub fn make_allocator(&self) -> Result<Allocator, AllocationError> {
+        Allocator::new(&AllocatorCreateDesc {
+            instance: self.instance().instance().clone(),
+            device: self.device().clone(),
+            physical_device: self.gpu(),
+            debug_settings: Default::default(),
+            buffer_device_address: false,
+            allocation_sizes: Default::default(),
         })
     }
 }

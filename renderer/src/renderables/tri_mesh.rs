@@ -1,7 +1,9 @@
+#[repr(C)]
 #[derive(Clone, Debug)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub tex_coords: [f32; 2],
+    pub obj_id: u32,
 }
 
 #[derive(Clone, Debug)]

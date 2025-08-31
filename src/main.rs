@@ -23,7 +23,7 @@ impl ApplicationHandler for App {
                 .unwrap(),
         );
 
-        let state = pollster::block_on(Renderer::new(window.clone())).unwrap();
+        let state = Renderer::new(window.clone()).unwrap();
         self.renderer = Some(state);
 
         window.request_redraw();
@@ -39,7 +39,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 state.render();
                 // Emits a new redraw requested event.
-                state.get_window().request_redraw();
+                state.window().request_redraw();
             }
             WindowEvent::Resized(size) => {
                 // Reconfigures the size of the surface. We do not re-render
