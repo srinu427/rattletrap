@@ -1,33 +1,17 @@
 use std::sync::{Arc, Mutex};
 
+use anyhow::Result as AnyResult;
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
-use thiserror::Error;
 
 use crate::wrappers::{
-    buffer::{Buffer, BufferError},
-    command_buffer::{CommandBuffer, CommandBufferError},
-    command_pool::{CommandPool, CommandPoolError},
-    fence::{Fence, FenceError},
+    buffer::Buffer,
+    command_buffer::CommandBuffer,
+    command_pool::CommandPool,
+    fence::Fence,
     image::Image,
     logical_device::{LogicalDevice, QueueType},
 };
-
-#[derive(Debug, Error)]
-pub enum DTPError {
-    #[error("Command pool error: {0}")]
-    CommandPoolError(#[from] CommandPoolError),
-    #[error("Command buffer  error: {0}")]
-    CommandBufferError(#[from] CommandBufferError),
-    #[error("Lock poisoning error: {0}")]
-    LockPoisoningError(String),
-    #[error("Buffer error: {0}")]
-    BufferError(#[from] BufferError),
-    #[error("Fence error: {0}")]
-    FenceError(#[from] FenceError),
-    #[error("Queue submit error: {0}")]
-    QueueSubmitError(vk::Result),
-}
 
 pub struct DTP {
     // command_buffers_count: u32,
@@ -37,10 +21,7 @@ pub struct DTP {
 }
 
 impl DTP {
-    pub fn new(
-        device: Arc<LogicalDevice>,
-        allocator: Arc<Mutex<Allocator>>,
-    ) -> Result<Self, DTPError> {
+    pub fn new(device: Arc<LogicalDevice>, allocator: Arc<Mutex<Allocator>>) -> AnyResult<Self> {
         let command_pool = CommandPool::new(device, QueueType::Graphics, true).map(Arc::new)?;
 
         // let command_buffers = CommandBuffer::new(command_pool.clone(), command_buffers_count)
@@ -55,7 +36,7 @@ impl DTP {
         })
     }
 
-    pub fn transfer_data(&self, data: &[u8], buffer: &Buffer) -> Result<(), DTPError> {
+    pub fn transfer_data(&self, data: &[u8], buffer: &Buffer) -> AnyResult<()> {
         let device = self.command_pool.device();
         let command_buffer = CommandBuffer::new(self.command_pool.clone(), 1)?.remove(0);
         let mut stage_buffer = Buffer::new(
@@ -85,21 +66,17 @@ impl DTP {
         let fence = Fence::new(device.clone(), false)?;
 
         unsafe {
-            device
-                .device()
-                .queue_submit(
-                    device.graphics_queue(),
-                    &[vk::SubmitInfo::default()
-                        .command_buffers(&[command_buffer.command_buffer()])],
-                    fence.fence(),
-                )
-                .map_err(DTPError::QueueSubmitError)?;
+            device.device().queue_submit(
+                device.graphics_queue(),
+                &[vk::SubmitInfo::default().command_buffers(&[command_buffer.command_buffer()])],
+                fence.fence(),
+            )?;
         }
         fence.wait(u64::MAX)?;
         Ok(())
     }
 
-    pub fn transfer_data_to_image_2d(&self, data: &[u8], image: &Image) -> Result<(), DTPError> {
+    pub fn transfer_data_to_image_2d(&self, data: &[u8], image: &Image) -> AnyResult<()> {
         let device = self.command_pool.device();
         let command_buffer = CommandBuffer::new(self.command_pool.clone(), 1)?.remove(0);
         let mut stage_buffer = Buffer::new(
@@ -139,15 +116,11 @@ impl DTP {
         let fence = Fence::new(device.clone(), false)?;
 
         unsafe {
-            device
-                .device()
-                .queue_submit(
-                    device.graphics_queue(),
-                    &[vk::SubmitInfo::default()
-                        .command_buffers(&[command_buffer.command_buffer()])],
-                    fence.fence(),
-                )
-                .map_err(DTPError::QueueSubmitError)?;
+            device.device().queue_submit(
+                device.graphics_queue(),
+                &[vk::SubmitInfo::default().command_buffers(&[command_buffer.command_buffer()])],
+                fence.fence(),
+            )?;
         }
         fence.wait(u64::MAX)?;
         Ok(())

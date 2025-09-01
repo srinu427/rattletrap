@@ -12,18 +12,10 @@ use anyhow::Result as AnyResult;
 use crate::{
     renderables::tri_mesh::TriMesh,
     wrappers::{
-        buffer::Buffer,
-        descriptor_pool::DescriptorPool,
-        descriptor_set::DescriptorSet,
-        descriptor_set_layout::DescriptorSetLayout,
-        framebuffer::Framebuffer,
-        image::Image,
-        image_view::ImageView,
-        logical_device::LogicalDevice,
-        pipeline::Pipeline,
-        pipeline_layout::PipelineLayout,
-        render_pass::RenderPass,
-        sampler::Sampler,
+        buffer::Buffer, descriptor_pool::DescriptorPool, descriptor_set::DescriptorSet,
+        descriptor_set_layout::DescriptorSetLayout, framebuffer::Framebuffer, image::Image,
+        image_view::ImageView, logical_device::LogicalDevice, pipeline::Pipeline,
+        pipeline_layout::PipelineLayout, render_pass::RenderPass, sampler::Sampler,
         shader_module::make_shader_module,
     },
 };
@@ -99,13 +91,11 @@ impl TTMPSets {
             .map(|l| l.layout())
             .collect::<Vec<_>>();
         let descriptor_sets = unsafe {
-            device
-                .device()
-                .allocate_descriptor_sets(
-                    &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(descriptor_pool.pool())
-                        .set_layouts(&vk_set_layouts),
-                )?
+            device.device().allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(descriptor_pool.pool())
+                    .set_layouts(&vk_set_layouts),
+            )?
         };
         let descriptor_sets = descriptor_sets
             .into_iter()
@@ -288,19 +278,15 @@ impl TTMP {
                 .get_physical_device_properties(device.gpu())
         };
         let max_textures = device_limits.limits.max_descriptor_set_sampled_images;
-        let render_pass = make_render_pass(device.clone())
-            .map(Arc::new)?;
+        let render_pass = make_render_pass(device.clone()).map(Arc::new)?;
 
         let set_layouts = make_set_layouts(device.clone(), max_textures)?;
 
-        let pipeline_layout = PipelineLayout::new(device.clone(), set_layouts)
-            .map(Arc::new)?;
+        let pipeline_layout = PipelineLayout::new(device.clone(), set_layouts).map(Arc::new)?;
 
-        let pipeline = make_pipeline(pipeline_layout, render_pass)
-            .map(Arc::new)?;
+        let pipeline = make_pipeline(pipeline_layout, render_pass).map(Arc::new)?;
 
-        let sampler = Sampler::new_nearest(device.clone())
-            .map(Arc::new)?;
+        let sampler = Sampler::new_nearest(device.clone()).map(Arc::new)?;
         Ok(Self {
             pipeline,
             sampler,
@@ -366,10 +352,7 @@ fn make_set_layouts(
     ])
 }
 
-fn make_pipeline(
-    layout: Arc<PipelineLayout>,
-    render_pass: Arc<RenderPass>,
-) -> AnyResult<Pipeline> {
+fn make_pipeline(layout: Arc<PipelineLayout>, render_pass: Arc<RenderPass>) -> AnyResult<Pipeline> {
     let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default();
     let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
