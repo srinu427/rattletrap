@@ -24,3 +24,9 @@ struct GpuVertex {
   float uv[2];
   uint obj_id;
 };
+
+struct GpuTriangle {
+  float normal[3];
+  float tangent[3];
+  float bitangent[3];
+};

@@ -50,6 +50,7 @@ pub struct Renderer {
     ttmp_attachments: Vec<TTMPAttachments>,
     ttmp_sets: Vec<TTMPSets>,
     ttmp: Arc<TTMP>,
+    swapchain_initialized: bool,
     swapchain: Swapchain,
     device: Arc<LogicalDevice>,
     instance: Arc<Instance>,
@@ -119,6 +120,7 @@ impl Renderer {
             ttmp,
             ttmp_sets,
             ttmp_attachments,
+            swapchain_initialized: false,
             swapchain,
             device,
             instance,
@@ -207,6 +209,28 @@ impl Renderer {
             .acquire_image(&self.next_image_acquire_fence)?;
         self.next_image_acquire_fence.wait(u64::MAX)?;
         self.next_image_acquire_fence.reset()?;
+
+        let draw_idx = present_img_idx as usize;
+        let draw_cb = &self.draw_cbs[draw_idx];
+        // Record command buffer
+        draw_cb.begin(true)?;
+
+        let ttmp_sets = &self.ttmp_sets[draw_idx];
+        if self.swapchain.extent() != self.ttmp_attachments[draw_idx].extent() {
+            let new_ttmp_attachments = (0..self.swapchain.image_views().len())
+                .map(|_| {
+                    TTMPAttachments::new(
+                        self.ttmp.clone(),
+                        self.global_allocator.clone(),
+                        self.swapchain.extent(),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.ttmp_attachments = new_ttmp_attachments;
+        }
+        let ttmp_attachment = &self.ttmp_attachments[draw_idx];
+
+        draw_cb.end()?;
 
         self.swapchain.present(present_img_idx, &[])?;
         Ok(())

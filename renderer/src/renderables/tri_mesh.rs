@@ -10,7 +10,6 @@ pub struct Vertex {
 
 #[derive(Clone, Debug)]
 pub struct Triangle {
-    pub indices: [u32; 3],
     pub normal: [f32; 3],
     pub tangent: [f32; 3],
     pub bitangent: [f32; 3],
@@ -20,6 +19,7 @@ pub struct Triangle {
 pub struct TriMesh {
     pub vertices: Vec<Vertex>,
     pub triangles: Vec<Triangle>,
+    pub indices: Vec<u32>,
 }
 
 pub fn make_square() -> TriMesh {
@@ -47,20 +47,20 @@ pub fn make_square() -> TriMesh {
     ];
     let tris = vec![
         Triangle {
-            indices: [0, 1, 2],
             normal: [0.0, 0.0, 1.0],
             tangent: [1.0, 0.0, 0.0],
             bitangent: [0.0, 1.0, 0.0],
         },
         Triangle {
-            indices: [2, 3, 0],
             normal: [0.0, 0.0, 1.0],
             tangent: [1.0, 0.0, 0.0],
             bitangent: [0.0, 1.0, 0.0],
         },
     ];
+    let indices = vec![0, 1, 2, 2, 3, 0];
     TriMesh {
         vertices: verts,
         triangles: tris,
+        indices,
     }
 }

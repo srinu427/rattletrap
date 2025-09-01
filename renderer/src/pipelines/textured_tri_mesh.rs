@@ -11,13 +11,27 @@ use include_bytes_aligned::include_bytes_aligned;
 use anyhow::Result as AnyResult;
 
 use crate::{
-    pipelines::data_transfer::{DTPInput, DTP}, renderables::{camera::Camera, tri_mesh::TriMesh}, wrappers::{
-        buffer::Buffer, descriptor_pool::DescriptorPool, descriptor_set::DescriptorSet,
-        descriptor_set_layout::DescriptorSetLayout, framebuffer::Framebuffer, image::Image,
-        image_view::ImageView, logical_device::LogicalDevice, pipeline::Pipeline,
-        pipeline_layout::PipelineLayout, render_pass::RenderPass, sampler::Sampler,
+    pipelines::data_transfer::{DTP, DTPInput},
+    renderables::{
+        camera::Camera,
+        tri_mesh::{TriMesh, Triangle, Vertex},
+    },
+    wrappers::{
+        buffer::Buffer,
+        command_buffer::CommandBuffer,
+        descriptor_pool::DescriptorPool,
+        descriptor_set::DescriptorSet,
+        descriptor_set_layout::DescriptorSetLayout,
+        framebuffer::Framebuffer,
+        image::Image,
+        image_view::ImageView,
+        logical_device::LogicalDevice,
+        pipeline::Pipeline,
+        pipeline_layout::PipelineLayout,
+        render_pass::RenderPass,
+        sampler::{self, Sampler},
         shader_module::make_shader_module,
-    }
+    },
 };
 
 static VERT_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/textured_tri_mesh.vert.spv");
@@ -33,11 +47,10 @@ pub struct MaterialInfo {
 }
 
 pub struct TTMPSets {
-    pub ssbo1: Arc<Buffer>,
-    pub ssbo2: Arc<Buffer>,
-    pub ssbo3: Arc<Buffer>,
+    pub ssbos: Vec<Arc<Buffer>>,
     pub descriptor_sets: Vec<Arc<DescriptorSet>>,
     ttmp: Arc<TTMP>,
+    index_count: u32,
 }
 
 impl TTMPSets {
@@ -48,31 +61,28 @@ impl TTMPSets {
     ) -> AnyResult<Self> {
         let device = ttmp.pipeline.render_pass().device();
 
-        // Create SSBOs and staging buffer
-        let ssbo1_size = MAX_VERTICES * mem::size_of::<TriMesh>() as u64;
-        let ssbo2_size = mem::size_of::<u32>() as u64;
-        let ssbo3_size = MAX_MATERIALS * mem::size_of::<MaterialInfo>() as u64;
+        // Create SSBOs
+        let ssbo_sizes = [
+            MAX_VERTICES * mem::size_of::<Vertex>() as u64,
+            MAX_VERTICES * mem::size_of::<Triangle>() as u64,
+            MAX_VERTICES * mem::size_of::<u32>() as u64,
+            mem::size_of::<Camera>() as u64,
+            MAX_MATERIALS * mem::size_of::<MaterialInfo>() as u64,
+        ];
 
-        let mut ssbo1 = Buffer::new(
-            device.clone(),
-            ssbo1_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-        )?;
-        ssbo1.allocate_memory(allocator.clone(), true)?;
-
-        let mut ssbo2 = Buffer::new(
-            device.clone(),
-            ssbo2_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-        )?;
-        ssbo2.allocate_memory(allocator.clone(), true)?;
-
-        let mut ssbo3 = Buffer::new(
-            device.clone(),
-            ssbo3_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-        )?;
-        ssbo3.allocate_memory(allocator.clone(), true)?;
+        let ssbos = ssbo_sizes
+            .iter()
+            .map(|&size| {
+                let mut buffer = Buffer::new(
+                    device.clone(),
+                    size,
+                    vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+                )?;
+                buffer.allocate_memory(allocator.clone(), true)?;
+                let buffer = Arc::new(buffer);
+                Ok(buffer)
+            })
+            .collect::<AnyResult<Vec<_>>>()?;
 
         // Allocate descriptor sets
         let vk_set_layouts = ttmp
@@ -95,50 +105,41 @@ impl TTMPSets {
             .collect::<Vec<_>>();
 
         unsafe {
-            device.device().update_descriptor_sets(
-                &[
+            let buffer_infos = ssbos
+                .iter()
+                .map(|ssbo| {
+                    vk::DescriptorBufferInfo::default()
+                        .buffer(ssbo.buffer())
+                        .offset(0)
+                        .range(vk::WHOLE_SIZE)
+                })
+                .collect::<Vec<_>>();
+            let sampler_infos =
+                [vk::DescriptorImageInfo::default().sampler(ttmp.sampler.sampler())];
+            let mut writes = (0..ssbos.len())
+                .map(|i| {
                     vk::WriteDescriptorSet::default()
                         .dst_set(descriptor_sets[0].set())
-                        .dst_binding(0)
+                        .dst_binding(i as u32)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(&[vk::DescriptorBufferInfo::default()
-                            .buffer(ssbo1.buffer())
-                            .offset(0)
-                            .range(vk::WHOLE_SIZE)]),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(descriptor_sets[0].set())
-                        .dst_binding(1)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(&[vk::DescriptorBufferInfo::default()
-                            .buffer(ssbo2.buffer())
-                            .offset(0)
-                            .range(vk::WHOLE_SIZE)]),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(descriptor_sets[0].set())
-                        .dst_binding(2)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(&[vk::DescriptorBufferInfo::default()
-                            .buffer(ssbo3.buffer())
-                            .offset(0)
-                            .range(vk::WHOLE_SIZE)]),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(descriptor_sets[1].set())
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::SAMPLER)
-                        .image_info(&[
-                            vk::DescriptorImageInfo::default().sampler(ttmp.sampler.sampler())
-                        ]),
-                ],
-                &[],
+                        .buffer_info(&buffer_infos[i..i + 1])
+                })
+                .collect::<Vec<_>>();
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_sets[1].set())
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::SAMPLER)
+                    .image_info(&sampler_infos),
             );
+            device.device().update_descriptor_sets(&writes, &[]);
         }
 
         Ok(Self {
-            ssbo1: Arc::new(ssbo1),
-            ssbo2: Arc::new(ssbo2),
-            ssbo3: Arc::new(ssbo3),
+            ssbos,
             descriptor_sets,
             ttmp,
+            index_count: 0,
         })
     }
 
@@ -171,7 +172,13 @@ impl TTMPSets {
         }
     }
 
-    pub fn update_ssbos(&self, dtp: &DTP, meshes: &[TriMesh], camera: Camera, material_infos: &[MaterialInfo]) -> AnyResult<()> {
+    pub fn update_ssbos(
+        &mut self,
+        dtp: &DTP,
+        meshes: &[TriMesh],
+        camera: Camera,
+        material_infos: &[MaterialInfo],
+    ) -> AnyResult<()> {
         let vert_data: Vec<u8> = meshes
             .iter()
             .flat_map(|m| bytemuck::cast_slice(&m.vertices).to_vec())
@@ -193,15 +200,17 @@ impl TTMPSets {
                 buffer: &self.ssbo3,
             },
         ])?;
-        
+
         Ok(())
     }
 }
 
+#[derive(getset::Getters, getset::CopyGetters)]
 pub struct TTMPAttachments {
     color: Arc<ImageView>,
     depth: Arc<ImageView>,
     framebuffer: Arc<Framebuffer>,
+    #[get_copy = "pub"]
     extent: vk::Extent2D,
     ttmp: Arc<TTMP>,
 }
@@ -311,6 +320,83 @@ impl TTMP {
             sampler,
             max_textures,
         })
+    }
+
+    pub fn render(
+        &self,
+        command_buffer: &CommandBuffer,
+        set: &TTMPSets,
+        attachment: &TTMPAttachments,
+    ) {
+        let device = self.pipeline.render_pass().device();
+        unsafe {
+            device.device().cmd_bind_pipeline(
+                command_buffer.command_buffer(),
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.pipeline(),
+            );
+            device.device().cmd_bind_descriptor_sets(
+                command_buffer.command_buffer(),
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.layout().pipeline_layout(),
+                0,
+                &[
+                    set.descriptor_sets[0].set(),
+                    set.descriptor_sets[1].set(),
+                    set.descriptor_sets[2].set(),
+                ],
+                &[],
+            );
+
+            let viewport = vk::Viewport::default()
+                .x(0.0)
+                .y(0.0)
+                .width(attachment.extent().width as f32)
+                .height(attachment.extent().height as f32)
+                .min_depth(0.0)
+                .max_depth(1.0);
+            device
+                .device()
+                .cmd_set_viewport(command_buffer.command_buffer(), 0, &[viewport]);
+
+            let scissor = vk::Rect2D::default()
+                .offset(vk::Offset2D { x: 0, y: 0 })
+                .extent(attachment.extent());
+            device
+                .device()
+                .cmd_set_scissor(command_buffer.command_buffer(), 0, &[scissor]);
+
+            device.device().cmd_begin_render_pass(
+                command_buffer.command_buffer(),
+                &vk::RenderPassBeginInfo::default()
+                    .render_pass(self.pipeline.render_pass().render_pass())
+                    .framebuffer(attachment.framebuffer.framebuffer())
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: attachment.extent(),
+                    })
+                    .clear_values(&[
+                        vk::ClearValue {
+                            color: vk::ClearColorValue {
+                                float32: [0.0, 0.0, 0.0, 1.0],
+                            },
+                        },
+                        vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue {
+                                depth: 1.0,
+                                stencil: 0,
+                            },
+                        },
+                    ]),
+                vk::SubpassContents::INLINE,
+            );
+            device
+                .device()
+                .cmd_draw(command_buffer.command_buffer(), 3, 1, 0, 0);
+            device
+                .device()
+                .cmd_end_render_pass(command_buffer.command_buffer());
+        }
     }
 }
 
