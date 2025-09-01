@@ -4,6 +4,12 @@ use ash::vk;
 
 use crate::wrappers::logical_device::LogicalDevice;
 
+#[derive(Debug, thiserror::Error)]
+pub enum DescriptorSetLayoutError {
+    #[error("Descriptor set layout creation error: {0}")]
+    CreateError(vk::Result),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct DescriptorSetLayoutBinding {
     pub descriptor_type: vk::DescriptorType,
@@ -23,7 +29,7 @@ impl DescriptorSetLayout {
     pub fn new(
         device: Arc<LogicalDevice>,
         bindings: &[(vk::DescriptorType, u32)],
-    ) -> Result<Self, vk::Result> {
+    ) -> Result<Self, DescriptorSetLayoutError> {
         let vk_bindings = bindings
             .iter()
             .enumerate()
@@ -39,7 +45,8 @@ impl DescriptorSetLayout {
         let layout = unsafe {
             device
                 .device()
-                .create_descriptor_set_layout(&create_info, None)?
+                .create_descriptor_set_layout(&create_info, None)
+                .map_err(DescriptorSetLayoutError::CreateError)?
         };
         Ok(Self { layout, device })
     }

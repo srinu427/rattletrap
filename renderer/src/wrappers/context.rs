@@ -5,7 +5,7 @@ use winit::window::Window;
 
 use crate::wrappers::{
     instance::{Instance, InstanceError},
-    logical_device::{LogicalDevice, LogicalDeviceInitError},
+    logical_device::{LogicalDevice, LogicalDeviceError},
 };
 
 #[derive(Debug, Error)]
@@ -13,7 +13,7 @@ pub enum ContextInitError {
     #[error("Instance creation error: {0}")]
     InstanceError(#[from] InstanceError),
     #[error("Logical device creation error: {0}")]
-    LogicalDeviceError(#[from] LogicalDeviceInitError),
+    LogicalDeviceError(#[from] LogicalDeviceError),
 }
 
 #[derive(getset::Getters, getset::CopyGetters)]

@@ -4,6 +4,12 @@ use ash::vk;
 
 use crate::wrappers::logical_device::LogicalDevice;
 
+#[derive(Debug, thiserror::Error)]
+pub enum DescriptorPoolError {
+    #[error("Descriptor pool creation error: {0}")]
+    CreateError(vk::Result),
+}
+
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct DescriptorPool {
     #[get_copy = "pub"]
@@ -17,7 +23,7 @@ impl DescriptorPool {
         device: Arc<LogicalDevice>,
         pool_sizes: &[(vk::DescriptorType, u32)],
         max_sets: u32,
-    ) -> Result<Self, vk::Result> {
+    ) -> Result<Self, DescriptorPoolError> {
         let vk_pool_sizes: Vec<vk::DescriptorPoolSize> = pool_sizes
             .iter()
             .map(|(ty, count)| vk::DescriptorPoolSize {
@@ -30,7 +36,12 @@ impl DescriptorPool {
             .pool_sizes(&vk_pool_sizes)
             .max_sets(max_sets);
 
-        let pool = unsafe { device.device().create_descriptor_pool(&create_info, None)? };
+        let pool = unsafe {
+            device
+                .device()
+                .create_descriptor_pool(&create_info, None)
+                .map_err(DescriptorPoolError::CreateError)?
+        };
 
         Ok(Self { pool, device })
     }

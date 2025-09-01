@@ -1,8 +1,15 @@
 use std::sync::Arc;
 
 use ash::vk;
+use thiserror::Error;
 
 use crate::wrappers::logical_device::{LogicalDevice, QueueType};
+
+#[derive(Debug, Error)]
+pub enum CommandPoolError {
+    #[error("Command pool creation error: {0}")]
+    CreateError(vk::Result),
+}
 
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct CommandPool {
@@ -15,15 +22,30 @@ pub struct CommandPool {
 }
 
 impl CommandPool {
-    pub fn new(device: Arc<LogicalDevice>, queue_type: QueueType) -> Result<Self, vk::Result> {
+    pub fn new(
+        device: Arc<LogicalDevice>,
+        queue_type: QueueType,
+        transient: bool,
+    ) -> Result<Self, CommandPoolError> {
+        let flags = if transient {
+            vk::CommandPoolCreateFlags::TRANSIENT
+        } else {
+            vk::CommandPoolCreateFlags::empty()
+        } | vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER;
+
         let qf_idx = match queue_type {
             QueueType::Graphics => device.graphics_qf_id(),
         };
         let create_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(qf_idx)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+            .flags(flags);
 
-        let command_pool = unsafe { device.device().create_command_pool(&create_info, None)? };
+        let command_pool = unsafe {
+            device
+                .device()
+                .create_command_pool(&create_info, None)
+                .map_err(CommandPoolError::CreateError)?
+        };
 
         Ok(Self {
             command_pool,

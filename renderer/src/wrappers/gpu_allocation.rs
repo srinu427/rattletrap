@@ -18,9 +18,10 @@ pub enum GpuAllocationError {
     LockError,
 }
 
-#[derive(getset::Getters)]
+#[derive(getset::Getters, getset::MutGetters)]
 pub struct GpuAllocation {
     #[get = "pub"]
+    #[get_mut = "pub"]
     allocation: ManuallyDrop<Allocation>,
     allocator: Arc<Mutex<Allocator>>,
 }

@@ -25,7 +25,7 @@ pub fn get_device_extensions() -> Vec<*const i8> {
 }
 
 #[derive(Debug, Error)]
-pub enum LogicalDeviceInitError {
+pub enum LogicalDeviceError {
     #[error("Vulkan GPU listing error: {0}")]
     ListDevicesError(vk::Result),
     #[error("No suitable GPU found")]
@@ -51,12 +51,12 @@ pub struct LogicalDevice {
 }
 
 impl LogicalDevice {
-    pub fn new(instance: Arc<Instance>) -> Result<Self, LogicalDeviceInitError> {
+    pub fn new(instance: Arc<Instance>) -> Result<Self, LogicalDeviceError> {
         let gpus = unsafe {
             instance
                 .instance()
                 .enumerate_physical_devices()
-                .map_err(LogicalDeviceInitError::ListDevicesError)?
+                .map_err(LogicalDeviceError::ListDevicesError)?
         };
 
         let mut gpu_w_qf_ids = gpus
@@ -68,7 +68,7 @@ impl LogicalDevice {
 
         let (gpu, graphics_qf_id) = gpu_w_qf_ids
             .pop()
-            .ok_or(LogicalDeviceInitError::NoSuitableGpu)?;
+            .ok_or(LogicalDeviceError::NoSuitableGpu)?;
 
         let queue_priorities = [1.0];
         let queue_infos = vec![
@@ -98,7 +98,7 @@ impl LogicalDevice {
             instance
                 .instance()
                 .create_device(gpu, &device_create_info, None)
-                .map_err(LogicalDeviceInitError::DeviceCreateError)?
+                .map_err(LogicalDeviceError::DeviceCreateError)?
         };
 
         let graphics_queue = unsafe { device.get_device_queue(graphics_qf_id, 0) };

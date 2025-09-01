@@ -4,6 +4,11 @@ use ash::vk;
 
 use crate::wrappers::{pipeline_layout::PipelineLayout, render_pass::RenderPass};
 
+#[derive(Debug, thiserror::Error)]
+pub enum PipelineError {
+    // No errors for now
+}
+
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct Pipeline {
     #[get_copy = "pub"]

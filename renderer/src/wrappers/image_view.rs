@@ -4,6 +4,12 @@ use ash::vk;
 
 use crate::wrappers::image::Image;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ImageViewError {
+    #[error("Image view creation error: {0}")]
+    CreateError(vk::Result),
+}
+
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct ImageView {
     #[get_copy = "pub"]
@@ -19,7 +25,7 @@ impl ImageView {
         image: Arc<Image>,
         type_: vk::ImageViewType,
         subresource_range: vk::ImageSubresourceRange,
-    ) -> Result<Self, vk::Result> {
+    ) -> Result<Self, ImageViewError> {
         let create_info = vk::ImageViewCreateInfo::default()
             .image(image.image())
             .view_type(type_)
@@ -30,7 +36,8 @@ impl ImageView {
             image
                 .device()
                 .device()
-                .create_image_view(&create_info, None)?
+                .create_image_view(&create_info, None)
+                .map_err(ImageViewError::CreateError)?
         };
         Ok(Self {
             image_view,

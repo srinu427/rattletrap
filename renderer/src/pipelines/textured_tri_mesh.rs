@@ -6,17 +6,18 @@ use std::{
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
 use include_bytes_aligned::include_bytes_aligned;
-use thiserror::Error;
+
+use anyhow::Result as AnyResult;
 
 use crate::{
     renderables::tri_mesh::TriMesh,
     wrappers::{
-        buffer::{Buffer, BufferError},
+        buffer::Buffer,
         descriptor_pool::DescriptorPool,
         descriptor_set::DescriptorSet,
         descriptor_set_layout::DescriptorSetLayout,
         framebuffer::Framebuffer,
-        image::{Image, ImageError},
+        image::Image,
         image_view::ImageView,
         logical_device::LogicalDevice,
         pipeline::Pipeline,
@@ -38,18 +39,6 @@ pub struct MaterialInfo {
     texture_id: u32,
 }
 
-#[derive(Debug, Error)]
-pub enum TTMPSetsError {
-    #[error("Buffer creation error: {0}")]
-    BufferCreateError(vk::Result),
-    #[error("Buffer allocation error: {0}")]
-    BufferAllocError(#[from] BufferError),
-    #[error("Descriptor set allocation error: {0}")]
-    DescriptorSetAllocError(vk::Result),
-    #[error("Framebuffer creation error: {0}")]
-    FramebufferCreateError(vk::Result),
-}
-
 pub struct TTMPSets {
     pub ssbo1: Arc<Buffer>,
     pub ssbo2: Arc<Buffer>,
@@ -64,7 +53,7 @@ impl TTMPSets {
         ttmp: Arc<TTMP>,
         allocator: Arc<Mutex<Allocator>>,
         descriptor_pool: Arc<DescriptorPool>,
-    ) -> Result<Self, TTMPSetsError> {
+    ) -> AnyResult<Self> {
         let device = ttmp.pipeline.render_pass().device();
 
         // Create SSBOs and staging buffer
@@ -77,32 +66,28 @@ impl TTMPSets {
             device.clone(),
             MAX_VERTICES * std::mem::size_of::<TriMesh>() as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-        )
-        .map_err(TTMPSetsError::BufferCreateError)?;
+        )?;
         ssbo1.allocate_memory(allocator.clone(), true)?;
 
         let mut ssbo2 = Buffer::new(
             device.clone(),
             std::mem::size_of::<u32>() as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-        )
-        .map_err(TTMPSetsError::BufferCreateError)?;
+        )?;
         ssbo2.allocate_memory(allocator.clone(), true)?;
 
         let mut ssbo3 = Buffer::new(
             device.clone(),
             MAX_MATERIALS * std::mem::size_of::<MaterialInfo>() as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-        )
-        .map_err(TTMPSetsError::BufferCreateError)?;
+        )?;
         ssbo3.allocate_memory(allocator.clone(), true)?;
 
         let mut staging_buffer = Buffer::new(
             device.clone(),
             staging_buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
-        )
-        .map_err(TTMPSetsError::BufferCreateError)?;
+        )?;
         staging_buffer.allocate_memory(allocator, false)?;
 
         // Allocate descriptor sets
@@ -120,8 +105,7 @@ impl TTMPSets {
                     &vk::DescriptorSetAllocateInfo::default()
                         .descriptor_pool(descriptor_pool.pool())
                         .set_layouts(&vk_set_layouts),
-                )
-                .map_err(TTMPSetsError::DescriptorSetAllocError)?
+                )?
         };
         let descriptor_sets = descriptor_sets
             .into_iter()
@@ -207,16 +191,6 @@ impl TTMPSets {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum TTMPAttachmentsError {
-    #[error("Image view creation error: {0}")]
-    ImageViewCreateError(vk::Result),
-    #[error("Image allocation error: {0}")]
-    ImageAllocError(#[from] ImageError),
-    #[error("Framebuffer creation error: {0}")]
-    FramebufferCreateError(vk::Result),
-}
-
 pub struct TTMPAttachments {
     color: Arc<ImageView>,
     depth: Arc<ImageView>,
@@ -230,7 +204,7 @@ impl TTMPAttachments {
         ttmp: Arc<TTMP>,
         allocator: Arc<Mutex<Allocator>>,
         extent: vk::Extent2D,
-    ) -> Result<Self, TTMPAttachmentsError> {
+    ) -> AnyResult<Self> {
         let device = ttmp.pipeline.render_pass().device();
 
         // Create color attachment
@@ -239,10 +213,8 @@ impl TTMPAttachments {
             vk::Format::R8G8B8A8_SRGB,
             extent,
             1,
-            1,
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::STORAGE,
-        )
-        .map_err(TTMPAttachmentsError::ImageViewCreateError)?;
+        )?;
         color_image.allocate_memory(allocator.clone(), true)?;
         let color_image = Arc::new(color_image);
         let color_view = ImageView::new(
@@ -255,8 +227,7 @@ impl TTMPAttachments {
                 .base_array_layer(0)
                 .layer_count(1),
         )
-        .map(Arc::new)
-        .map_err(TTMPAttachmentsError::ImageViewCreateError)?;
+        .map(Arc::new)?;
 
         // Create depth attachment
         let mut depth_image = Image::new_2d(
@@ -264,10 +235,8 @@ impl TTMPAttachments {
             vk::Format::D32_SFLOAT,
             extent,
             1,
-            1,
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-        )
-        .map_err(TTMPAttachmentsError::ImageViewCreateError)?;
+        )?;
         depth_image.allocate_memory(allocator, true)?;
         let depth_image = Arc::new(depth_image);
         let depth_view = ImageView::new(
@@ -280,8 +249,7 @@ impl TTMPAttachments {
                 .base_array_layer(0)
                 .layer_count(1),
         )
-        .map(Arc::new)
-        .map_err(TTMPAttachmentsError::ImageViewCreateError)?;
+        .map(Arc::new)?;
 
         // Create framebuffer
         let framebuffer = Framebuffer::new(
@@ -290,8 +258,7 @@ impl TTMPAttachments {
             extent,
             1,
         )
-        .map(Arc::new)
-        .map_err(TTMPAttachmentsError::FramebufferCreateError)?;
+        .map(Arc::new)?;
 
         Ok(Self {
             color: color_view,
@@ -301,20 +268,6 @@ impl TTMPAttachments {
             ttmp,
         })
     }
-}
-
-#[derive(Debug, Error)]
-pub enum TTMPInitError {
-    #[error("Render pass creation error: {0}")]
-    RenderPassCreateError(vk::Result),
-    #[error("Descriptor set layout creation error: {0}")]
-    SetLayoutCreateError(vk::Result),
-    #[error("Pipeline layout creation error: {0}")]
-    PipelineLayoutCreateError(vk::Result),
-    #[error("Pipeline creation error: {0}")]
-    PipelineCreateError(vk::Result),
-    #[error("Sampler creation error: {0}")]
-    SamplerCreateError(vk::Result),
 }
 
 #[derive(getset::Getters, getset::CopyGetters)]
@@ -327,7 +280,7 @@ pub struct TTMP {
 }
 
 impl TTMP {
-    pub fn new(device: Arc<LogicalDevice>) -> Result<Self, TTMPInitError> {
+    pub fn new(device: Arc<LogicalDevice>) -> AnyResult<Self> {
         let device_limits = unsafe {
             device
                 .instance()
@@ -336,23 +289,18 @@ impl TTMP {
         };
         let max_textures = device_limits.limits.max_descriptor_set_sampled_images;
         let render_pass = make_render_pass(device.clone())
-            .map(Arc::new)
-            .map_err(TTMPInitError::RenderPassCreateError)?;
+            .map(Arc::new)?;
 
-        let set_layouts = make_set_layouts(device.clone(), max_textures)
-            .map_err(TTMPInitError::SetLayoutCreateError)?;
+        let set_layouts = make_set_layouts(device.clone(), max_textures)?;
 
         let pipeline_layout = PipelineLayout::new(device.clone(), set_layouts)
-            .map(Arc::new)
-            .map_err(TTMPInitError::PipelineLayoutCreateError)?;
+            .map(Arc::new)?;
 
         let pipeline = make_pipeline(pipeline_layout, render_pass)
-            .map(Arc::new)
-            .map_err(TTMPInitError::PipelineCreateError)?;
+            .map(Arc::new)?;
 
         let sampler = Sampler::new_nearest(device.clone())
-            .map(Arc::new)
-            .map_err(TTMPInitError::SamplerCreateError)?;
+            .map(Arc::new)?;
         Ok(Self {
             pipeline,
             sampler,
@@ -361,8 +309,8 @@ impl TTMP {
     }
 }
 
-fn make_render_pass(device: Arc<LogicalDevice>) -> Result<RenderPass, vk::Result> {
-    RenderPass::new(
+fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
+    Ok(RenderPass::new(
         device,
         &vk::RenderPassCreateInfo2::default()
             .attachments(&[
@@ -393,13 +341,13 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> Result<RenderPass, vk::Result
                         .attachment(1)
                         .layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL),
                 )]),
-    )
+    )?)
 }
 
 fn make_set_layouts(
     device: Arc<LogicalDevice>,
     max_textures: u32,
-) -> Result<Vec<Arc<DescriptorSetLayout>>, vk::Result> {
+) -> AnyResult<Vec<Arc<DescriptorSetLayout>>> {
     let layout0 = DescriptorSetLayout::new(
         device.clone(),
         &[
@@ -421,7 +369,7 @@ fn make_set_layouts(
 fn make_pipeline(
     layout: Arc<PipelineLayout>,
     render_pass: Arc<RenderPass>,
-) -> Result<Pipeline, vk::Result> {
+) -> AnyResult<Pipeline> {
     let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default();
     let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)

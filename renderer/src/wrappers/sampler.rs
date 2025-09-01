@@ -4,6 +4,12 @@ use ash::vk;
 
 use crate::wrappers::logical_device::LogicalDevice;
 
+#[derive(Debug, thiserror::Error)]
+pub enum SamplerError {
+    #[error("Sampler creation error: {0}")]
+    CreateError(vk::Result),
+}
+
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct Sampler {
     #[get_copy = "pub"]
@@ -13,10 +19,15 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    pub fn new_nearest(device: Arc<LogicalDevice>) -> Result<Self, vk::Result> {
+    pub fn new_nearest(device: Arc<LogicalDevice>) -> Result<Self, SamplerError> {
         let create_info = vk::SamplerCreateInfo::default();
 
-        let sampler = unsafe { device.device().create_sampler(&create_info, None)? };
+        let sampler = unsafe {
+            device
+                .device()
+                .create_sampler(&create_info, None)
+                .map_err(SamplerError::CreateError)?
+        };
 
         Ok(Self { sampler, device })
     }

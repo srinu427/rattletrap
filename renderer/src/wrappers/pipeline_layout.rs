@@ -4,6 +4,12 @@ use ash::vk;
 
 use crate::wrappers::{descriptor_set_layout::DescriptorSetLayout, logical_device::LogicalDevice};
 
+#[derive(Debug, thiserror::Error)]
+pub enum PipelineLayoutError {
+    #[error("Pipeline layout creation error: {0}")]
+    CreateError(vk::Result),
+}
+
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct PipelineLayout {
     #[get_copy = "pub"]
@@ -18,15 +24,19 @@ impl PipelineLayout {
     pub fn new(
         device: Arc<LogicalDevice>,
         set_layouts: Vec<Arc<DescriptorSetLayout>>,
-    ) -> Result<Self, vk::Result> {
+    ) -> Result<Self, PipelineLayoutError> {
         let vk_set_layouts = set_layouts
             .iter()
             .map(|layout| layout.layout())
             .collect::<Vec<_>>();
         let create_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&vk_set_layouts);
 
-        let pipeline_layout =
-            unsafe { device.device().create_pipeline_layout(&create_info, None)? };
+        let pipeline_layout = unsafe {
+            device
+                .device()
+                .create_pipeline_layout(&create_info, None)
+                .map_err(PipelineLayoutError::CreateError)?
+        };
 
         Ok(Self {
             pipeline_layout,

@@ -4,6 +4,12 @@ use ash::vk;
 
 use crate::wrappers::logical_device::LogicalDevice;
 
+#[derive(Debug, thiserror::Error)]
+pub enum RenderPassError {
+    #[error("Render pass creation error: {0}")]
+    CreateError(vk::Result),
+}
+
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct RenderPass {
     #[get_copy = "pub"]
@@ -16,8 +22,13 @@ impl RenderPass {
     pub fn new(
         device: Arc<LogicalDevice>,
         create_info: &vk::RenderPassCreateInfo2,
-    ) -> Result<Self, vk::Result> {
-        let render_pass = unsafe { device.device().create_render_pass2(create_info, None)? };
+    ) -> Result<Self, RenderPassError> {
+        let render_pass = unsafe {
+            device
+                .device()
+                .create_render_pass2(create_info, None)
+                .map_err(RenderPassError::CreateError)?
+        };
 
         Ok(Self {
             render_pass,

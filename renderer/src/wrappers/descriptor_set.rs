@@ -4,6 +4,11 @@ use ash::vk;
 
 use crate::wrappers::descriptor_pool::DescriptorPool;
 
+#[derive(Debug, thiserror::Error)]
+pub enum DescriptorSetError {
+    // Currently no errors possible
+}
+
 pub struct DescriptorSet {
     set: vk::DescriptorSet,
     pool: Arc<DescriptorPool>,

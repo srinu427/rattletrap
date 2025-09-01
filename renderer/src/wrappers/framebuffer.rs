@@ -2,9 +2,13 @@ use std::sync::Arc;
 
 use ash::vk;
 
-use crate::wrappers::{
-    image_view::ImageView, logical_device::LogicalDevice, render_pass::RenderPass,
-};
+use crate::wrappers::{image_view::ImageView, render_pass::RenderPass};
+
+#[derive(Debug, thiserror::Error)]
+pub enum FramebufferError {
+    #[error("Framebuffer creation error: {0}")]
+    CreateError(vk::Result),
+}
 
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct Framebuffer {
@@ -23,7 +27,7 @@ impl Framebuffer {
         attachments: Vec<Arc<ImageView>>,
         extent: vk::Extent2D,
         layers: u32,
-    ) -> Result<Self, vk::Result> {
+    ) -> Result<Self, FramebufferError> {
         let vk_attachments = attachments
             .iter()
             .map(|view| view.image_view())
@@ -39,7 +43,8 @@ impl Framebuffer {
             render_pass
                 .device()
                 .device()
-                .create_framebuffer(&create_info, None)?
+                .create_framebuffer(&create_info, None)
+                .map_err(FramebufferError::CreateError)?
         };
 
         Ok(Self {

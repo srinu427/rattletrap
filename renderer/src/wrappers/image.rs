@@ -11,6 +11,8 @@ use crate::wrappers::{
 
 #[derive(Debug, Error)]
 pub enum ImageError {
+    #[error("Image creation error: {0}")]
+    CreateError(vk::Result),
     #[error("GPU Allocation error: {0}")]
     AllocationError(#[from] GpuAllocationError),
     #[error("Error binding memory to image: {0}")]
@@ -49,7 +51,7 @@ impl Image {
         mip_levels: u32,
         array_layers: u32,
         usage: vk::ImageUsageFlags,
-    ) -> Result<Self, vk::Result> {
+    ) -> Result<Self, ImageError> {
         let image_create_info = vk::ImageCreateInfo::default()
             .image_type(type_)
             .format(format)
@@ -59,7 +61,12 @@ impl Image {
             .samples(vk::SampleCountFlags::TYPE_1)
             .usage(usage);
 
-        let image = unsafe { device.device().create_image(&image_create_info, None)? };
+        let image = unsafe {
+            device
+                .device()
+                .create_image(&image_create_info, None)
+                .map_err(ImageError::CreateError)?
+        };
 
         Ok(Self {
             image,
@@ -80,9 +87,8 @@ impl Image {
         format: vk::Format,
         extent: vk::Extent2D,
         mip_levels: u32,
-        array_layers: u32,
         usage: vk::ImageUsageFlags,
-    ) -> Result<Self, vk::Result> {
+    ) -> Result<Self, ImageError> {
         Self::new(
             device,
             vk::ImageType::TYPE_2D,
@@ -93,7 +99,7 @@ impl Image {
                 depth: 1,
             },
             mip_levels,
-            array_layers,
+            1,
             usage,
         )
     }
@@ -131,6 +137,30 @@ impl Image {
                 .map_err(ImageError::MemoryBindError)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn from_swapchain_image(
+        device: Arc<LogicalDevice>,
+        image: vk::Image,
+        format: vk::Format,
+        extent: vk::Extent2D,
+    ) -> Self {
+        Self {
+            image,
+            need_delte: false,
+            type_: vk::ImageType::TYPE_2D,
+            allocation: None,
+            device,
+            extent: vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            },
+            format,
+            usage: vk::ImageUsageFlags::empty(),
+            mip_levels: 1,
+            array_layers: 1,
+        }
     }
 }
 

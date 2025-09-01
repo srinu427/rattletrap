@@ -4,6 +4,12 @@ use ash::vk;
 
 use crate::wrappers::logical_device::LogicalDevice;
 
+#[derive(Debug, thiserror::Error)]
+pub enum SemaphoreError {
+    #[error("Semaphore creation error: {0}")]
+    CreateError(vk::Result),
+}
+
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct Semaphore {
     #[get_copy = "pub"]
@@ -13,10 +19,15 @@ pub struct Semaphore {
 }
 
 impl Semaphore {
-    pub fn new(device: Arc<LogicalDevice>) -> Result<Self, vk::Result> {
+    pub fn new(device: Arc<LogicalDevice>) -> Result<Self, SemaphoreError> {
         let create_info = vk::SemaphoreCreateInfo::default();
 
-        let semaphore = unsafe { device.device().create_semaphore(&create_info, None)? };
+        let semaphore = unsafe {
+            device
+                .device()
+                .create_semaphore(&create_info, None)
+                .map_err(SemaphoreError::CreateError)?
+        };
 
         Ok(Self { semaphore, device })
     }
