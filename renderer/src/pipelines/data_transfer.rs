@@ -13,6 +13,18 @@ use crate::wrappers::{
     logical_device::{LogicalDevice, QueueType},
 };
 
+pub enum DTPInput<'a> {
+    CopyToBuffer {
+        data: &'a [u8],
+        buffer: &'a Buffer,
+    },
+    CopyToImage {
+        data: &'a [u8],
+        image: &'a Image,
+        subresource_layers: vk::ImageSubresourceLayers,
+    },
+}
+
 pub struct DTP {
     // command_buffers_count: u32,
     command_pool: Arc<CommandPool>,
@@ -36,30 +48,84 @@ impl DTP {
         })
     }
 
-    pub fn transfer_data(&self, data: &[u8], buffer: &Buffer) -> AnyResult<()> {
+    pub fn do_transfers(&self, transfers: Vec<DTPInput>) -> AnyResult<()> {
+        let stage_buffer_size: u64 = transfers
+            .iter()
+            .map(|t| match t {
+                DTPInput::CopyToBuffer { data, .. } => data.len() as u64,
+                DTPInput::CopyToImage { data, .. } => data.len() as u64,
+            })
+            .sum();
         let device = self.command_pool.device();
         let command_buffer = CommandBuffer::new(self.command_pool.clone(), 1)?.remove(0);
         let mut stage_buffer = Buffer::new(
             device.clone(),
-            data.len() as u64,
+            stage_buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
         )?;
         stage_buffer.allocate_memory(self.allocator.clone(), false)?;
         let stage_mem_ptr = stage_buffer.get_allocation_mount_slice()?;
-        stage_mem_ptr.copy_from_slice(data);
+        let mut offset = 0;
+        for transfer in &transfers {
+            match transfer {
+                DTPInput::CopyToBuffer { data, .. } => {
+                    let data_len = data.len();
+                    stage_mem_ptr[offset..offset + data_len].copy_from_slice(data);
+                    offset += data_len;
+                }
+                DTPInput::CopyToImage { data, .. } => {
+                    let data_len = data.len();
+                    stage_mem_ptr[offset..offset + data_len].copy_from_slice(data);
+                    offset += data_len;
+                }
+            }
+        }
+
+        let mut current_offset = 0;
         command_buffer.begin(true)?;
-        // Record command buffer to copy from stage buffer to destination buffer
-        let copy_region = vk::BufferCopy::default()
-            .src_offset(0)
-            .dst_offset(0)
-            .size(data.len() as u64);
-        unsafe {
-            device.device().cmd_copy_buffer(
-                command_buffer.command_buffer(),
-                stage_buffer.buffer(),
-                buffer.buffer(),
-                &[copy_region],
-            );
+        for transfer in transfers {
+            match transfer {
+                DTPInput::CopyToBuffer { data, buffer } => {
+                    let data_len = data.len() as u64;
+                    let copy_region = vk::BufferCopy::default()
+                        .src_offset(current_offset)
+                        .dst_offset(0)
+                        .size(data_len);
+                    unsafe {
+                        device.device().cmd_copy_buffer(
+                            command_buffer.command_buffer(),
+                            stage_buffer.buffer(),
+                            buffer.buffer(),
+                            &[copy_region],
+                        );
+                    }
+                    current_offset += data_len;
+                }
+                DTPInput::CopyToImage {
+                    data,
+                    image,
+                    subresource_layers,
+                } => {
+                    let data_len = data.len() as u64;
+                    let buffer_image_regions = vk::BufferImageCopy::default()
+                        .buffer_offset(current_offset)
+                        .buffer_row_length(0)
+                        .buffer_image_height(0)
+                        .image_subresource(subresource_layers)
+                        .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                        .image_extent(image.extent());
+                    unsafe {
+                        device.device().cmd_copy_buffer_to_image(
+                            command_buffer.command_buffer(),
+                            stage_buffer.buffer(),
+                            image.image(),
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            &[buffer_image_regions],
+                        );
+                    }
+                    current_offset += data_len;
+                }
+            }
         }
         command_buffer.end()?;
 
@@ -73,56 +139,7 @@ impl DTP {
             )?;
         }
         fence.wait(u64::MAX)?;
-        Ok(())
-    }
 
-    pub fn transfer_data_to_image_2d(&self, data: &[u8], image: &Image) -> AnyResult<()> {
-        let device = self.command_pool.device();
-        let command_buffer = CommandBuffer::new(self.command_pool.clone(), 1)?.remove(0);
-        let mut stage_buffer = Buffer::new(
-            device.clone(),
-            data.len() as u64,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-        )?;
-        stage_buffer.allocate_memory(self.allocator.clone(), false)?;
-        let stage_mem_ptr = stage_buffer.get_allocation_mount_slice()?;
-        stage_mem_ptr.copy_from_slice(data);
-        command_buffer.begin(true)?;
-        // Record command buffer to copy from stage buffer to destination image
-        let buffer_image_regions = vk::BufferImageCopy::default()
-            .buffer_offset(0)
-            .buffer_row_length(0)
-            .buffer_image_height(0)
-            .image_subresource(
-                vk::ImageSubresourceLayers::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .mip_level(0)
-                    .base_array_layer(0)
-                    .layer_count(1),
-            )
-            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-            .image_extent(image.extent());
-        unsafe {
-            device.device().cmd_copy_buffer_to_image(
-                command_buffer.command_buffer(),
-                stage_buffer.buffer(),
-                image.image(),
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[buffer_image_regions],
-            );
-        }
-        command_buffer.end()?;
-
-        let fence = Fence::new(device.clone(), false)?;
-
-        unsafe {
-            device.device().queue_submit(
-                device.graphics_queue(),
-                &[vk::SubmitInfo::default().command_buffers(&[command_buffer.command_buffer()])],
-                fence.fence(),
-            )?;
-        }
-        fence.wait(u64::MAX)?;
         Ok(())
     }
 }

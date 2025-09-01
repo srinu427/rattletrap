@@ -1,17 +1,11 @@
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 
 use ash::vk;
-use gpu_allocator::vulkan::Allocator;
 use thiserror::Error;
 
 use crate::wrappers::{
     buffer::BufferError,
-    image::Image,
     image_view::{ImageView, ImageViewError},
-    logical_device::LogicalDevice,
 };
 
 #[derive(Debug, Error)]

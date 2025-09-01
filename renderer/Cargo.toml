@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1.0.99"
 ash = "0.38.0"
 ash-window = "0.13.0"
-bytemuck = "1.23.2"
+bytemuck = { version = "1.23.2", features = ["derive"] }
 getset = "0.1.6"
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"] }
 hashbrown = "0.15.5"

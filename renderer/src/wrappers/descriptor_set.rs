@@ -24,15 +24,15 @@ impl DescriptorSet {
     }
 }
 
-impl Drop for DescriptorSet {
-    fn drop(&mut self) {
-        unsafe {
-            self.pool
-                .device()
-                .device()
-                .free_descriptor_sets(self.pool.pool(), &[self.set])
-                .inspect_err(|e| eprintln!("Failed to free descriptor set: {e}"))
-                .ok();
-        }
-    }
-}
+// impl Drop for DescriptorSet {
+//     fn drop(&mut self) {
+//         unsafe {
+//             self.pool
+//                 .device()
+//                 .device()
+//                 .free_descriptor_sets(self.pool.pool(), &[self.set])
+//                 .inspect_err(|e| eprintln!("Failed to free descriptor set: {e}"))
+//                 .ok();
+//         }
+//     }
+// }

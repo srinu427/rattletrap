@@ -4,20 +4,20 @@ use std::{
 };
 
 use ash::vk;
+use bytemuck::NoUninit;
 use gpu_allocator::vulkan::Allocator;
 use include_bytes_aligned::include_bytes_aligned;
 
 use anyhow::Result as AnyResult;
 
 use crate::{
-    renderables::tri_mesh::TriMesh,
-    wrappers::{
+    pipelines::data_transfer::{DTPInput, DTP}, renderables::{camera::Camera, tri_mesh::TriMesh}, wrappers::{
         buffer::Buffer, descriptor_pool::DescriptorPool, descriptor_set::DescriptorSet,
         descriptor_set_layout::DescriptorSetLayout, framebuffer::Framebuffer, image::Image,
         image_view::ImageView, logical_device::LogicalDevice, pipeline::Pipeline,
         pipeline_layout::PipelineLayout, render_pass::RenderPass, sampler::Sampler,
         shader_module::make_shader_module,
-    },
+    }
 };
 
 static VERT_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/textured_tri_mesh.vert.spv");
@@ -26,6 +26,7 @@ static MAX_VERTICES: u64 = 100_000;
 static MAX_MATERIALS: u64 = 10_000;
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, NoUninit)]
 pub struct MaterialInfo {
     sampler_id: u32,
     texture_id: u32,
@@ -35,7 +36,6 @@ pub struct TTMPSets {
     pub ssbo1: Arc<Buffer>,
     pub ssbo2: Arc<Buffer>,
     pub ssbo3: Arc<Buffer>,
-    pub staging_buffer: Arc<Buffer>,
     pub descriptor_sets: Vec<Arc<DescriptorSet>>,
     ttmp: Arc<TTMP>,
 }
@@ -52,35 +52,27 @@ impl TTMPSets {
         let ssbo1_size = MAX_VERTICES * mem::size_of::<TriMesh>() as u64;
         let ssbo2_size = mem::size_of::<u32>() as u64;
         let ssbo3_size = MAX_MATERIALS * mem::size_of::<MaterialInfo>() as u64;
-        let staging_buffer_size = ssbo1_size + ssbo2_size + ssbo3_size;
 
         let mut ssbo1 = Buffer::new(
             device.clone(),
-            MAX_VERTICES * std::mem::size_of::<TriMesh>() as u64,
+            ssbo1_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
         )?;
         ssbo1.allocate_memory(allocator.clone(), true)?;
 
         let mut ssbo2 = Buffer::new(
             device.clone(),
-            std::mem::size_of::<u32>() as u64,
+            ssbo2_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
         )?;
         ssbo2.allocate_memory(allocator.clone(), true)?;
 
         let mut ssbo3 = Buffer::new(
             device.clone(),
-            MAX_MATERIALS * std::mem::size_of::<MaterialInfo>() as u64,
+            ssbo3_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
         )?;
         ssbo3.allocate_memory(allocator.clone(), true)?;
-
-        let mut staging_buffer = Buffer::new(
-            device.clone(),
-            staging_buffer_size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-        )?;
-        staging_buffer.allocate_memory(allocator, false)?;
 
         // Allocate descriptor sets
         let vk_set_layouts = ttmp
@@ -145,7 +137,6 @@ impl TTMPSets {
             ssbo1: Arc::new(ssbo1),
             ssbo2: Arc::new(ssbo2),
             ssbo3: Arc::new(ssbo3),
-            staging_buffer: Arc::new(staging_buffer),
             descriptor_sets,
             ttmp,
         })
@@ -178,6 +169,32 @@ impl TTMPSets {
                 &[],
             );
         }
+    }
+
+    pub fn update_ssbos(&self, dtp: &DTP, meshes: &[TriMesh], camera: Camera, material_infos: &[MaterialInfo]) -> AnyResult<()> {
+        let vert_data: Vec<u8> = meshes
+            .iter()
+            .flat_map(|m| bytemuck::cast_slice(&m.vertices).to_vec())
+            .collect();
+        let cam_data: Vec<u8> = bytemuck::cast_slice(&[camera]).to_vec();
+        let mat_data: Vec<u8> = bytemuck::cast_slice(material_infos).to_vec();
+
+        dtp.do_transfers(vec![
+            DTPInput::CopyToBuffer {
+                data: &vert_data,
+                buffer: &self.ssbo1,
+            },
+            DTPInput::CopyToBuffer {
+                data: &cam_data,
+                buffer: &self.ssbo2,
+            },
+            DTPInput::CopyToBuffer {
+                data: &mat_data,
+                buffer: &self.ssbo3,
+            },
+        ])?;
+        
+        Ok(())
     }
 }
 
@@ -277,7 +294,9 @@ impl TTMP {
                 .instance()
                 .get_physical_device_properties(device.gpu())
         };
-        let max_textures = device_limits.limits.max_descriptor_set_sampled_images;
+        let max_dset_textures = device_limits.limits.max_descriptor_set_sampled_images;
+        let max_stage_textures = device_limits.limits.max_per_stage_descriptor_sampled_images;
+        let max_textures = max_dset_textures.min(max_stage_textures);
         let render_pass = make_render_pass(device.clone()).map(Arc::new)?;
 
         let set_layouts = make_set_layouts(device.clone(), max_textures)?;
@@ -314,8 +333,8 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
                     .store_op(vk::AttachmentStoreOp::DONT_CARE)
                     .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                     .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                    .initial_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                    .final_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL),
+                    .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
             ])
             .subpasses(&[vk::SubpassDescription2::default()
                 .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
@@ -325,7 +344,7 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
                 .depth_stencil_attachment(
                     &vk::AttachmentReference2::default()
                         .attachment(1)
-                        .layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL),
+                        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
                 )]),
     )?)
 }
@@ -414,5 +433,17 @@ fn make_pipeline(layout: Arc<PipelineLayout>, render_pass: Arc<RenderPass>) -> A
             .create_graphics_pipelines(vk::PipelineCache::null(), &[create_info], None)
             .map_err(|(_, e)| e)?[0]
     };
+
+    // Clean up shader modules
+    unsafe {
+        render_pass
+            .device()
+            .device()
+            .destroy_shader_module(vert_shader, None);
+        render_pass
+            .device()
+            .device()
+            .destroy_shader_module(frag_shader, None);
+    }
     Ok(Pipeline::new(render_pass, layout, pipeline))
 }

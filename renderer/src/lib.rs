@@ -15,7 +15,7 @@ use winit::window::Window;
 
 use crate::{
     pipelines::{
-        data_transfer::DTP,
+        data_transfer::{DTP, DTPInput},
         textured_tri_mesh::{TTMP, TTMPAttachments, TTMPSets},
     },
     renderables::{texture::Texture, tri_mesh::TriMesh},
@@ -23,6 +23,7 @@ use crate::{
         command_buffer::CommandBuffer,
         command_pool::CommandPool,
         descriptor_pool::DescriptorPool,
+        fence::Fence,
         image::Image,
         image_view::ImageView,
         instance::Instance,
@@ -38,6 +39,7 @@ pub struct TTPMRenderable {
 
 #[derive(getset::Getters)]
 pub struct Renderer {
+    next_image_acquire_fence: Arc<Fence>,
     ttmp_renderables: HashMap<String, TTPMRenderable>,
     dtp: Arc<DTP>,
     global_allocator: Arc<Mutex<Allocator>>,
@@ -48,7 +50,7 @@ pub struct Renderer {
     ttmp_attachments: Vec<TTMPAttachments>,
     ttmp_sets: Vec<TTMPSets>,
     ttmp: Arc<TTMP>,
-    swapchain: Arc<Swapchain>,
+    swapchain: Swapchain,
     device: Arc<LogicalDevice>,
     instance: Arc<Instance>,
     #[get = "pub"]
@@ -103,7 +105,10 @@ impl Renderer {
 
         let dtp = Arc::new(DTP::new(device.clone(), global_allocator.clone())?);
 
+        let next_image_acquire_fence = Arc::new(Fence::new(device.clone(), false)?);
+
         Ok(Self {
+            next_image_acquire_fence,
             ttmp_renderables: HashMap::new(),
             dtp,
             draw_cbs,
@@ -114,7 +119,7 @@ impl Renderer {
             ttmp,
             ttmp_sets,
             ttmp_attachments,
-            swapchain: Arc::new(swapchain),
+            swapchain,
             device,
             instance,
             window,
@@ -139,10 +144,17 @@ impl Renderer {
             vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
         )?;
         image.allocate_memory(self.global_allocator.clone(), true)?;
-        self.dtp
-            .transfer_data_to_image_2d(image_data.as_bytes(), &image)?;
-
         let image = Arc::new(image);
+
+        self.dtp.do_transfers(vec![DTPInput::CopyToImage {
+            data: image_data.as_bytes(),
+            image: &image,
+            subresource_layers: vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(0)
+                .base_array_layer(0)
+                .layer_count(1),
+        }])?;
 
         let image_view = ImageView::new(
             image.clone(),
@@ -169,12 +181,14 @@ impl Renderer {
         mesh_name: String,
         texture_name: String,
     ) -> AnyResult<()> {
-        let _ = self.tri_meshes.get(&mesh_name).ok_or_else(|| {
-            anyhow::anyhow!("Mesh '{}' not found", mesh_name)
-        })?;
-        let _ = self.textures.get(&texture_name).ok_or_else(|| {
-            anyhow::anyhow!("Texture '{}' not found", texture_name)
-        })?;
+        let _ = self
+            .tri_meshes
+            .get(&mesh_name)
+            .ok_or_else(|| anyhow::anyhow!("Mesh '{}' not found", mesh_name))?;
+        let _ = self
+            .textures
+            .get(&texture_name)
+            .ok_or_else(|| anyhow::anyhow!("Texture '{}' not found", texture_name))?;
 
         let renderable = TTPMRenderable {
             mesh: mesh_name,
@@ -186,5 +200,20 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn draw(&mut self) {}
+    pub fn draw(&mut self) -> AnyResult<()> {
+        // Aquire next image from swapchain
+        let present_img_idx = self
+            .swapchain
+            .acquire_image(&self.next_image_acquire_fence)?;
+        self.next_image_acquire_fence.wait(u64::MAX)?;
+        self.next_image_acquire_fence.reset()?;
+
+        self.swapchain.present(present_img_idx, &[])?;
+        Ok(())
+    }
+
+    pub fn refresh_resolution(&mut self) -> AnyResult<()> {
+        self.swapchain.refresh_resolution()?;
+        Ok(())
+    }
 }

@@ -3,7 +3,13 @@ use std::sync::Arc;
 use ash::vk;
 use thiserror::Error;
 
-use crate::wrappers::{image::Image, image_view::{ImageView, ImageViewError}, logical_device::LogicalDevice};
+use crate::wrappers::{
+    fence::{Fence, FenceError},
+    image::Image,
+    image_view::{ImageView, ImageViewError},
+    logical_device::LogicalDevice,
+    semaphore::Semaphore,
+};
 
 #[derive(Debug, Error)]
 pub enum SwapchainError {
@@ -21,6 +27,12 @@ pub enum SwapchainError {
     GetImagesError(vk::Result),
     #[error("Vulkan image view error: {0}")]
     ImageViewError(#[from] ImageViewError),
+    #[error("Vulkan acquire next image error: {0}")]
+    AcquireNextImageError(vk::Result),
+    #[error("Vulkan fence error: {0}")]
+    FenceError(#[from] FenceError),
+    #[error("Error during swapchain presentation: {0}")]
+    PresentError(vk::Result),
 }
 
 fn fetch_images_make_views(
@@ -43,14 +55,19 @@ fn fetch_images_make_views(
 
     let image_views = images
         .iter()
-        .map(|img| ImageView::new(
-            img.clone(),
-            vk::ImageViewType::TYPE_2D,
-             vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR)
-                .base_mip_level(0)
-                .level_count(1)
-                .base_array_layer(0)
-                .layer_count(1)).map(Arc::new))
+        .map(|img| {
+            ImageView::new(
+                img.clone(),
+                vk::ImageViewType::TYPE_2D,
+                vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .map(Arc::new)
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(image_views)
@@ -220,7 +237,8 @@ impl Swapchain {
                 .map_err(SwapchainError::SwapchainCreateError)?
         };
 
-        let image_views = fetch_images_make_views(self.device.clone(), swapchain, self.format, extent)?;
+        let image_views =
+            fetch_images_make_views(self.device.clone(), swapchain, self.format, extent)?;
 
         self.image_views = image_views;
 
@@ -230,8 +248,64 @@ impl Swapchain {
                 .destroy_swapchain(self.swapchain, None);
         }
         self.swapchain = swapchain;
-        
+
         self.extent = extent;
+        Ok(())
+    }
+
+    pub fn acquire_image(&mut self, fence: &Fence) -> Result<u32, SwapchainError> {
+        loop {
+            let aquire_out = unsafe {
+                self.device.swapchain_device().acquire_next_image(
+                    self.swapchain,
+                    u64::MAX,
+                    vk::Semaphore::null(),
+                    fence.fence(),
+                )
+            };
+
+            let (idx, is_suboptimal) = match aquire_out {
+                Ok((i, s)) => (Some(i), s),
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => (None, true),
+                Err(e) => return Err(SwapchainError::AcquireNextImageError(e)),
+            };
+
+            if is_suboptimal {
+                self.refresh_resolution()?;
+                if idx.is_some() {
+                    fence.wait(u64::MAX)?;
+                    fence.reset()?;
+                }
+                continue;
+            }
+            if let Some(img_idx) = idx {
+                return Ok(img_idx);
+            }
+        }
+    }
+
+    pub fn present(
+        &self,
+        image_index: u32,
+        wait_semaphores: &[&Semaphore],
+    ) -> Result<(), vk::Result> {
+        let wait_semaphores_vk = wait_semaphores
+            .iter()
+            .map(|s| s.semaphore())
+            .collect::<Vec<_>>();
+
+        unsafe {
+            self.device
+                .swapchain_device()
+                .queue_present(
+                    self.device.graphics_queue(),
+                    &vk::PresentInfoKHR::default()
+                        .wait_semaphores(&wait_semaphores_vk)
+                        .swapchains(&[self.swapchain])
+                        .image_indices(&[image_index]),
+                )
+                .inspect_err(|e| eprintln!("error during present: {e}"))?;
+        }
         Ok(())
     }
 }
