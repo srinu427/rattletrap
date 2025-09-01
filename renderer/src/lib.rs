@@ -48,6 +48,7 @@ pub struct Renderer {
     ttmp_attachments: Vec<TTMPAttachments>,
     ttmp_sets: Vec<TTMPSets>,
     ttmp: Arc<TTMP>,
+    swapchain: Arc<Swapchain>,
     device: Arc<LogicalDevice>,
     instance: Arc<Instance>,
     #[get = "pub"]
@@ -76,13 +77,13 @@ impl Renderer {
             50,
         )?);
 
-        let ttmp_attachments = (0..swapchain.images().len())
+        let ttmp_attachments = (0..swapchain.image_views().len())
             .map(|_| {
                 TTMPAttachments::new(ttmp.clone(), global_allocator.clone(), swapchain.extent())
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let ttmp_sets = (0..swapchain.images().len())
+        let ttmp_sets = (0..swapchain.image_views().len())
             .map(|_| {
                 TTMPSets::new(
                     ttmp.clone(),
@@ -113,6 +114,7 @@ impl Renderer {
             ttmp,
             ttmp_sets,
             ttmp_attachments,
+            swapchain: Arc::new(swapchain),
             device,
             instance,
             window,

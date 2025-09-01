@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ash::vk;
 use thiserror::Error;
 
-use crate::wrappers::logical_device::LogicalDevice;
+use crate::wrappers::{image::Image, image_view::{ImageView, ImageViewError}, logical_device::LogicalDevice};
 
 #[derive(Debug, Error)]
 pub enum SwapchainError {
@@ -19,55 +19,47 @@ pub enum SwapchainError {
     SwapchainCreateError(vk::Result),
     #[error("Vulkan swapchain images listing error: {0}")]
     GetImagesError(vk::Result),
-    #[error("Vulkan image view creation error: {0}")]
-    CreateImageViewError(vk::Result),
+    #[error("Vulkan image view error: {0}")]
+    ImageViewError(#[from] ImageViewError),
 }
 
 fn fetch_images_make_views(
-    device: &LogicalDevice,
+    device: Arc<LogicalDevice>,
     swapchain: vk::SwapchainKHR,
     format: vk::SurfaceFormatKHR,
-) -> Result<(Vec<vk::Image>, Vec<vk::ImageView>), SwapchainError> {
+    extent: vk::Extent2D,
+) -> Result<Vec<Arc<ImageView>>, SwapchainError> {
     let images = unsafe {
         device
             .swapchain_device()
             .get_swapchain_images(swapchain)
             .map_err(SwapchainError::GetImagesError)?
     };
+    let images = images
+        .iter()
+        .map(|image| Image::from_swapchain_image(device.clone(), *image, format.format, extent))
+        .map(Arc::new)
+        .collect::<Vec<_>>();
 
-    let mut image_views = Vec::with_capacity(images.len());
-    for &image in &images {
-        let create_info = vk::ImageViewCreateInfo::default()
-            .image(image)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(format.format)
-            .subresource_range(
-                vk::ImageSubresourceRange::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .base_mip_level(0)
-                    .level_count(1)
-                    .base_array_layer(0)
-                    .layer_count(1),
-            );
+    let image_views = images
+        .iter()
+        .map(|img| ImageView::new(
+            img.clone(),
+            vk::ImageViewType::TYPE_2D,
+             vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1)).map(Arc::new))
+        .collect::<Result<Vec<_>, _>>()?;
 
-        let image_view = unsafe {
-            device
-                .device()
-                .create_image_view(&create_info, None)
-                .map_err(SwapchainError::CreateImageViewError)?
-        };
-        image_views.push(image_view);
-    }
-
-    Ok((images, image_views))
+    Ok(image_views)
 }
 
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct Swapchain {
     #[get = "pub"]
-    image_views: Vec<vk::ImageView>,
-    #[get = "pub"]
-    images: Vec<vk::Image>,
+    image_views: Vec<Arc<ImageView>>,
     #[get_copy = "pub"]
     swapchain: vk::SwapchainKHR,
     #[get_copy = "pub"]
@@ -174,11 +166,10 @@ impl Swapchain {
                 .map_err(SwapchainError::SwapchainCreateError)?
         };
 
-        let (images, image_views) = fetch_images_make_views(&device, swapchain, format)?;
+        let image_views = fetch_images_make_views(device.clone(), swapchain, format, extent)?;
 
         Ok(Self {
             image_views,
-            images,
             swapchain,
             format,
             extent,
@@ -205,7 +196,7 @@ impl Swapchain {
 
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(self.device.instance().surface())
-            .min_image_count(self.images.len() as u32)
+            .min_image_count(self.image_views.len() as u32)
             .image_format(self.format.format)
             .image_color_space(self.format.color_space)
             .image_extent(extent)
@@ -229,20 +220,17 @@ impl Swapchain {
                 .map_err(SwapchainError::SwapchainCreateError)?
         };
 
-        let (images, image_views) = fetch_images_make_views(&self.device, swapchain, self.format)?;
+        let image_views = fetch_images_make_views(self.device.clone(), swapchain, self.format, extent)?;
+
+        self.image_views = image_views;
 
         unsafe {
-            for &image_view in &self.image_views {
-                self.device.device().destroy_image_view(image_view, None);
-            }
             self.device
                 .swapchain_device()
                 .destroy_swapchain(self.swapchain, None);
         }
-
         self.swapchain = swapchain;
-        self.images = images;
-        self.image_views = image_views;
+        
         self.extent = extent;
         Ok(())
     }
@@ -251,9 +239,6 @@ impl Swapchain {
 impl Drop for Swapchain {
     fn drop(&mut self) {
         unsafe {
-            for &image_view in &self.image_views {
-                self.device.device().destroy_image_view(image_view, None);
-            }
             self.device
                 .swapchain_device()
                 .destroy_swapchain(self.swapchain, None);
