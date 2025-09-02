@@ -211,11 +211,7 @@ impl Renderer {
         self.next_image_acquire_fence.reset()?;
 
         let draw_idx = present_img_idx as usize;
-        let draw_cb = &self.draw_cbs[draw_idx];
-        // Record command buffer
-        draw_cb.begin(true)?;
 
-        let ttmp_sets = &self.ttmp_sets[draw_idx];
         if self.swapchain.extent() != self.ttmp_attachments[draw_idx].extent() {
             let new_ttmp_attachments = (0..self.swapchain.image_views().len())
                 .map(|_| {
@@ -229,6 +225,23 @@ impl Renderer {
             self.ttmp_attachments = new_ttmp_attachments;
         }
         let ttmp_attachment = &self.ttmp_attachments[draw_idx];
+
+        let ttmp_sets = &self.ttmp_sets[draw_idx];
+
+        let mut meshes_per_material = HashMap::new();
+        for (_, renderable) in &self.ttmp_renderables {
+            meshes_per_material
+                .entry(renderable.texture.clone())
+                .or_insert(vec![])
+                .push(renderable.mesh.clone());
+        }
+
+        let tex_list = vec![];
+        let mesh_list = vec![];
+
+        let draw_cb = &self.draw_cbs[draw_idx];
+        // Record command buffer
+        draw_cb.begin(true)?;
 
         draw_cb.end()?;
 

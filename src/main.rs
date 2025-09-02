@@ -37,14 +37,14 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                state.render();
+                state.draw().ok();
                 // Emits a new redraw requested event.
                 state.window().request_redraw();
             }
-            WindowEvent::Resized(size) => {
+            WindowEvent::Resized(_size) => {
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
-                state.resize(size);
+                state.refresh_resolution().ok();
             }
             _ => (),
         }

@@ -11,10 +11,9 @@ use include_bytes_aligned::include_bytes_aligned;
 use anyhow::Result as AnyResult;
 
 use crate::{
-    pipelines::data_transfer::{DTP, DTPInput},
+    pipelines::data_transfer::{DTPInput, DTP},
     renderables::{
-        camera::Camera,
-        tri_mesh::{TriMesh, Triangle, Vertex},
+        camera::Camera, texture::Texture, tri_mesh::{TriMesh, Triangle, Vertex}
     },
     wrappers::{
         buffer::Buffer,
@@ -143,7 +142,7 @@ impl TTMPSets {
         })
     }
 
-    pub fn update_textures(&self, textures: &[Arc<ImageView>]) {
+    pub fn update_textures(&self, textures: &[&Texture]) {
         if textures.len() as u32 > self.ttmp.max_textures {
             // TODO: Handle this error properly
             panic!("Number of textures exceeds maximum supported by the pipeline");
@@ -155,7 +154,7 @@ impl TTMPSets {
             .iter()
             .map(|tex| {
                 vk::DescriptorImageInfo::default()
-                    .image_view(tex.image_view())
+                    .image_view(tex.albedo().image_view())
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             })
             .collect();
@@ -175,7 +174,7 @@ impl TTMPSets {
     pub fn update_ssbos(
         &mut self,
         dtp: &DTP,
-        meshes: &[TriMesh],
+        meshes: &[&TriMesh],
         camera: Camera,
         material_infos: &[MaterialInfo],
     ) -> AnyResult<()> {
@@ -183,21 +182,38 @@ impl TTMPSets {
             .iter()
             .flat_map(|m| bytemuck::cast_slice(&m.vertices).to_vec())
             .collect();
+        let triangle_data : Vec<u8> = meshes
+            .iter()
+            .flat_map(|m| bytemuck::cast_slice(&m.triangles).to_vec())
+            .collect();
+        let index_data: Vec<u8> = meshes
+            .iter()
+            .flat_map(|m| bytemuck::cast_slice(&m.indices).to_vec())
+            .collect();
+        self.index_count = index_data.len() as u32;
         let cam_data: Vec<u8> = bytemuck::cast_slice(&[camera]).to_vec();
         let mat_data: Vec<u8> = bytemuck::cast_slice(material_infos).to_vec();
 
         dtp.do_transfers(vec![
             DTPInput::CopyToBuffer {
                 data: &vert_data,
-                buffer: &self.ssbo1,
+                buffer: &self.ssbos[0],
+            },
+            DTPInput::CopyToBuffer {
+                data: &triangle_data,
+                buffer: &self.ssbos[1],
+            },
+            DTPInput::CopyToBuffer {
+                data: &index_data,
+                buffer: &self.ssbos[2],
             },
             DTPInput::CopyToBuffer {
                 data: &cam_data,
-                buffer: &self.ssbo2,
+                buffer: &self.ssbos[3],
             },
             DTPInput::CopyToBuffer {
                 data: &mat_data,
-                buffer: &self.ssbo3,
+                buffer: &self.ssbos[4],
             },
         ])?;
 
@@ -392,7 +408,7 @@ impl TTMP {
             );
             device
                 .device()
-                .cmd_draw(command_buffer.command_buffer(), 3, 1, 0, 0);
+                .cmd_draw(command_buffer.command_buffer(), set.index_count, 1, 0, 0);
             device
                 .device()
                 .cmd_end_render_pass(command_buffer.command_buffer());

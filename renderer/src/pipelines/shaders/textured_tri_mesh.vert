@@ -7,9 +7,9 @@ layout (location = 1) out vec2 outUV;
 layout (location = 2) flat out uint objId;
 
 layout(std430, set = 0, binding = 0) buffer readonly ssbo1 { GpuVertex vertex_buffer []; };
-layout(std430, set = 0, binding = 0) buffer readonly ssbo2 { GpuTriangle triangle_buffer []; };
-layout(std430, set = 0, binding = 0) buffer readonly ssbo3 { uint index_buffer []; };
-layout(std430, set = 0, binding = 1) buffer readonly ssbo4 { Camera camera;};
+layout(std430, set = 0, binding = 1) buffer readonly ssbo2 { GpuTriangle triangle_buffer []; };
+layout(std430, set = 0, binding = 2) buffer readonly ssbo3 { uint index_buffer []; };
+layout(std430, set = 0, binding = 3) buffer readonly ssbo4 { Camera camera;};
 
 vec4 invert_y_axis(vec4 v) {
     return vec4(v.x, -v.y, v.z, v.w);

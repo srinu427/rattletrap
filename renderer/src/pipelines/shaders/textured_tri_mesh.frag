@@ -8,7 +8,7 @@ layout (location = 2) flat in uint objId;
 
 layout (location = 0) out vec4 outFragColor;
 
-layout(std430, set = 0, binding = 2) buffer readonly ssbo5 { ObjectInfo object_buffer [];};
+layout(std430, set = 0, binding = 4) buffer readonly ssbo5 { ObjectInfo object_buffer [];};
 layout(set = 1, binding = 0) uniform sampler samplers[1];
 layout(set = 2, binding = 0) uniform texture2D textures[];
 

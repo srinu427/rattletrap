@@ -8,7 +8,8 @@ pub struct Vertex {
     pub obj_id: u32,
 }
 
-#[derive(Clone, Debug)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, NoUninit)]
 pub struct Triangle {
     pub normal: [f32; 3],
     pub tangent: [f32; 3],
