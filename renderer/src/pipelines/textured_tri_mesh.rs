@@ -197,12 +197,12 @@ impl TTMPSets {
         let cam_data: Vec<u8> = bytemuck::cast_slice(&[camera]).to_vec();
         let mat_data: Vec<u8> = bytemuck::cast_slice(material_infos).to_vec();
 
-        println!("Updating SSBOs: {} vertices, {} triangles, {} indices, {} materials",
-            vert_data.len() / mem::size_of::<Vertex>(),
-            triangle_data.len() / mem::size_of::<Triangle>(),
-            index_data.len() / mem::size_of::<u32>(),
-            mat_data.len() / mem::size_of::<MaterialInfo>(),
-        );
+        // println!("Updating SSBOs: {} vertices, {} triangles, {} indices, {} materials",
+        //     vert_data.len() / mem::size_of::<Vertex>(),
+        //     triangle_data.len() / mem::size_of::<Triangle>(),
+        //     index_data.len() / mem::size_of::<u32>(),
+        //     mat_data.len() / mem::size_of::<MaterialInfo>(),
+        // );
 
         dtp.do_transfers(vec![
             DTPInput::CopyToBuffer {
@@ -287,7 +287,7 @@ impl TTMPAttachments {
             depth_image,
             vk::ImageViewType::TYPE_2D,
             vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                .aspect_mask(vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL)
                 .base_mip_level(0)
                 .level_count(1)
                 .base_array_layer(0)
@@ -406,7 +406,7 @@ impl TTMP {
                     .clear_values(&[
                         vk::ClearValue {
                             color: vk::ClearColorValue {
-                                float32: [0.4, 0.0, 0.4, 1.0],
+                                float32: [0.2, 0.2, 0.4, 1.0],
                             },
                         },
                         vk::ClearValue {
@@ -446,7 +446,7 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                    .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                    .stencil_load_op(vk::AttachmentLoadOp::CLEAR)
                     .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                     .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                     .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),

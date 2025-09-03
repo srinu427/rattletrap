@@ -347,16 +347,18 @@ impl Renderer {
                 vec![
                     vk::ImageMemoryBarrier2::default()
                         .image(rendered_image)
-                        .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                        .src_access_mask(vk::AccessFlags2::MEMORY_READ)
-                        .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                        .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                        .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                        .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                        .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                        .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
                         .subresource_range(
                             vk::ImageSubresourceRange::default()
                                 .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .base_array_layer(0)
                                 .layer_count(1)
+                                .base_mip_level(0)
                                 .level_count(1),
                         ),
                 ]
@@ -370,13 +372,15 @@ impl Renderer {
                             .image(swi.image().image())
                             .old_layout(vk::ImageLayout::UNDEFINED)
                             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                            .src_stage_mask(vk::PipelineStageFlags2::empty())
-                            .src_access_mask(vk::AccessFlags2::empty())
+                            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                            .src_access_mask(vk::AccessFlags2::NONE)
                             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
                             .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
                             .subresource_range(vk::ImageSubresourceRange::default()
                                 .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .base_array_layer(0)
                                 .layer_count(1)
+                                .base_mip_level(0)
                                 .level_count(1)
                             )
                     })
@@ -388,18 +392,23 @@ impl Renderer {
                         vk::ImageMemoryBarrier2::default()
                             .image(mra.color().image().image())
                             .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                            .src_stage_mask(vk::PipelineStageFlags2::empty())
-                            .src_access_mask(vk::AccessFlags2::empty())
-                            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                            .src_access_mask(vk::AccessFlags2::NONE)
+                            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                            .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
                             .subresource_range(vk::ImageSubresourceRange::default()
                                 .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .base_array_layer(0)
                                 .layer_count(1)
+                                .base_mip_level(0)
                                 .level_count(1)
                             )
                     })
                     .collect::<Vec<_>>();
+                mr_ims[draw_idx].new_layout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL;
+                mr_ims[draw_idx].dst_access_mask = vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
+                mr_ims[draw_idx].dst_stage_mask = vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
                 let mut mr_ims_d = self
                     .ttmp_attachments
                     .iter()
@@ -408,13 +417,15 @@ impl Renderer {
                             .image(mra.depth().image().image())
                             .old_layout(vk::ImageLayout::UNDEFINED)
                             .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                            .src_stage_mask(vk::PipelineStageFlags2::empty())
-                            .src_access_mask(vk::AccessFlags2::empty())
+                            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                            .src_access_mask(vk::AccessFlags2::NONE)
                             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                            .dst_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                            .dst_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ)
                             .subresource_range(vk::ImageSubresourceRange::default()
                                 .aspect_mask(vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL)
+                                .base_array_layer(0)
                                 .layer_count(1)
+                                .base_mip_level(0)
                                 .level_count(1)
                             )
                     })
@@ -451,11 +462,13 @@ impl Renderer {
                             .src_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
                             .src_access_mask(vk::AccessFlags2::MEMORY_READ)
                             .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                            .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
                             .subresource_range(
                                 vk::ImageSubresourceRange::default()
                                     .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .base_array_layer(0)
                                     .layer_count(1)
+                                    .base_mip_level(0)
                                     .level_count(1),
                             ),
                         vk::ImageMemoryBarrier2::default()
@@ -465,11 +478,13 @@ impl Renderer {
                             .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
                             .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
                             .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                            .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
                             .subresource_range(
                                 vk::ImageSubresourceRange::default()
                                     .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .base_array_layer(0)
                                     .layer_count(1)
+                                    .base_mip_level(0)
                                     .level_count(1),
                             ),
                     ]),
@@ -525,7 +540,9 @@ impl Renderer {
                         .subresource_range(
                             vk::ImageSubresourceRange::default()
                                 .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .base_array_layer(0)
                                 .layer_count(1)
+                                .base_mip_level(0)
                                 .level_count(1),
                         )]),
             );
@@ -548,6 +565,7 @@ impl Renderer {
         }
         fence.wait(u64::MAX)?;
         fence.reset()?;
+        self.swapchain_initialized = true;
 
         self.swapchain.present(present_img_idx, &[])?;
         Ok(())
@@ -555,6 +573,7 @@ impl Renderer {
 
     pub fn refresh_resolution(&mut self) -> AnyResult<()> {
         self.swapchain.refresh_resolution()?;
+        self.swapchain_initialized = false;
         Ok(())
     }
 }
