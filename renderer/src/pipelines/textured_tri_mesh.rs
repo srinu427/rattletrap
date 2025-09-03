@@ -45,6 +45,7 @@ static MAX_MATERIALS: u64 = 10_000;
 pub struct MaterialInfo {
     pub sampler_id: u32,
     pub texture_id: u32,
+    pub padding: [u32; 2]
 }
 
 pub struct TTMPSets {
@@ -192,7 +193,7 @@ impl TTMPSets {
             .iter()
             .flat_map(|m| bytemuck::cast_slice(&m.indices).to_vec())
             .collect();
-        self.index_count = index_data.len() as u32;
+        self.index_count = (index_data.len() / 4) as u32;
         let cam_data: Vec<u8> = bytemuck::cast_slice(&[camera]).to_vec();
         let mat_data: Vec<u8> = bytemuck::cast_slice(material_infos).to_vec();
 
@@ -227,6 +228,7 @@ impl TTMPSets {
 pub struct TTMPAttachments {
     #[get = "pub"]
     color: Arc<ImageView>,
+    #[get = "pub"]
     depth: Arc<ImageView>,
     framebuffer: Arc<Framebuffer>,
     #[get_copy = "pub"]
@@ -248,7 +250,7 @@ impl TTMPAttachments {
             vk::Format::R8G8B8A8_SRGB,
             extent,
             1,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::STORAGE,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
         )?;
         color_image.allocate_memory(allocator.clone(), true)?;
         let color_image = Arc::new(color_image);
@@ -267,7 +269,7 @@ impl TTMPAttachments {
         // Create depth attachment
         let mut depth_image = Image::new_2d(
             device.clone(),
-            vk::Format::D32_SFLOAT,
+            vk::Format::D24_UNORM_S8_UINT,
             extent,
             1,
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
@@ -397,7 +399,7 @@ impl TTMP {
                     .clear_values(&[
                         vk::ClearValue {
                             color: vk::ClearColorValue {
-                                float32: [0.0, 0.0, 0.0, 1.0],
+                                float32: [0.4, 0.0, 0.4, 1.0],
                             },
                         },
                         vk::ClearValue {
@@ -412,6 +414,7 @@ impl TTMP {
             device
                 .device()
                 .cmd_draw(command_buffer.command_buffer(), set.index_count, 1, 0, 0);
+            // println!("set to draw {} indices", set.index_count);
             device
                 .device()
                 .cmd_end_render_pass(command_buffer.command_buffer());
@@ -432,7 +435,7 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
                     .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
                 vk::AttachmentDescription2::default()
-                    .format(vk::Format::D32_SFLOAT)
+                    .format(vk::Format::D24_UNORM_S8_UINT)
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::DONT_CARE)

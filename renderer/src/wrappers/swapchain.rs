@@ -83,6 +83,7 @@ pub struct Swapchain {
     format: vk::SurfaceFormatKHR,
     #[get_copy = "pub"]
     extent: vk::Extent2D,
+    present_mode: vk::PresentModeKHR,
     #[get = "pub"]
     device: Arc<LogicalDevice>,
 }
@@ -183,6 +184,7 @@ impl Swapchain {
         let image_views = fetch_images_make_views(device.clone(), swapchain, format, extent)?;
 
         Ok(Self {
+            present_mode,
             image_views,
             swapchain,
             format,
@@ -192,6 +194,7 @@ impl Swapchain {
     }
 
     pub fn refresh_resolution(&mut self) -> Result<(), SwapchainError> {
+        println!("refreshing sw res");
         let surface_instance = self.device.instance().surface_instance();
         let surface = self.device.instance().surface();
 
@@ -208,6 +211,8 @@ impl Swapchain {
             extent.height = window_res.height;
         }
 
+        println!("new_res: {:?}", extent);
+
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(self.device.instance().surface())
             .min_image_count(self.image_views.len() as u32)
@@ -219,11 +224,13 @@ impl Swapchain {
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST, // | vk::ImageUsageFlags::STORAGE,
             )
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
+            .pre_transform(caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(vk::PresentModeKHR::FIFO)
+            .present_mode(self.present_mode)
             .clipped(true)
             .old_swapchain(self.swapchain);
+
+        self.image_views.clear();
 
         let swapchain = unsafe {
             self.device
@@ -232,16 +239,20 @@ impl Swapchain {
                 .map_err(SwapchainError::SwapchainCreateError)?
         };
 
-        let image_views =
-            fetch_images_make_views(self.device.clone(), swapchain, self.format, extent)?;
-
-        self.image_views = image_views;
+        println!("new swapchain created");
 
         unsafe {
             self.device
                 .swapchain_device()
                 .destroy_swapchain(self.swapchain, None);
         }
+
+        let image_views =
+            fetch_images_make_views(self.device.clone(), swapchain, self.format, extent)?;
+
+        self.image_views = image_views;
+
+        
         self.swapchain = swapchain;
 
         self.extent = extent;

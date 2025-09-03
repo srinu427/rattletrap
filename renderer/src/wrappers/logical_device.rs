@@ -38,6 +38,8 @@ pub enum LogicalDeviceError {
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct LogicalDevice {
     #[get = "pub"]
+    sync2_device: khr::synchronization2::Device,
+    #[get = "pub"]
     swapchain_device: khr::swapchain::Device,
     #[get_copy = "pub"]
     graphics_queue: vk::Queue,
@@ -108,8 +110,10 @@ impl LogicalDevice {
         let graphics_queue = unsafe { device.get_device_queue(graphics_qf_id, 0) };
 
         let swapchain_device = khr::swapchain::Device::new(&instance.instance(), &device);
+        let sync2_device = khr::synchronization2::Device::new(&instance.instance(), &device);
 
         Ok(Self {
+            sync2_device,
             swapchain_device,
             graphics_queue,
             graphics_qf_id,
@@ -134,6 +138,8 @@ impl LogicalDevice {
 impl Drop for LogicalDevice {
     fn drop(&mut self) {
         unsafe {
+            println!("desctorying device");
+            self.device.device_wait_idle();
             self.device.destroy_device(None);
         }
     }

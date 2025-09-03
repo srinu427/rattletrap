@@ -17,16 +17,18 @@ struct PointLight{
 struct ObjectInfo {
   uint sampler_id;
   uint tex_id;
+  uint padding[2];
 };
 
 struct GpuVertex {
-  float pos[3];
-  float uv[2];
+  vec4 pos;
+  vec2 uv;
   uint obj_id;
+  uint padding;
 };
 
 struct GpuTriangle {
-  float normal[3];
-  float tangent[3];
-  float bitangent[3];
+  vec4 normal;
+  vec4 tangen;
+  vec4 bitangent;
 };

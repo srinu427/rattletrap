@@ -47,7 +47,9 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(_size) => {
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
-                state.refresh_resolution().ok();
+                // state.refresh_resolution()
+                // .inspect_err(|e| println!("{e}"))
+                // .ok();
             }
             _ => (),
         }
