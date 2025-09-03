@@ -329,7 +329,7 @@ impl Renderer {
             })
             .collect::<Vec<_>>();
 
-        let camera = Camera::new(glam::Vec4::ZERO, glam::Vec4::Z, 90.0);
+        let camera = Camera::new(glam::vec4(2.0, 2.0, 2.0, 0.0), glam::vec4(-1.0, -1.0, -1.0, 0.0), 90.0);
 
         self.ttmp_sets[draw_idx].update_ssbos(&self.dtp, &mesh_list, camera, &material_infos)?;
         self.ttmp_sets[draw_idx].update_textures(&tex_list);

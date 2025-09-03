@@ -197,6 +197,13 @@ impl TTMPSets {
         let cam_data: Vec<u8> = bytemuck::cast_slice(&[camera]).to_vec();
         let mat_data: Vec<u8> = bytemuck::cast_slice(material_infos).to_vec();
 
+        println!("Updating SSBOs: {} vertices, {} triangles, {} indices, {} materials",
+            vert_data.len() / mem::size_of::<Vertex>(),
+            triangle_data.len() / mem::size_of::<Triangle>(),
+            index_data.len() / mem::size_of::<u32>(),
+            mat_data.len() / mem::size_of::<MaterialInfo>(),
+        );
+
         dtp.do_transfers(vec![
             DTPInput::CopyToBuffer {
                 data: &vert_data,
@@ -504,7 +511,7 @@ fn make_pipeline(layout: Arc<PipelineLayout>, render_pass: Arc<RenderPass>) -> A
         .depth_compare_op(vk::CompareOp::LESS);
     let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
         .polygon_mode(vk::PolygonMode::FILL)
-        .cull_mode(vk::CullModeFlags::BACK)
+        .cull_mode(vk::CullModeFlags::NONE)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .line_width(1.0);
 
