@@ -9,6 +9,7 @@ ash = "0.38.0"
 ash-window = "0.13.0"
 bytemuck = { version = "1.23.2", features = ["derive"] }
 getset = "0.1.6"
+glam = { version = "0.30.5", features = ["bytemuck"] }
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"] }
 hashbrown = "0.15.5"
 image = "0.25.6"

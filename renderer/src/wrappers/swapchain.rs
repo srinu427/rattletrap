@@ -121,8 +121,7 @@ impl Swapchain {
                         .optimal_tiling_features
                         .contains(
                             vk::FormatFeatureFlags::COLOR_ATTACHMENT
-                                | vk::FormatFeatureFlags::TRANSFER_DST
-                                | vk::FormatFeatureFlags::STORAGE_IMAGE,
+                                | vk::FormatFeatureFlags::TRANSFER_DST, // | vk::FormatFeatureFlags::STORAGE_IMAGE,
                         )
                 };
                 supported
@@ -166,9 +165,7 @@ impl Swapchain {
             .image_extent(extent)
             .image_array_layers(1)
             .image_usage(
-                vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::TRANSFER_DST
-                    | vk::ImageUsageFlags::STORAGE,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST, // | vk::ImageUsageFlags::STORAGE,
             )
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(caps.current_transform)
@@ -219,9 +216,7 @@ impl Swapchain {
             .image_extent(extent)
             .image_array_layers(1)
             .image_usage(
-                vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::TRANSFER_DST
-                    | vk::ImageUsageFlags::STORAGE,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST, // | vk::ImageUsageFlags::STORAGE,
             )
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)

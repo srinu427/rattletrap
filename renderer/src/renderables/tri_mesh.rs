@@ -23,6 +23,12 @@ pub struct TriMesh {
     pub indices: Vec<u32>,
 }
 
+impl TriMesh {
+    pub fn write_obj_id(&mut self, obj_id: u32) {
+        self.vertices.iter_mut().for_each(|v| v.obj_id = obj_id);
+    }
+}
+
 pub fn make_square() -> TriMesh {
     let verts = vec![
         Vertex {

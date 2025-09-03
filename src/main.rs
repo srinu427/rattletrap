@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use winit::{
     application::ApplicationHandler,
@@ -7,7 +7,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use renderer::Renderer;
+use renderer::{renderables::tri_mesh::{self, TriMesh}, Renderer};
 
 #[derive(Default)]
 struct App {
@@ -23,7 +23,10 @@ impl ApplicationHandler for App {
                 .unwrap(),
         );
 
-        let state = Renderer::new(window.clone()).unwrap();
+        let mut state = Renderer::new(window.clone()).unwrap();
+        state.add_mesh("square".to_string(), tri_mesh::make_square());
+        state.add_texture("default".to_string(), Path::new("resources/default.png")).unwrap();
+        state.add_ttpm_renderable("def".to_string(), "square".to_string(), "default".to_string()).unwrap();
         self.renderer = Some(state);
 
         window.request_redraw();

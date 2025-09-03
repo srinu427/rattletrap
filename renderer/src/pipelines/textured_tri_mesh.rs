@@ -11,9 +11,11 @@ use include_bytes_aligned::include_bytes_aligned;
 use anyhow::Result as AnyResult;
 
 use crate::{
-    pipelines::data_transfer::{DTPInput, DTP},
+    pipelines::data_transfer::{DTP, DTPInput},
     renderables::{
-        camera::Camera, texture::Texture, tri_mesh::{TriMesh, Triangle, Vertex}
+        camera::Camera,
+        texture::Texture,
+        tri_mesh::{TriMesh, Triangle, Vertex},
     },
     wrappers::{
         buffer::Buffer,
@@ -41,8 +43,8 @@ static MAX_MATERIALS: u64 = 10_000;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, NoUninit)]
 pub struct MaterialInfo {
-    sampler_id: u32,
-    texture_id: u32,
+    pub sampler_id: u32,
+    pub texture_id: u32,
 }
 
 pub struct TTMPSets {
@@ -174,7 +176,7 @@ impl TTMPSets {
     pub fn update_ssbos(
         &mut self,
         dtp: &DTP,
-        meshes: &[&TriMesh],
+        meshes: &[TriMesh],
         camera: Camera,
         material_infos: &[MaterialInfo],
     ) -> AnyResult<()> {
@@ -182,7 +184,7 @@ impl TTMPSets {
             .iter()
             .flat_map(|m| bytemuck::cast_slice(&m.vertices).to_vec())
             .collect();
-        let triangle_data : Vec<u8> = meshes
+        let triangle_data: Vec<u8> = meshes
             .iter()
             .flat_map(|m| bytemuck::cast_slice(&m.triangles).to_vec())
             .collect();
@@ -223,6 +225,7 @@ impl TTMPSets {
 
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct TTMPAttachments {
+    #[get = "pub"]
     color: Arc<ImageView>,
     depth: Arc<ImageView>,
     framebuffer: Arc<Framebuffer>,
@@ -458,6 +461,8 @@ fn make_set_layouts(
     let layout0 = DescriptorSetLayout::new(
         device.clone(),
         &[
+            (vk::DescriptorType::STORAGE_BUFFER, 1),
+            (vk::DescriptorType::STORAGE_BUFFER, 1),
             (vk::DescriptorType::STORAGE_BUFFER, 1),
             (vk::DescriptorType::STORAGE_BUFFER, 1),
             (vk::DescriptorType::STORAGE_BUFFER, 1),

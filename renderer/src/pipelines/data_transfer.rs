@@ -48,7 +48,16 @@ impl DTP {
         })
     }
 
-    pub fn do_transfers(&self, transfers: Vec<DTPInput>) -> AnyResult<()> {
+    pub fn create_temp_command_buffer(&self) -> AnyResult<CommandBuffer> {
+        Ok(CommandBuffer::new(self.command_pool.clone(), 1)?.remove(0))
+    }
+
+    pub fn do_transfers_custom(
+        &self,
+        transfers: Vec<DTPInput>,
+        command_buffer: &CommandBuffer,
+    ) -> AnyResult<Buffer> {
+        let device = self.command_pool.device();
         let stage_buffer_size: u64 = transfers
             .iter()
             .map(|t| match t {
@@ -56,8 +65,7 @@ impl DTP {
                 DTPInput::CopyToImage { data, .. } => data.len() as u64,
             })
             .sum();
-        let device = self.command_pool.device();
-        let command_buffer = CommandBuffer::new(self.command_pool.clone(), 1)?.remove(0);
+
         let mut stage_buffer = Buffer::new(
             device.clone(),
             stage_buffer_size,
@@ -82,11 +90,13 @@ impl DTP {
         }
 
         let mut current_offset = 0;
-        command_buffer.begin(true)?;
         for transfer in transfers {
             match transfer {
                 DTPInput::CopyToBuffer { data, buffer } => {
                     let data_len = data.len() as u64;
+                    if data.len() == 0 {
+                        continue;
+                    }
                     let copy_region = vk::BufferCopy::default()
                         .src_offset(current_offset)
                         .dst_offset(0)
@@ -107,6 +117,9 @@ impl DTP {
                     subresource_layers,
                 } => {
                     let data_len = data.len() as u64;
+                    if data_len == 0 {
+                        continue;
+                    }
                     let buffer_image_regions = vk::BufferImageCopy::default()
                         .buffer_offset(current_offset)
                         .buffer_row_length(0)
@@ -127,6 +140,15 @@ impl DTP {
                 }
             }
         }
+
+        Ok(stage_buffer)
+    }
+
+    pub fn do_transfers(&self, transfers: Vec<DTPInput>) -> AnyResult<()> {
+        let device = self.command_pool.device();
+        let command_buffer = self.create_temp_command_buffer()?;
+        command_buffer.begin(true)?;
+        let stage_buffer = self.do_transfers_custom(transfers, &command_buffer)?;
         command_buffer.end()?;
 
         let fence = Fence::new(device.clone(), false)?;
@@ -140,6 +162,7 @@ impl DTP {
         }
         fence.wait(u64::MAX)?;
 
+        drop(stage_buffer);
         Ok(())
     }
 }
