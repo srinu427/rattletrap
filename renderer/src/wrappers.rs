@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod command;
 pub mod command_buffer;
 pub mod command_pool;
 pub mod context;

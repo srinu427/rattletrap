@@ -358,6 +358,31 @@ impl TTMP {
     ) {
         let device = self.pipeline.render_pass().device();
         unsafe {
+            device.device().cmd_begin_render_pass(
+                command_buffer.command_buffer(),
+                &vk::RenderPassBeginInfo::default()
+                    .render_pass(self.pipeline.render_pass().render_pass())
+                    .framebuffer(attachment.framebuffer.framebuffer())
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: attachment.extent(),
+                    })
+                    .clear_values(&[
+                        vk::ClearValue {
+                            color: vk::ClearColorValue {
+                                float32: [0.2, 0.2, 0.4, 1.0],
+                            },
+                        },
+                        vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue {
+                                depth: 1.0,
+                                stencil: 0,
+                            },
+                        },
+                    ]),
+                vk::SubpassContents::INLINE,
+            );
+
             device.device().cmd_bind_pipeline(
                 command_buffer.command_buffer(),
                 vk::PipelineBindPoint::GRAPHICS,
@@ -394,30 +419,6 @@ impl TTMP {
                 .device()
                 .cmd_set_scissor(command_buffer.command_buffer(), 0, &[scissor]);
 
-            device.device().cmd_begin_render_pass(
-                command_buffer.command_buffer(),
-                &vk::RenderPassBeginInfo::default()
-                    .render_pass(self.pipeline.render_pass().render_pass())
-                    .framebuffer(attachment.framebuffer.framebuffer())
-                    .render_area(vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: attachment.extent(),
-                    })
-                    .clear_values(&[
-                        vk::ClearValue {
-                            color: vk::ClearColorValue {
-                                float32: [0.2, 0.2, 0.4, 1.0],
-                            },
-                        },
-                        vk::ClearValue {
-                            depth_stencil: vk::ClearDepthStencilValue {
-                                depth: 1.0,
-                                stencil: 0,
-                            },
-                        },
-                    ]),
-                vk::SubpassContents::INLINE,
-            );
             device
                 .device()
                 .cmd_draw(command_buffer.command_buffer(), set.index_count, 1, 0, 0);
