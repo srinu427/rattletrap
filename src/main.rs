@@ -1,10 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use winit::{
-    application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Window, WindowId},
+    application::ApplicationHandler, dpi::LogicalSize, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}
 };
 
 use renderer::{renderables::tri_mesh::{self, TriMesh}, Renderer};
@@ -19,7 +16,7 @@ impl ApplicationHandler for App {
         // Create window object
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes())
+                .create_window(Window::default_attributes().with_inner_size(LogicalSize { width: 800.0, height: 600.0 }))
                 .unwrap(),
         );
 
@@ -29,7 +26,7 @@ impl ApplicationHandler for App {
         state.add_ttpm_renderable("def".to_string(), "square".to_string(), "default".to_string()).unwrap();
         self.renderer = Some(state);
 
-        window.request_redraw();
+        // window.request_redraw();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -42,7 +39,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 state.draw().ok();
                 // Emits a new redraw requested event.
-                state.window().request_redraw();
+                // state.window().request_redraw();
             }
             WindowEvent::Resized(_size) => {
                 // Reconfigures the size of the surface. We do not re-render
@@ -53,6 +50,11 @@ impl ApplicationHandler for App {
             }
             _ => (),
         }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let state = self.renderer.as_mut().unwrap();
+        state.draw().ok();
     }
 }
 

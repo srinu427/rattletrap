@@ -5,14 +5,17 @@ use ash::vk;
 use gpu_allocator::vulkan::Allocator;
 
 use crate::wrappers::{
-    buffer::Buffer, command::Command, command_buffer::CommandBuffer, command_pool::CommandPool, fence::Fence, image::Image, logical_device::{LogicalDevice, QueueType}
+    buffer::Buffer,
+    command::Command,
+    command_buffer::CommandBuffer,
+    command_pool::CommandPool,
+    fence::Fence,
+    image::Image,
+    logical_device::{LogicalDevice, QueueType},
 };
 
 pub enum DTPInput<'a> {
-    CopyToBuffer {
-        data: &'a [u8],
-        buffer: &'a Buffer,
-    },
+    CopyToBuffer(&'a [u8], &'a Buffer),
     CopyToImage {
         data: &'a [u8],
         image: &'a Image,
@@ -56,7 +59,7 @@ impl DTP {
         let stage_buffer_size: u64 = transfers
             .iter()
             .map(|t| match t {
-                DTPInput::CopyToBuffer { data, .. } => data.len() as u64,
+                DTPInput::CopyToBuffer(data, _) => data.len() as u64,
                 DTPInput::CopyToImage { data, .. } => data.len() as u64,
             })
             .sum();
@@ -71,7 +74,7 @@ impl DTP {
         let mut offset = 0;
         for transfer in &transfers {
             match transfer {
-                DTPInput::CopyToBuffer { data, .. } => {
+                DTPInput::CopyToBuffer(data, ..) => {
                     let data_len = data.len();
                     stage_mem_ptr[offset..offset + data_len].copy_from_slice(data);
                     offset += data_len;
@@ -88,7 +91,7 @@ impl DTP {
         let mut commands = vec![];
         for transfer in transfers {
             match transfer {
-                DTPInput::CopyToBuffer { data, buffer } => {
+                DTPInput::CopyToBuffer(data, buffer) => {
                     let data_len = data.len() as u64;
                     if data.len() == 0 {
                         continue;
@@ -97,7 +100,11 @@ impl DTP {
                         .src_offset(current_offset)
                         .dst_offset(0)
                         .size(data_len);
-                    commands.push(Command::CopyBufferToBuffer { src: &stage_buffer, dst: buffer, regions: vec![copy_region] });
+                    commands.push(Command::CopyBufferToBuffer {
+                        src: &stage_buffer,
+                        dst: buffer,
+                        regions: vec![copy_region],
+                    });
                     current_offset += data_len;
                 }
                 DTPInput::CopyToImage {
@@ -116,7 +123,11 @@ impl DTP {
                         .image_subresource(subresource_layers)
                         .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
                         .image_extent(image.extent());
-                    commands.push(Command::CopyBufferToImage { src: &stage_buffer, dst: image, regions: vec![buffer_image_regions] });
+                    commands.push(Command::CopyBufferToImage {
+                        src: &stage_buffer,
+                        dst: image,
+                        regions: vec![buffer_image_regions],
+                    });
                     current_offset += data_len;
                 }
             }

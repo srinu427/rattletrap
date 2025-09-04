@@ -9,7 +9,6 @@ fn get_instance_extensions() -> Vec<*const i8> {
     vec![
         #[cfg(debug_assertions)]
         ext::debug_utils::NAME.as_ptr(),
-        khr::get_physical_device_properties2::NAME.as_ptr(),
         khr::surface::NAME.as_ptr(),
         #[cfg(target_os = "windows")]
         khr::win32_surface::NAME.as_ptr(),

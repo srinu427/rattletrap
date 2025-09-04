@@ -11,28 +11,41 @@ use include_bytes_aligned::include_bytes_aligned;
 use anyhow::Result as AnyResult;
 
 use crate::{
-    pipelines::data_transfer::{DTPInput, DTP},
+    pipelines::data_transfer::{DTP, DTPInput},
     renderables::{
         camera::Camera,
         texture::Texture,
         tri_mesh::{TriMesh, Triangle, Vertex},
     },
     wrappers::{
-        buffer::Buffer, command::{Command, RenderCommand}, command_buffer::CommandBuffer, descriptor_pool::DescriptorPool, descriptor_set::DescriptorSet, descriptor_set_layout::DescriptorSetLayout, framebuffer::Framebuffer, image::Image, image_view::ImageView, logical_device::LogicalDevice, pipeline::Pipeline, pipeline_layout::PipelineLayout, render_pass::RenderPass, sampler::{self, Sampler}, shader_module::make_shader_module
+        buffer::Buffer,
+        command::{Command, RenderCommand},
+        command_buffer::{self, CommandBuffer},
+        descriptor_pool::DescriptorPool,
+        descriptor_set::DescriptorSet,
+        descriptor_set_layout::DescriptorSetLayout,
+        framebuffer::Framebuffer,
+        image::Image,
+        image_view::ImageView,
+        logical_device::LogicalDevice,
+        pipeline::Pipeline,
+        pipeline_layout::PipelineLayout,
+        render_pass::RenderPass,
+        sampler::{self, Sampler},
+        shader_module::make_shader_module,
     },
 };
 
 static VERT_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/textured_tri_mesh.vert.spv");
 static FRAG_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/textured_tri_mesh.frag.spv");
 static MAX_VERTICES: u64 = 100_000;
-static MAX_MATERIALS: u64 = 10_000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, NoUninit)]
 pub struct MaterialInfo {
     pub sampler_id: u32,
     pub texture_id: u32,
-    pub padding: [u32; 2]
+    pub padding: [u32; 2],
 }
 
 pub struct TTMPSets {
@@ -56,7 +69,6 @@ impl TTMPSets {
             MAX_VERTICES * mem::size_of::<Triangle>() as u64,
             MAX_VERTICES * mem::size_of::<u32>() as u64,
             mem::size_of::<Camera>() as u64,
-            MAX_MATERIALS * mem::size_of::<MaterialInfo>() as u64,
         ];
 
         let ssbos = ssbo_sizes
@@ -111,7 +123,7 @@ impl TTMPSets {
                         .dst_set(descriptor_sets[0].set())
                         .dst_binding(i as u32)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(&buffer_infos[i..i + 1])
+                        .buffer_info(std::slice::from_ref(&buffer_infos[i]))
                 })
                 .collect::<Vec<_>>();
             writes.push(
@@ -161,13 +173,7 @@ impl TTMPSets {
         }
     }
 
-    pub fn update_ssbos(
-        &mut self,
-        dtp: &DTP,
-        meshes: &[TriMesh],
-        camera: Camera,
-        material_infos: &[MaterialInfo],
-    ) -> AnyResult<()> {
+    pub fn update_ssbos(&mut self, dtp: &DTP, meshes: &[TriMesh], camera: Camera) -> AnyResult<()> {
         let vert_data: Vec<u8> = meshes
             .iter()
             .flat_map(|m| bytemuck::cast_slice(&m.vertices).to_vec())
@@ -182,36 +188,12 @@ impl TTMPSets {
             .collect();
         self.index_count = (index_data.len() / 4) as u32;
         let cam_data: Vec<u8> = bytemuck::cast_slice(&[camera]).to_vec();
-        let mat_data: Vec<u8> = bytemuck::cast_slice(material_infos).to_vec();
-
-        // println!("Updating SSBOs: {} vertices, {} triangles, {} indices, {} materials",
-        //     vert_data.len() / mem::size_of::<Vertex>(),
-        //     triangle_data.len() / mem::size_of::<Triangle>(),
-        //     index_data.len() / mem::size_of::<u32>(),
-        //     mat_data.len() / mem::size_of::<MaterialInfo>(),
-        // );
 
         dtp.do_transfers(vec![
-            DTPInput::CopyToBuffer {
-                data: &vert_data,
-                buffer: &self.ssbos[0],
-            },
-            DTPInput::CopyToBuffer {
-                data: &triangle_data,
-                buffer: &self.ssbos[1],
-            },
-            DTPInput::CopyToBuffer {
-                data: &index_data,
-                buffer: &self.ssbos[2],
-            },
-            DTPInput::CopyToBuffer {
-                data: &cam_data,
-                buffer: &self.ssbos[3],
-            },
-            DTPInput::CopyToBuffer {
-                data: &mat_data,
-                buffer: &self.ssbos[4],
-            },
+            DTPInput::CopyToBuffer(&vert_data, &self.ssbos[0]),
+            DTPInput::CopyToBuffer(&triangle_data, &self.ssbos[1]),
+            DTPInput::CopyToBuffer(&index_data, &self.ssbos[2]),
+            DTPInput::CopyToBuffer(&cam_data, &self.ssbos[3]),
         ])?;
 
         Ok(())
@@ -343,33 +325,33 @@ impl TTMP {
         set: &TTMPSets,
         attachment: &TTMPAttachments,
     ) {
-        let commands = [
-            Command::RunRenderPass {
-                pipelines: vec![&self.pipeline],
-                dsets: vec![&set.descriptor_sets[0],
-                           &set.descriptor_sets[1],
-                           &set.descriptor_sets[2]],
-                framebuffer: &attachment.framebuffer,
-                clear_values: vec![
-                    vk::ClearValue {
-                        color: vk::ClearColorValue {
-                            float32: [0.2, 0.2, 0.4, 1.0],
-                        },
+        let commands = [Command::RunRenderPass {
+            pipelines: vec![&self.pipeline],
+            dsets: vec![
+                &set.descriptor_sets[0],
+                &set.descriptor_sets[1],
+                &set.descriptor_sets[2],
+            ],
+            framebuffer: &attachment.framebuffer,
+            clear_values: vec![
+                vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [0.2, 0.2, 0.4, 1.0],
                     },
-                    vk::ClearValue {
-                        depth_stencil: vk::ClearDepthStencilValue {
-                            depth: 1.0,
-                            stencil: 0,
-                        },
+                },
+                vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth: 1.0,
+                        stencil: 0,
                     },
-                ],
-                commands: vec![
-                    RenderCommand::BindPipeline(0),
-                    RenderCommand::BindDescriptorSets(vec![0, 1, 2]),
-                    RenderCommand::Draw(set.index_count),
-                ],
-            }
-        ];
+                },
+            ],
+            commands: vec![
+                RenderCommand::BindPipeline(0),
+                RenderCommand::BindDescriptorSets(vec![0, 1, 2]),
+                RenderCommand::Draw(set.index_count),
+            ],
+        }];
         for command in &commands {
             command.record(command_buffer);
         }
@@ -392,8 +374,8 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
                     .format(vk::Format::D24_UNORM_S8_UINT)
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                    .stencil_load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                     .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                     .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                     .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
@@ -418,7 +400,6 @@ fn make_set_layouts(
     let layout0 = DescriptorSetLayout::new(
         device.clone(),
         &[
-            (vk::DescriptorType::STORAGE_BUFFER, 1),
             (vk::DescriptorType::STORAGE_BUFFER, 1),
             (vk::DescriptorType::STORAGE_BUFFER, 1),
             (vk::DescriptorType::STORAGE_BUFFER, 1),
@@ -458,7 +439,7 @@ fn make_pipeline(layout: Arc<PipelineLayout>, render_pass: Arc<RenderPass>) -> A
         .depth_compare_op(vk::CompareOp::LESS);
     let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
         .polygon_mode(vk::PolygonMode::FILL)
-        .cull_mode(vk::CullModeFlags::NONE)
+        .cull_mode(vk::CullModeFlags::BACK)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .line_width(1.0);
 

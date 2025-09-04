@@ -142,12 +142,14 @@ impl Swapchain {
             extent.height = window_res.height;
         }
 
-        let present_mode = present_modes
-            .iter()
-            .filter(|&&mode| mode == vk::PresentModeKHR::MAILBOX)
-            .next()
-            .cloned()
-            .unwrap_or(vk::PresentModeKHR::FIFO);
+        // let present_mode = present_modes
+        //     .iter()
+        //     .filter(|&&mode| mode == vk::PresentModeKHR::MAILBOX)
+        //     .next()
+        //     .cloned()
+        //     .unwrap_or(vk::PresentModeKHR::FIFO);
+
+        let present_mode = vk::PresentModeKHR::FIFO;
 
         let swapchain_image_count = std::cmp::min(
             caps.min_image_count + 1,
@@ -252,7 +254,6 @@ impl Swapchain {
 
         self.image_views = image_views;
 
-        
         self.swapchain = swapchain;
 
         self.extent = extent;

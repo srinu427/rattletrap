@@ -1,6 +1,9 @@
 use ash::vk;
 
-use crate::wrappers::{buffer::Buffer, command, command_buffer::CommandBuffer, descriptor_set::DescriptorSet, framebuffer::Framebuffer, image::Image, pipeline::Pipeline, render_pass::RenderPass};
+use crate::wrappers::{
+    buffer::Buffer, command_buffer::CommandBuffer, descriptor_set::DescriptorSet,
+    framebuffer::Framebuffer, image::Image, pipeline::Pipeline, render_pass::RenderPass,
+};
 
 pub enum BarrierCommand<'a> {
     Image2d {
@@ -12,7 +15,7 @@ pub enum BarrierCommand<'a> {
         new_stage: vk::PipelineStageFlags2,
         new_access: vk::AccessFlags2,
         aspect_mask: vk::ImageAspectFlags,
-    }
+    },
 }
 
 impl<'a> BarrierCommand<'a> {
@@ -45,7 +48,7 @@ impl<'a> BarrierCommand<'a> {
                             .base_array_layer(0)
                             .layer_count(image.array_layers()),
                     );
-                
+
                 unsafe {
                     device.sync2_device().cmd_pipeline_barrier2(
                         cmd_buffer.command_buffer(),
@@ -65,7 +68,12 @@ pub enum RenderCommand {
 }
 
 impl RenderCommand {
-    pub fn record(&self, cmd_buffer: &CommandBuffer, pipelines: &[&Pipeline], dsets: &[&DescriptorSet]) {
+    pub fn record(
+        &self,
+        cmd_buffer: &CommandBuffer,
+        pipelines: &[&Pipeline],
+        dsets: &[&DescriptorSet],
+    ) {
         let device = cmd_buffer.command_pool().device();
         match self {
             RenderCommand::BindPipeline(index) => {
@@ -79,7 +87,8 @@ impl RenderCommand {
                 }
             }
             RenderCommand::BindDescriptorSets(indices) => {
-                let sets: Vec<vk::DescriptorSet> = indices.iter().map(|&i| dsets[i as usize].set()).collect();
+                let sets: Vec<vk::DescriptorSet> =
+                    indices.iter().map(|&i| dsets[i as usize].set()).collect();
                 unsafe {
                     device.device().cmd_bind_descriptor_sets(
                         cmd_buffer.command_buffer(),
@@ -91,17 +100,11 @@ impl RenderCommand {
                     );
                 }
             }
-            RenderCommand::Draw(vertex_count) => {
-                unsafe {
-                    device.device().cmd_draw(
-                        cmd_buffer.command_buffer(),
-                        *vertex_count,
-                        1,
-                        0,
-                        0,
-                    );
-                }
-            }
+            RenderCommand::Draw(vertex_count) => unsafe {
+                device
+                    .device()
+                    .cmd_draw(cmd_buffer.command_buffer(), *vertex_count, 1, 0, 0);
+            },
         }
     }
 }
@@ -136,27 +139,23 @@ impl<'a> Command<'a> {
     pub fn record(&self, cmd_buffer: &CommandBuffer) {
         let device = cmd_buffer.command_pool().device();
         match self {
-            Self::CopyBufferToBuffer { src, dst, regions } => {
-                unsafe {
-                    device.device().cmd_copy_buffer(
-                        cmd_buffer.command_buffer(),
-                        src.buffer(),
-                        dst.buffer(),
-                        regions,
-                    );
-                }
-            }
-            Self::CopyBufferToImage { src, dst, regions } => {
-                unsafe {
-                    device.device().cmd_copy_buffer_to_image(
-                        cmd_buffer.command_buffer(),
-                        src.buffer(),
-                        dst.image(),
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        regions,
-                    );
-                }
-            }
+            Self::CopyBufferToBuffer { src, dst, regions } => unsafe {
+                device.device().cmd_copy_buffer(
+                    cmd_buffer.command_buffer(),
+                    src.buffer(),
+                    dst.buffer(),
+                    regions,
+                );
+            },
+            Self::CopyBufferToImage { src, dst, regions } => unsafe {
+                device.device().cmd_copy_buffer_to_image(
+                    cmd_buffer.command_buffer(),
+                    src.buffer(),
+                    dst.image(),
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    regions,
+                );
+            },
             Self::BlitImage2dFull { src, dst, filter } => {
                 let blit = vk::ImageBlit::default()
                     .src_subresource(
@@ -202,7 +201,13 @@ impl<'a> Command<'a> {
                     );
                 }
             }
-            Self::RunRenderPass { pipelines, dsets, framebuffer, commands, clear_values } => {
+            Self::RunRenderPass {
+                pipelines,
+                dsets,
+                framebuffer,
+                commands,
+                clear_values,
+            } => {
                 let render_pass_begin_info = vk::RenderPassBeginInfo::default()
                     .render_pass(framebuffer.render_pass().render_pass())
                     .framebuffer(framebuffer.framebuffer())
@@ -243,12 +248,14 @@ impl<'a> Command<'a> {
                     for command in commands {
                         command.record(cmd_buffer, &pipelines, &dsets);
                     }
-                    device.device().cmd_end_render_pass(cmd_buffer.command_buffer());
+                    device
+                        .device()
+                        .cmd_end_render_pass(cmd_buffer.command_buffer());
                 }
             }
             Self::Barrier(barrier_command) => {
                 barrier_command.apply_command(cmd_buffer);
-            },
+            }
         }
     }
 }

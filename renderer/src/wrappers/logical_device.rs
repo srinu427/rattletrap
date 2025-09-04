@@ -18,7 +18,6 @@ pub fn get_device_extensions() -> Vec<*const i8> {
     vec![
         khr::swapchain::NAME.as_ptr(),
         khr::synchronization2::NAME.as_ptr(),
-        ext::descriptor_indexing::NAME.as_ptr(),
         // khr::dynamic_rendering::NAME.as_ptr(),
         #[cfg(target_os = "macos")]
         khr::portability_subset::NAME.as_ptr(),
@@ -82,6 +81,7 @@ impl LogicalDevice {
 
         let device_extensions = get_device_extensions();
         let mut device_12_features = vk::PhysicalDeviceVulkan12Features::default()
+            .shader_sampled_image_array_non_uniform_indexing(true)
             .descriptor_indexing(true)
             .runtime_descriptor_array(true)
             .descriptor_binding_sampled_image_update_after_bind(true)
@@ -89,7 +89,7 @@ impl LogicalDevice {
             .descriptor_binding_variable_descriptor_count(true);
         // let mut dynamic_rendering_switch =
         //     vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
-        let mut sync_2_switch = 
+        let mut sync_2_switch =
             vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
         let device_features = vk::PhysicalDeviceFeatures::default();
         let device_create_info = vk::DeviceCreateInfo::default()

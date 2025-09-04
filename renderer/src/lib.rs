@@ -15,12 +15,21 @@ use winit::window::Window;
 
 use crate::{
     pipelines::{
-        data_transfer::{DTPInput, DTP},
-        textured_tri_mesh::{MaterialInfo, TTMPAttachments, TTMPSets, TTMP},
+        data_transfer::{DTP, DTPInput},
+        textured_tri_mesh::{MaterialInfo, TTMP, TTMPAttachments, TTMPSets},
     },
     renderables::{camera::Camera, texture::Texture, tri_mesh::TriMesh},
     wrappers::{
-        command::{self, BarrierCommand, Command}, command_buffer::CommandBuffer, command_pool::CommandPool, descriptor_pool::DescriptorPool, fence::Fence, image::Image, image_view::ImageView, instance::Instance, logical_device::{LogicalDevice, QueueType}, swapchain::Swapchain
+        command::{self, BarrierCommand, Command},
+        command_buffer::CommandBuffer,
+        command_pool::CommandPool,
+        descriptor_pool::DescriptorPool,
+        fence::Fence,
+        image::Image,
+        image_view::ImageView,
+        instance::Instance,
+        logical_device::{LogicalDevice, QueueType},
+        swapchain::Swapchain,
     },
 };
 
@@ -154,7 +163,8 @@ impl Renderer {
             new_stage: vk::PipelineStageFlags2::TRANSFER,
             new_access: vk::AccessFlags2::TRANSFER_WRITE,
             aspect_mask: vk::ImageAspectFlags::COLOR,
-        }).record(&command_buffer);
+        })
+        .record(&command_buffer);
 
         let stage_buffer = self.dtp.do_transfers_custom(
             vec![DTPInput::CopyToImage {
@@ -178,7 +188,8 @@ impl Renderer {
             new_stage: vk::PipelineStageFlags2::FRAGMENT_SHADER,
             new_access: vk::AccessFlags2::SHADER_READ,
             aspect_mask: vk::ImageAspectFlags::COLOR,
-        }).record(&command_buffer);
+        })
+        .record(&command_buffer);
 
         command_buffer.end()?;
 
@@ -291,30 +302,23 @@ impl Renderer {
                 mesh_list.push(mesh);
             }
         }
-        let material_infos = (0..tex_list.len())
-            .map(|i| MaterialInfo {
-                sampler_id: 0 as u32,
-                texture_id: i as u32,
-                padding: [0, 0]
-            })
-            .collect::<Vec<_>>();
 
-        let camera = Camera::new(glam::vec4(2.0, 2.0, 2.0, 0.0), glam::vec4(-1.0, -1.0, -1.0, 0.0), 90.0);
+        let camera = Camera::new(
+            glam::vec4(1.0, 1.0, 1.0, 0.0),
+            glam::vec4(-1.0, -1.0, -1.0, 0.0),
+            70.0,
+        );
 
-        self.ttmp_sets[draw_idx].update_ssbos(&self.dtp, &mesh_list, camera, &material_infos)?;
+        self.ttmp_sets[draw_idx].update_ssbos(&self.dtp, &mesh_list, camera)?;
         self.ttmp_sets[draw_idx].update_textures(&tex_list);
 
         let draw_cb = &self.draw_cbs[draw_idx];
-
-        let rendered_image = self.ttmp_attachments[draw_idx].color().image().image();
-        let swapchain_image = self.swapchain.image_views()[draw_idx].image().image();
 
         let mut commands = vec![];
 
         // Record command buffer
         draw_cb.begin(true)?;
 
-        
         if !self.swapchain_initialized {
             let mut sw_ims = self
                 .swapchain
@@ -327,8 +331,8 @@ impl Renderer {
                         old_stage: vk::PipelineStageFlags2::NONE,
                         old_access: vk::AccessFlags2::empty(),
                         new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                        new_stage: vk::PipelineStageFlags2::TOP_OF_PIPE,
-                        new_access: vk::AccessFlags2::MEMORY_READ,
+                        new_stage: vk::PipelineStageFlags2::ALL_COMMANDS,
+                        new_access: vk::AccessFlags2::NONE,
                         aspect_mask: vk::ImageAspectFlags::COLOR,
                     })
                 })
@@ -343,8 +347,9 @@ impl Renderer {
                         old_stage: vk::PipelineStageFlags2::NONE,
                         old_access: vk::AccessFlags2::empty(),
                         new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        new_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                        new_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                        new_stage: vk::PipelineStageFlags2::ALL_COMMANDS,
+                        new_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                            | vk::AccessFlags2::COLOR_ATTACHMENT_READ,
                         aspect_mask: vk::ImageAspectFlags::COLOR,
                     })
                 })
@@ -359,8 +364,9 @@ impl Renderer {
                         old_stage: vk::PipelineStageFlags2::NONE,
                         old_access: vk::AccessFlags2::empty(),
                         new_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                        new_stage: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
-                        new_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ,
+                        new_stage: vk::PipelineStageFlags2::ALL_COMMANDS,
+                        new_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+                            | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ,
                         aspect_mask: vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
                     })
                 })
@@ -380,8 +386,6 @@ impl Renderer {
             &self.ttmp_attachments[draw_idx],
         );
 
-        let sw_res = self.swapchain.extent();
-
         let commands = vec![
             Command::Barrier(BarrierCommand::Image2d {
                 image: &self.ttmp_attachments[draw_idx].color().image(),
@@ -389,17 +393,17 @@ impl Renderer {
                 old_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                 old_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                 new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                new_stage: vk::PipelineStageFlags2::TRANSFER,
+                new_stage: vk::PipelineStageFlags2::BLIT,
                 new_access: vk::AccessFlags2::TRANSFER_READ,
                 aspect_mask: vk::ImageAspectFlags::COLOR,
             }),
             Command::Barrier(BarrierCommand::Image2d {
                 image: self.swapchain.image_views()[draw_idx].image(),
                 old_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                old_stage: vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
-                old_access: vk::AccessFlags2::MEMORY_READ,
+                old_stage: vk::PipelineStageFlags2::ALL_COMMANDS,
+                old_access: vk::AccessFlags2::NONE,
                 new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                new_stage: vk::PipelineStageFlags2::TRANSFER,
+                new_stage: vk::PipelineStageFlags2::BLIT,
                 new_access: vk::AccessFlags2::TRANSFER_WRITE,
                 aspect_mask: vk::ImageAspectFlags::COLOR,
             }),
@@ -411,23 +415,24 @@ impl Renderer {
             Command::Barrier(BarrierCommand::Image2d {
                 image: self.swapchain.image_views()[draw_idx].image(),
                 old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                old_stage: vk::PipelineStageFlags2::TRANSFER,
+                old_stage: vk::PipelineStageFlags2::BLIT,
                 old_access: vk::AccessFlags2::TRANSFER_WRITE,
                 new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                new_stage: vk::PipelineStageFlags2::TOP_OF_PIPE,
-                new_access: vk::AccessFlags2::MEMORY_READ,
+                new_stage: vk::PipelineStageFlags2::ALL_COMMANDS,
+                new_access: vk::AccessFlags2::NONE,
                 aspect_mask: vk::ImageAspectFlags::COLOR,
             }),
             Command::Barrier(BarrierCommand::Image2d {
                 image: &self.ttmp_attachments[draw_idx].color().image(),
                 old_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                old_stage: vk::PipelineStageFlags2::TRANSFER,
+                old_stage: vk::PipelineStageFlags2::BLIT,
                 old_access: vk::AccessFlags2::TRANSFER_READ,
                 new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 new_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                new_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                new_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                    | vk::AccessFlags2::COLOR_ATTACHMENT_READ,
                 aspect_mask: vk::ImageAspectFlags::COLOR,
-            })
+            }),
         ];
 
         for command in &commands {
@@ -442,15 +447,14 @@ impl Renderer {
             self.device.sync2_device().queue_submit2(
                 self.device.graphics_queue(),
                 &[vk::SubmitInfo2::default()
-                    .command_buffer_infos(&[
-                        vk::CommandBufferSubmitInfo::default()
-                            .command_buffer(draw_cb.command_buffer())
-                    ])],
+                    .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
+                        .command_buffer(draw_cb.command_buffer())])],
                 fence.fence(),
             )?;
         }
         fence.wait(u64::MAX)?;
         fence.reset()?;
+        draw_cb.reset()?;
         self.swapchain_initialized = true;
 
         self.swapchain.present(present_img_idx, &[])?;

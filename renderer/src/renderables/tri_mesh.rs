@@ -26,7 +26,9 @@ pub struct TriMesh {
 
 impl TriMesh {
     pub fn write_obj_id(&mut self, obj_id: u32) {
-        self.vertices.iter_mut().for_each(|v| v.obj_id = obj_id);
+        for v in self.vertices.iter_mut() {
+            v.obj_id = obj_id;
+        }
     }
 }
 
@@ -36,25 +38,25 @@ pub fn make_square() -> TriMesh {
             position: [-0.5, -0.5, 0.0, 1.0],
             tex_coords: [0.0, 0.0],
             obj_id: 0,
-            padding: 0
+            padding: 0,
         },
         Vertex {
             position: [0.5, -0.5, 0.0, 1.0],
             tex_coords: [1.0, 0.0],
             obj_id: 0,
-            padding: 0
+            padding: 0,
         },
         Vertex {
             position: [0.5, 0.5, 0.0, 1.0],
             tex_coords: [1.0, 1.0],
             obj_id: 0,
-            padding: 0
+            padding: 0,
         },
         Vertex {
             position: [-0.5, 0.5, 0.0, 1.0],
             tex_coords: [0.0, 1.0],
             obj_id: 0,
-            padding: 0
+            padding: 0,
         },
     ];
     let tris = vec![
