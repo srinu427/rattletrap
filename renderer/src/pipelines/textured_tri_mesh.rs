@@ -336,7 +336,7 @@ impl TTMP {
             clear_values: vec![
                 vk::ClearValue {
                     color: vk::ClearColorValue {
-                        float32: [0.2, 0.2, 0.4, 1.0],
+                        float32: [0.2, 0.2, 0.4, 0.0],
                     },
                 },
                 vk::ClearValue {
@@ -375,8 +375,6 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                    .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-                    .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                     .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                     .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
             ])
@@ -419,14 +417,14 @@ fn make_set_layouts(
 fn make_pipeline(layout: Arc<PipelineLayout>, render_pass: Arc<RenderPass>) -> AnyResult<Pipeline> {
     let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default();
     let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
-        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-        .primitive_restart_enable(false);
+        .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
     let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
         .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
     let viewport_state = vk::PipelineViewportStateCreateInfo::default()
         .viewport_count(1)
         .scissor_count(1);
     let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
+        .sample_shading_enable(false)
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
     let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
         .blend_enable(false)
