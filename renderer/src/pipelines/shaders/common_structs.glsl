@@ -14,17 +14,10 @@ struct PointLight{
   vec4 props;
 };
 
-struct ObjectInfo {
-  uint sampler_id;
-  uint tex_id;
-  uint padding[2];
-};
-
 struct GpuVertex {
   vec4 pos;
   vec2 uv;
   uint obj_id;
-  uint padding;
 };
 
 struct GpuTriangle {
