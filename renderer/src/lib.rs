@@ -15,20 +15,12 @@ use winit::window::Window;
 
 use crate::{
     pipelines::{
-        data_transfer::{DTP, DTPInput},
-        textured_tri_mesh::{MaterialInfo, TTMP, TTMPAttachments, TTMPSets},
+        data_transfer::{DTPInput, DTP},
+        textured_tri_mesh::{MaterialInfo, TTMPAttachments, TTMPSets, TTMP},
     },
     renderables::{camera::Camera, texture::Texture, tri_mesh::TriMesh},
     wrappers::{
-        command_buffer::CommandBuffer,
-        command_pool::CommandPool,
-        descriptor_pool::DescriptorPool,
-        fence::Fence,
-        image::Image,
-        image_view::ImageView,
-        instance::Instance,
-        logical_device::{LogicalDevice, QueueType},
-        swapchain::Swapchain,
+        command::{BarrierCommand, Command}, command_buffer::CommandBuffer, command_pool::CommandPool, descriptor_pool::DescriptorPool, fence::Fence, image::Image, image_view::ImageView, instance::Instance, logical_device::{LogicalDevice, QueueType}, swapchain::Swapchain
     },
 };
 
@@ -153,27 +145,16 @@ impl Renderer {
 
         command_buffer.begin(true)?;
 
-        unsafe {
-            self.device.sync2_device().cmd_pipeline_barrier2(
-                command_buffer.command_buffer(),
-                &vk::DependencyInfo::default().image_memory_barriers(&[
-                    vk::ImageMemoryBarrier2::default()
-                        .image(image.image())
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                        .src_access_mask(vk::AccessFlags2::empty())
-                        .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                        .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                        .subresource_range(
-                            vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .layer_count(1)
-                                .level_count(1),
-                        ),
-                ]),
-            );
-        }
+        Command::Barrier(BarrierCommand::Image2d {
+            image: &image,
+            old_layout: vk::ImageLayout::UNDEFINED,
+            old_stage: vk::PipelineStageFlags2::NONE,
+            old_access: vk::AccessFlags2::empty(),
+            new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            new_stage: vk::PipelineStageFlags2::TRANSFER,
+            new_access: vk::AccessFlags2::TRANSFER_WRITE,
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+        }).record(&command_buffer);
 
         let stage_buffer = self.dtp.do_transfers_custom(
             vec![DTPInput::CopyToImage {
@@ -188,27 +169,16 @@ impl Renderer {
             &command_buffer,
         )?;
 
-        unsafe {
-            self.device.sync2_device().cmd_pipeline_barrier2(
-                command_buffer.command_buffer(),
-                &vk::DependencyInfo::default().image_memory_barriers(&[
-                    vk::ImageMemoryBarrier2::default()
-                        .image(image.image())
-                        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                        .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
-                        .dst_access_mask(vk::AccessFlags2::SHADER_READ)
-                        .subresource_range(
-                            vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .layer_count(1)
-                                .level_count(1),
-                        ),
-                ]),
-            );
-        }
+        Command::Barrier(BarrierCommand::Image2d {
+            image: &image,
+            old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            old_stage: vk::PipelineStageFlags2::TRANSFER,
+            old_access: vk::AccessFlags2::TRANSFER_WRITE,
+            new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            new_stage: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            new_access: vk::AccessFlags2::SHADER_READ,
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+        }).record(&command_buffer);
 
         command_buffer.end()?;
 

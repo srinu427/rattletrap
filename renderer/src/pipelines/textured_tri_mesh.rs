@@ -11,27 +11,14 @@ use include_bytes_aligned::include_bytes_aligned;
 use anyhow::Result as AnyResult;
 
 use crate::{
-    pipelines::data_transfer::{DTP, DTPInput},
+    pipelines::data_transfer::{DTPInput, DTP},
     renderables::{
         camera::Camera,
         texture::Texture,
         tri_mesh::{TriMesh, Triangle, Vertex},
     },
     wrappers::{
-        buffer::Buffer,
-        command_buffer::CommandBuffer,
-        descriptor_pool::DescriptorPool,
-        descriptor_set::DescriptorSet,
-        descriptor_set_layout::DescriptorSetLayout,
-        framebuffer::Framebuffer,
-        image::Image,
-        image_view::ImageView,
-        logical_device::LogicalDevice,
-        pipeline::Pipeline,
-        pipeline_layout::PipelineLayout,
-        render_pass::RenderPass,
-        sampler::{self, Sampler},
-        shader_module::make_shader_module,
+        buffer::Buffer, command::{Command, RenderCommand}, command_buffer::CommandBuffer, descriptor_pool::DescriptorPool, descriptor_set::DescriptorSet, descriptor_set_layout::DescriptorSetLayout, framebuffer::Framebuffer, image::Image, image_view::ImageView, logical_device::LogicalDevice, pipeline::Pipeline, pipeline_layout::PipelineLayout, render_pass::RenderPass, sampler::{self, Sampler}, shader_module::make_shader_module
     },
 };
 
@@ -356,76 +343,35 @@ impl TTMP {
         set: &TTMPSets,
         attachment: &TTMPAttachments,
     ) {
-        let device = self.pipeline.render_pass().device();
-        unsafe {
-            device.device().cmd_begin_render_pass(
-                command_buffer.command_buffer(),
-                &vk::RenderPassBeginInfo::default()
-                    .render_pass(self.pipeline.render_pass().render_pass())
-                    .framebuffer(attachment.framebuffer.framebuffer())
-                    .render_area(vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: attachment.extent(),
-                    })
-                    .clear_values(&[
-                        vk::ClearValue {
-                            color: vk::ClearColorValue {
-                                float32: [0.2, 0.2, 0.4, 1.0],
-                            },
+        let commands = [
+            Command::RunRenderPass {
+                pipelines: vec![&self.pipeline],
+                dsets: vec![&set.descriptor_sets[0],
+                           &set.descriptor_sets[1],
+                           &set.descriptor_sets[2]],
+                framebuffer: &attachment.framebuffer,
+                clear_values: vec![
+                    vk::ClearValue {
+                        color: vk::ClearColorValue {
+                            float32: [0.2, 0.2, 0.4, 1.0],
                         },
-                        vk::ClearValue {
-                            depth_stencil: vk::ClearDepthStencilValue {
-                                depth: 1.0,
-                                stencil: 0,
-                            },
+                    },
+                    vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 0,
                         },
-                    ]),
-                vk::SubpassContents::INLINE,
-            );
-
-            device.device().cmd_bind_pipeline(
-                command_buffer.command_buffer(),
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.pipeline(),
-            );
-            device.device().cmd_bind_descriptor_sets(
-                command_buffer.command_buffer(),
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.layout().pipeline_layout(),
-                0,
-                &[
-                    set.descriptor_sets[0].set(),
-                    set.descriptor_sets[1].set(),
-                    set.descriptor_sets[2].set(),
+                    },
                 ],
-                &[],
-            );
-
-            let viewport = vk::Viewport::default()
-                .x(0.0)
-                .y(0.0)
-                .width(attachment.extent().width as f32)
-                .height(attachment.extent().height as f32)
-                .min_depth(0.0)
-                .max_depth(1.0);
-            device
-                .device()
-                .cmd_set_viewport(command_buffer.command_buffer(), 0, &[viewport]);
-
-            let scissor = vk::Rect2D::default()
-                .offset(vk::Offset2D { x: 0, y: 0 })
-                .extent(attachment.extent());
-            device
-                .device()
-                .cmd_set_scissor(command_buffer.command_buffer(), 0, &[scissor]);
-
-            device
-                .device()
-                .cmd_draw(command_buffer.command_buffer(), set.index_count, 1, 0, 0);
-            // println!("set to draw {} indices", set.index_count);
-            device
-                .device()
-                .cmd_end_render_pass(command_buffer.command_buffer());
+                commands: vec![
+                    RenderCommand::BindPipeline(0),
+                    RenderCommand::BindDescriptorSets(vec![0, 1, 2]),
+                    RenderCommand::Draw(set.index_count),
+                ],
+            }
+        ];
+        for command in &commands {
+            command.record(command_buffer);
         }
     }
 }

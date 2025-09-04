@@ -5,12 +5,7 @@ use ash::vk;
 use gpu_allocator::vulkan::Allocator;
 
 use crate::wrappers::{
-    buffer::Buffer,
-    command_buffer::CommandBuffer,
-    command_pool::CommandPool,
-    fence::Fence,
-    image::Image,
-    logical_device::{LogicalDevice, QueueType},
+    buffer::Buffer, command::Command, command_buffer::CommandBuffer, command_pool::CommandPool, fence::Fence, image::Image, logical_device::{LogicalDevice, QueueType}
 };
 
 pub enum DTPInput<'a> {
@@ -90,6 +85,7 @@ impl DTP {
         }
 
         let mut current_offset = 0;
+        let mut commands = vec![];
         for transfer in transfers {
             match transfer {
                 DTPInput::CopyToBuffer { data, buffer } => {
@@ -101,14 +97,7 @@ impl DTP {
                         .src_offset(current_offset)
                         .dst_offset(0)
                         .size(data_len);
-                    unsafe {
-                        device.device().cmd_copy_buffer(
-                            command_buffer.command_buffer(),
-                            stage_buffer.buffer(),
-                            buffer.buffer(),
-                            &[copy_region],
-                        );
-                    }
+                    commands.push(Command::CopyBufferToBuffer { src: &stage_buffer, dst: buffer, regions: vec![copy_region] });
                     current_offset += data_len;
                 }
                 DTPInput::CopyToImage {
@@ -127,18 +116,13 @@ impl DTP {
                         .image_subresource(subresource_layers)
                         .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
                         .image_extent(image.extent());
-                    unsafe {
-                        device.device().cmd_copy_buffer_to_image(
-                            command_buffer.command_buffer(),
-                            stage_buffer.buffer(),
-                            image.image(),
-                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                            &[buffer_image_regions],
-                        );
-                    }
+                    commands.push(Command::CopyBufferToImage { src: &stage_buffer, dst: image, regions: vec![buffer_image_regions] });
                     current_offset += data_len;
                 }
             }
+        }
+        for command in &commands {
+            command.record(command_buffer);
         }
 
         Ok(stage_buffer)
