@@ -138,8 +138,7 @@ impl LogicalDevice {
 impl Drop for LogicalDevice {
     fn drop(&mut self) {
         unsafe {
-            println!("desctorying device");
-            self.device.device_wait_idle();
+            self.device.device_wait_idle().ok();
             self.device.destroy_device(None);
         }
     }
