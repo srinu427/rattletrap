@@ -20,7 +20,7 @@ use crate::{
     },
     renderables::{camera::Camera, texture::Texture, tri_mesh::TriMesh},
     wrappers::{
-        command::{BarrierCommand, Command}, command_buffer::CommandBuffer, command_pool::CommandPool, descriptor_pool::DescriptorPool, fence::Fence, image::Image, image_view::ImageView, instance::Instance, logical_device::{LogicalDevice, QueueType}, swapchain::Swapchain
+        command::{self, BarrierCommand, Command}, command_buffer::CommandBuffer, command_pool::CommandPool, descriptor_pool::DescriptorPool, fence::Fence, image::Image, image_view::ImageView, instance::Instance, logical_device::{LogicalDevice, QueueType}, swapchain::Swapchain
     },
 };
 
@@ -309,107 +309,69 @@ impl Renderer {
         let rendered_image = self.ttmp_attachments[draw_idx].color().image().image();
         let swapchain_image = self.swapchain.image_views()[draw_idx].image().image();
 
+        let mut commands = vec![];
+
         // Record command buffer
         draw_cb.begin(true)?;
 
-        unsafe {
-            let im_barriers = if self.swapchain_initialized {
-                vec![
-                    vk::ImageMemoryBarrier2::default()
-                        .image(rendered_image)
-                        .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                        .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
-                        .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                        .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                        .subresource_range(
-                            vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .base_array_layer(0)
-                                .layer_count(1)
-                                .base_mip_level(0)
-                                .level_count(1),
-                        ),
-                ]
-            } else {
-                let mut sw_ims = self
-                    .swapchain
-                    .image_views()
-                    .iter()
-                    .map(|swi| {
-                        vk::ImageMemoryBarrier2::default()
-                            .image(swi.image().image())
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                            .src_access_mask(vk::AccessFlags2::NONE)
-                            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                            .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
-                            .subresource_range(vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .base_array_layer(0)
-                                .layer_count(1)
-                                .base_mip_level(0)
-                                .level_count(1)
-                            )
+        
+        if !self.swapchain_initialized {
+            let mut sw_ims = self
+                .swapchain
+                .image_views()
+                .iter()
+                .map(|swi| {
+                    Command::Barrier(BarrierCommand::Image2d {
+                        image: swi.image(),
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        old_stage: vk::PipelineStageFlags2::NONE,
+                        old_access: vk::AccessFlags2::empty(),
+                        new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                        new_stage: vk::PipelineStageFlags2::TOP_OF_PIPE,
+                        new_access: vk::AccessFlags2::MEMORY_READ,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
                     })
-                    .collect::<Vec<_>>();
-                let mut mr_ims = self
-                    .ttmp_attachments
-                    .iter()
-                    .map(|mra| {
-                        vk::ImageMemoryBarrier2::default()
-                            .image(mra.color().image().image())
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                            .src_access_mask(vk::AccessFlags2::NONE)
-                            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                            .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
-                            .subresource_range(vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .base_array_layer(0)
-                                .layer_count(1)
-                                .base_mip_level(0)
-                                .level_count(1)
-                            )
+                })
+                .collect::<Vec<_>>();
+            let mut mr_ims = self
+                .ttmp_attachments
+                .iter()
+                .map(|mra| {
+                    Command::Barrier(BarrierCommand::Image2d {
+                        image: mra.color().image(),
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        old_stage: vk::PipelineStageFlags2::NONE,
+                        old_access: vk::AccessFlags2::empty(),
+                        new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        new_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                        new_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
                     })
-                    .collect::<Vec<_>>();
-                mr_ims[draw_idx].new_layout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL;
-                mr_ims[draw_idx].dst_access_mask = vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
-                mr_ims[draw_idx].dst_stage_mask = vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
-                let mut mr_ims_d = self
-                    .ttmp_attachments
-                    .iter()
-                    .map(|mra| {
-                        vk::ImageMemoryBarrier2::default()
-                            .image(mra.depth().image().image())
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                            .src_access_mask(vk::AccessFlags2::NONE)
-                            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                            .dst_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ)
-                            .subresource_range(vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL)
-                                .base_array_layer(0)
-                                .layer_count(1)
-                                .base_mip_level(0)
-                                .level_count(1)
-                            )
+                })
+                .collect::<Vec<_>>();
+            let mut mr_ims_d = self
+                .ttmp_attachments
+                .iter()
+                .map(|mra| {
+                    Command::Barrier(BarrierCommand::Image2d {
+                        image: mra.depth().image(),
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        old_stage: vk::PipelineStageFlags2::NONE,
+                        old_access: vk::AccessFlags2::empty(),
+                        new_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        new_stage: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
+                        new_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ,
+                        aspect_mask: vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
                     })
-                    .collect::<Vec<_>>();
-                sw_ims.append(&mut mr_ims);
-                sw_ims.append(&mut mr_ims_d);
-                sw_ims
-            };
-            self.device.sync2_device().cmd_pipeline_barrier2(
-                draw_cb.command_buffer(),
-                &vk::DependencyInfo::default()
-                    .dependency_flags(vk::DependencyFlags::BY_REGION)
-                    .image_memory_barriers(&im_barriers),
-            );
+                })
+                .collect::<Vec<_>>();
+            commands.append(&mut sw_ims);
+            commands.append(&mut mr_ims);
+            commands.append(&mut mr_ims_d);
+        };
+
+        for command in &commands {
+            command.record(draw_cb);
         }
 
         self.ttmp.render(
@@ -419,103 +381,57 @@ impl Renderer {
         );
 
         let sw_res = self.swapchain.extent();
-        unsafe {
-            self.device.sync2_device().cmd_pipeline_barrier2(
-                draw_cb.command_buffer(),
-                &vk::DependencyInfo::default()
-                    .dependency_flags(vk::DependencyFlags::BY_REGION)
-                    .image_memory_barriers(&[
-                        vk::ImageMemoryBarrier2::default()
-                            .image(swapchain_image)
-                            .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                            .src_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
-                            .src_access_mask(vk::AccessFlags2::MEMORY_READ)
-                            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                            .subresource_range(
-                                vk::ImageSubresourceRange::default()
-                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                    .base_array_layer(0)
-                                    .layer_count(1)
-                                    .base_mip_level(0)
-                                    .level_count(1),
-                            ),
-                        vk::ImageMemoryBarrier2::default()
-                            .image(rendered_image)
-                            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                            .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
-                            .subresource_range(
-                                vk::ImageSubresourceRange::default()
-                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                    .base_array_layer(0)
-                                    .layer_count(1)
-                                    .base_mip_level(0)
-                                    .level_count(1),
-                            ),
-                    ]),
-            );
-            self.device.device().cmd_blit_image(
-                draw_cb.command_buffer(),
-                rendered_image,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                swapchain_image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[vk::ImageBlit::default()
-                    .src_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .layer_count(1)
-                    )
-                    .dst_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .layer_count(1)
-                    )
-                    .src_offsets([
-                        vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D {
-                            x: sw_res.width as _,
-                            y: sw_res.height as _,
-                            z: 1,
-                        },
-                    ])
-                    .dst_offsets([
-                        vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D {
-                            x: sw_res.width as _,
-                            y: sw_res.height as _,
-                            z: 1,
-                        },
-                    ])],
-                vk::Filter::NEAREST
-            );
 
-            self.device.sync2_device().cmd_pipeline_barrier2(
-                draw_cb.command_buffer(),
-                &vk::DependencyInfo::default()
-                    .dependency_flags(vk::DependencyFlags::BY_REGION)
-                    .image_memory_barriers(&[vk::ImageMemoryBarrier2::default()
-                        .image(swapchain_image)
-                        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                        .dst_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
-                        .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
-                        .subresource_range(
-                            vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .base_array_layer(0)
-                                .layer_count(1)
-                                .base_mip_level(0)
-                                .level_count(1),
-                        )]),
-            );
+        let commands = vec![
+            Command::Barrier(BarrierCommand::Image2d {
+                image: &self.ttmp_attachments[draw_idx].color().image(),
+                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                old_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                old_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                new_stage: vk::PipelineStageFlags2::TRANSFER,
+                new_access: vk::AccessFlags2::TRANSFER_READ,
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+            }),
+            Command::Barrier(BarrierCommand::Image2d {
+                image: self.swapchain.image_views()[draw_idx].image(),
+                old_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                old_stage: vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+                old_access: vk::AccessFlags2::MEMORY_READ,
+                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                new_stage: vk::PipelineStageFlags2::TRANSFER,
+                new_access: vk::AccessFlags2::TRANSFER_WRITE,
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+            }),
+            Command::BlitImage2dFull {
+                src: &self.ttmp_attachments[draw_idx].color().image(),
+                dst: self.swapchain.image_views()[draw_idx].image(),
+                filter: vk::Filter::NEAREST,
+            },
+            Command::Barrier(BarrierCommand::Image2d {
+                image: self.swapchain.image_views()[draw_idx].image(),
+                old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                old_stage: vk::PipelineStageFlags2::TRANSFER,
+                old_access: vk::AccessFlags2::TRANSFER_WRITE,
+                new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                new_stage: vk::PipelineStageFlags2::TOP_OF_PIPE,
+                new_access: vk::AccessFlags2::MEMORY_READ,
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+            }),
+            Command::Barrier(BarrierCommand::Image2d {
+                image: &self.ttmp_attachments[draw_idx].color().image(),
+                old_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                old_stage: vk::PipelineStageFlags2::TRANSFER,
+                old_access: vk::AccessFlags2::TRANSFER_READ,
+                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                new_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                new_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+            })
+        ];
+
+        for command in &commands {
+            command.record(draw_cb);
         }
 
         draw_cb.end()?;

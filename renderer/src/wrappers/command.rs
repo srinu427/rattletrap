@@ -117,6 +117,11 @@ pub enum Command<'a> {
         dst: &'a Image,
         regions: Vec<vk::BufferImageCopy>,
     },
+    BlitImage2dFull {
+        src: &'a Image,
+        dst: &'a Image,
+        filter: vk::Filter,
+    },
     RunRenderPass {
         pipelines: Vec<&'a Pipeline>,
         dsets: Vec<&'a DescriptorSet>,
@@ -149,6 +154,51 @@ impl<'a> Command<'a> {
                         dst.image(),
                         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                         regions,
+                    );
+                }
+            }
+            Self::BlitImage2dFull { src, dst, filter } => {
+                let blit = vk::ImageBlit::default()
+                    .src_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .mip_level(0)
+                            .base_array_layer(0)
+                            .layer_count(1),
+                    )
+                    .src_offsets([
+                        vk::Offset3D { x: 0, y: 0, z: 0 },
+                        vk::Offset3D {
+                            x: src.extent().width as i32,
+                            y: src.extent().height as i32,
+                            z: 1,
+                        },
+                    ])
+                    .dst_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .mip_level(0)
+                            .base_array_layer(0)
+                            .layer_count(1),
+                    )
+                    .dst_offsets([
+                        vk::Offset3D { x: 0, y: 0, z: 0 },
+                        vk::Offset3D {
+                            x: dst.extent().width as i32,
+                            y: dst.extent().height as i32,
+                            z: 1,
+                        },
+                    ]);
+
+                unsafe {
+                    device.device().cmd_blit_image(
+                        cmd_buffer.command_buffer(),
+                        src.image(),
+                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                        dst.image(),
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        &[blit],
+                        *filter,
                     );
                 }
             }
