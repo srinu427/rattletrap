@@ -142,14 +142,14 @@ impl Swapchain {
             extent.height = window_res.height;
         }
 
-        // let present_mode = present_modes
-        //     .iter()
-        //     .filter(|&&mode| mode == vk::PresentModeKHR::MAILBOX)
-        //     .next()
-        //     .cloned()
-        //     .unwrap_or(vk::PresentModeKHR::FIFO);
+        let present_mode = present_modes
+            .iter()
+            .filter(|&&mode| mode == vk::PresentModeKHR::MAILBOX)
+            .next()
+            .cloned()
+            .unwrap_or(vk::PresentModeKHR::FIFO);
 
-        let present_mode = vk::PresentModeKHR::FIFO;
+        // let present_mode = vk::PresentModeKHR::FIFO;
 
         let swapchain_image_count = std::cmp::min(
             caps.min_image_count + 1,
@@ -260,7 +260,8 @@ impl Swapchain {
         Ok(())
     }
 
-    pub fn acquire_image(&mut self, fence: &Fence) -> Result<u32, SwapchainError> {
+    pub fn acquire_image(&mut self, fence: &Fence) -> Result<(u32, bool), SwapchainError> {
+        let mut swapchain_refreshed = false;
         loop {
             let aquire_out = unsafe {
                 self.device.swapchain_device().acquire_next_image(
@@ -279,6 +280,7 @@ impl Swapchain {
 
             if is_suboptimal {
                 self.refresh_resolution()?;
+                swapchain_refreshed = true;
                 if idx.is_some() {
                     fence.wait(u64::MAX)?;
                     fence.reset()?;
@@ -286,7 +288,7 @@ impl Swapchain {
                 continue;
             }
             if let Some(img_idx) = idx {
-                return Ok(img_idx);
+                return Ok((img_idx, swapchain_refreshed));
             }
         }
     }

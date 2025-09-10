@@ -16,11 +16,11 @@ use winit::window::Window;
 use crate::{
     pipelines::{
         data_transfer::{DTP, DTPInput},
-        textured_tri_mesh::{MaterialInfo, TTMP, TTMPAttachments, TTMPSets},
+        textured_tri_mesh::{TTMP, TTMPAttachments, TTMPSets},
     },
     renderables::{camera::Camera, texture::Texture, tri_mesh::TriMesh},
     wrappers::{
-        command::{self, BarrierCommand, Command},
+        command::{BarrierCommand, Command},
         command_buffer::CommandBuffer,
         command_pool::CommandPool,
         descriptor_pool::DescriptorPool,
@@ -29,6 +29,7 @@ use crate::{
         image_view::ImageView,
         instance::Instance,
         logical_device::{LogicalDevice, QueueType},
+        semaphore::Semaphore,
         swapchain::Swapchain,
     },
 };
@@ -38,18 +39,59 @@ pub struct TTPMRenderable {
     texture: String,
 }
 
+pub struct PerFrameData {
+    draw_cb: CommandBuffer,
+    draw_emit_sem: Semaphore,
+    draw_fence: Fence,
+    ttmp_set: TTMPSets,
+    ttmp_attachments: TTMPAttachments,
+}
+
+impl PerFrameData {
+    pub fn new(
+        global_cp: Arc<CommandPool>,
+        ttmp: Arc<TTMP>,
+        global_allocator: Arc<Mutex<Allocator>>,
+        descriptor_pool: Arc<DescriptorPool>,
+        extent: vk::Extent2D,
+    ) -> AnyResult<Self> {
+        let draw_cb = CommandBuffer::new(global_cp.clone(), 1)?.remove(0);
+        let draw_emit_sem = Semaphore::new(global_cp.device().clone())?;
+        let draw_fence = Fence::new(global_cp.device().clone(), true)?;
+        let ttmp_set = TTMPSets::new(ttmp.clone(), global_allocator.clone(), descriptor_pool)?;
+        let ttmp_attachments = TTMPAttachments::new(ttmp, global_allocator, extent)?;
+
+        Ok(Self {
+            draw_cb,
+            draw_emit_sem,
+            draw_fence,
+            ttmp_set,
+            ttmp_attachments,
+        })
+    }
+
+    pub fn resize(
+        &mut self,
+        allocator: Arc<Mutex<Allocator>>,
+        extent: vk::Extent2D,
+    ) -> AnyResult<()> {
+        let new_ttmp_attachments =
+            TTMPAttachments::new(self.ttmp_attachments.ttmp().clone(), allocator, extent)?;
+        self.ttmp_attachments = new_ttmp_attachments;
+        Ok(())
+    }
+}
+
 #[derive(getset::Getters)]
 pub struct Renderer {
+    per_frame_datas: Vec<PerFrameData>,
     next_image_acquire_fence: Arc<Fence>,
     ttmp_renderables: HashMap<String, TTPMRenderable>,
     dtp: Arc<DTP>,
     global_allocator: Arc<Mutex<Allocator>>,
     textures: HashMap<String, Texture>,
     tri_meshes: HashMap<String, TriMesh>,
-    draw_cbs: Vec<CommandBuffer>,
     global_cp: Arc<CommandPool>,
-    ttmp_attachments: Vec<TTMPAttachments>,
-    ttmp_sets: Vec<TTMPSets>,
     ttmp: Arc<TTMP>,
     swapchain_initialized: bool,
     swapchain: Swapchain,
@@ -81,46 +123,38 @@ impl Renderer {
             50,
         )?);
 
-        let ttmp_attachments = (0..swapchain.image_views().len())
-            .map(|_| {
-                TTMPAttachments::new(ttmp.clone(), global_allocator.clone(), swapchain.extent())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let ttmp_sets = (0..swapchain.image_views().len())
-            .map(|_| {
-                TTMPSets::new(
-                    ttmp.clone(),
-                    global_allocator.clone(),
-                    descriptor_pool.clone(),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
         let global_cp = Arc::new(CommandPool::new(
             device.clone(),
             QueueType::Graphics,
             false,
         )?);
 
-        let draw_cbs = CommandBuffer::new(global_cp.clone(), 3)?;
-
         let dtp = Arc::new(DTP::new(device.clone(), global_allocator.clone())?);
 
         let next_image_acquire_fence = Arc::new(Fence::new(device.clone(), false)?);
 
+        let per_frame_datas = (0..swapchain.image_views().len())
+            .map(|_| {
+                PerFrameData::new(
+                    global_cp.clone(),
+                    ttmp.clone(),
+                    global_allocator.clone(),
+                    descriptor_pool.clone(),
+                    swapchain.extent(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(Self {
+            per_frame_datas,
             next_image_acquire_fence,
             ttmp_renderables: HashMap::new(),
             dtp,
-            draw_cbs,
             global_cp,
             global_allocator,
             tri_meshes: HashMap::new(),
             textures: HashMap::new(),
             ttmp,
-            ttmp_sets,
-            ttmp_attachments,
             swapchain_initialized: false,
             swapchain,
             device,
@@ -186,7 +220,7 @@ impl Renderer {
             old_access: vk::AccessFlags2::TRANSFER_WRITE,
             new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             new_stage: vk::PipelineStageFlags2::FRAGMENT_SHADER,
-            new_access: vk::AccessFlags2::SHADER_READ,
+            new_access: vk::AccessFlags2::SHADER_SAMPLED_READ,
             aspect_mask: vk::ImageAspectFlags::COLOR,
         })
         .record(&command_buffer);
@@ -196,9 +230,14 @@ impl Renderer {
         let fence = Fence::new(self.device.clone(), false)?;
 
         unsafe {
-            device.queue_submit(
+            self.device.sync2_device().queue_submit2(
                 self.device.graphics_queue(),
-                &[vk::SubmitInfo::default().command_buffers(&[command_buffer.command_buffer()])],
+                &[vk::SubmitInfo2::default()
+                    .command_buffer_infos(&[
+                        vk::CommandBufferSubmitInfo::default()
+                            .command_buffer(command_buffer.command_buffer())
+                        ])
+                ],
                 fence.fence(),
             )?;
         }
@@ -252,25 +291,18 @@ impl Renderer {
 
     pub fn draw(&mut self) -> AnyResult<()> {
         // Aquire next image from swapchain
-        let present_img_idx = self
+        let (present_img_idx, refreshed) = self
             .swapchain
             .acquire_image(&self.next_image_acquire_fence)?;
-        self.next_image_acquire_fence.wait(u64::MAX)?;
-        self.next_image_acquire_fence.reset()?;
 
+        if refreshed || !self.swapchain_initialized {
+            self.swapchain_initialized = false;
+        }
         let draw_idx = present_img_idx as usize;
 
-        if self.swapchain.extent() != self.ttmp_attachments[draw_idx].extent() {
-            let new_ttmp_attachments = (0..self.swapchain.image_views().len())
-                .map(|_| {
-                    TTMPAttachments::new(
-                        self.ttmp.clone(),
-                        self.global_allocator.clone(),
-                        self.swapchain.extent(),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            self.ttmp_attachments = new_ttmp_attachments;
+        if self.swapchain.extent() != self.per_frame_datas[draw_idx].ttmp_attachments.extent() {
+            self.per_frame_datas[draw_idx]
+                .resize(self.global_allocator.clone(), self.swapchain.extent())?;
         }
 
         let mut meshes_per_material = HashMap::new();
@@ -309,14 +341,24 @@ impl Renderer {
             70.0,
         );
 
-        self.ttmp_sets[draw_idx].update_ssbos(&self.dtp, &mesh_list, camera)?;
-        self.ttmp_sets[draw_idx].update_textures(&tex_list);
+        self.per_frame_datas[draw_idx]
+            .ttmp_set
+            .update_ssbos(&self.dtp, &mesh_list, camera)?;
+        self.per_frame_datas[draw_idx]
+            .ttmp_set
+            .update_textures(&tex_list);
 
-        let draw_cb = &self.draw_cbs[draw_idx];
+        let draw_cb = &self.per_frame_datas[draw_idx].draw_cb;
 
         let mut commands = vec![];
 
         // Record command buffer
+        self.per_frame_datas[draw_idx]
+            .draw_fence
+            .wait(u64::MAX)?;
+        self.per_frame_datas[draw_idx].draw_fence.reset()?;
+        
+        draw_cb.reset()?;
         draw_cb.begin(true)?;
 
         if !self.swapchain_initialized {
@@ -331,40 +373,36 @@ impl Renderer {
                         old_stage: vk::PipelineStageFlags2::NONE,
                         old_access: vk::AccessFlags2::empty(),
                         new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                        new_stage: vk::PipelineStageFlags2::ALL_COMMANDS,
+                        new_stage: vk::PipelineStageFlags2::TOP_OF_PIPE,
                         new_access: vk::AccessFlags2::NONE,
                         aspect_mask: vk::ImageAspectFlags::COLOR,
                     })
                 })
                 .collect::<Vec<_>>();
-            let mut mr_ims = self
-                .ttmp_attachments
-                .iter()
-                .map(|mra| {
+            let mut mr_ims = (0..self.per_frame_datas.len())
+                .map(|i| {
                     Command::Barrier(BarrierCommand::Image2d {
-                        image: mra.color().image(),
+                        image: self.per_frame_datas[i].ttmp_attachments.color().image(),
                         old_layout: vk::ImageLayout::UNDEFINED,
                         old_stage: vk::PipelineStageFlags2::NONE,
                         old_access: vk::AccessFlags2::empty(),
-                        new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        new_stage: vk::PipelineStageFlags2::ALL_COMMANDS,
+                        new_layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
+                        new_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                         new_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
                             | vk::AccessFlags2::COLOR_ATTACHMENT_READ,
                         aspect_mask: vk::ImageAspectFlags::COLOR,
                     })
                 })
                 .collect::<Vec<_>>();
-            let mut mr_ims_d = self
-                .ttmp_attachments
-                .iter()
-                .map(|mra| {
+            let mut mr_ims_d = (0..self.per_frame_datas.len())
+                .map(|i| {
                     Command::Barrier(BarrierCommand::Image2d {
-                        image: mra.depth().image(),
+                        image: self.per_frame_datas[i].ttmp_attachments.depth().image(),
                         old_layout: vk::ImageLayout::UNDEFINED,
                         old_stage: vk::PipelineStageFlags2::NONE,
                         old_access: vk::AccessFlags2::empty(),
                         new_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                        new_stage: vk::PipelineStageFlags2::ALL_COMMANDS,
+                        new_stage: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
                         new_access: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
                             | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ,
                         aspect_mask: vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
@@ -382,16 +420,19 @@ impl Renderer {
 
         self.ttmp.render(
             draw_cb,
-            &self.ttmp_sets[draw_idx],
-            &self.ttmp_attachments[draw_idx],
+            &self.per_frame_datas[draw_idx].ttmp_set,
+            &self.per_frame_datas[draw_idx].ttmp_attachments,
         );
 
         let commands = vec![
             Command::Barrier(BarrierCommand::Image2d {
-                image: &self.ttmp_attachments[draw_idx].color().image(),
-                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                image: &self.per_frame_datas[draw_idx]
+                    .ttmp_attachments
+                    .color()
+                    .image(),
+                old_layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
                 old_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                old_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                old_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE | vk::AccessFlags2::COLOR_ATTACHMENT_READ,
                 new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 new_stage: vk::PipelineStageFlags2::BLIT,
                 new_access: vk::AccessFlags2::TRANSFER_READ,
@@ -408,7 +449,10 @@ impl Renderer {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
             }),
             Command::BlitImage2dFull {
-                src: &self.ttmp_attachments[draw_idx].color().image(),
+                src: &self.per_frame_datas[draw_idx]
+                    .ttmp_attachments
+                    .color()
+                    .image(),
                 dst: self.swapchain.image_views()[draw_idx].image(),
                 filter: vk::Filter::NEAREST,
             },
@@ -418,16 +462,19 @@ impl Renderer {
                 old_stage: vk::PipelineStageFlags2::BLIT,
                 old_access: vk::AccessFlags2::TRANSFER_WRITE,
                 new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                new_stage: vk::PipelineStageFlags2::ALL_COMMANDS,
+                new_stage: vk::PipelineStageFlags2::TOP_OF_PIPE,
                 new_access: vk::AccessFlags2::NONE,
                 aspect_mask: vk::ImageAspectFlags::COLOR,
             }),
             Command::Barrier(BarrierCommand::Image2d {
-                image: &self.ttmp_attachments[draw_idx].color().image(),
+                image: &self.per_frame_datas[draw_idx]
+                    .ttmp_attachments
+                    .color()
+                    .image(),
                 old_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 old_stage: vk::PipelineStageFlags2::BLIT,
                 old_access: vk::AccessFlags2::TRANSFER_READ,
-                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                new_layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
                 new_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                 new_access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
                     | vk::AccessFlags2::COLOR_ATTACHMENT_READ,
@@ -441,23 +488,25 @@ impl Renderer {
 
         draw_cb.end()?;
 
-        let fence = Fence::new(self.device.clone(), false)?;
+        self.next_image_acquire_fence.wait(u64::MAX)?;
+        self.next_image_acquire_fence.reset()?;
 
         unsafe {
             self.device.sync2_device().queue_submit2(
                 self.device.graphics_queue(),
                 &[vk::SubmitInfo2::default()
                     .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
-                        .command_buffer(draw_cb.command_buffer())])],
-                fence.fence(),
+                        .command_buffer(draw_cb.command_buffer())])
+                    .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
+                        .semaphore(self.per_frame_datas[draw_idx].draw_emit_sem.semaphore())
+                        .stage_mask(vk::PipelineStageFlags2::BLIT)])],
+               self.per_frame_datas[draw_idx].draw_fence.fence(),
             )?;
         }
-        fence.wait(u64::MAX)?;
-        fence.reset()?;
-        draw_cb.reset()?;
+
         self.swapchain_initialized = true;
 
-        self.swapchain.present(present_img_idx, &[])?;
+        self.swapchain.present(present_img_idx, &[&self.per_frame_datas[draw_idx].draw_emit_sem])?;
         Ok(())
     }
 
@@ -471,7 +520,7 @@ impl Renderer {
 impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
-            self.device.device().device_wait_idle();
+            self.device.device().device_wait_idle().ok();
         }
     }
 }

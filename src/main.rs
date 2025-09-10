@@ -4,7 +4,7 @@ use winit::{
     application::ApplicationHandler, dpi::LogicalSize, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}
 };
 
-use renderer::{renderables::tri_mesh::{self, TriMesh}, Renderer};
+use renderer::{renderables::tri_mesh, Renderer};
 
 #[derive(Default)]
 struct App {
@@ -36,7 +36,7 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                state.draw().ok();
+                // state.draw().ok();
                 // Emits a new redraw requested event.
                 // state.window().request_redraw();
             }
@@ -58,6 +58,12 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
+    unsafe {
+        // On Linux, disable Wayland to force using X11.
+        if cfg!(target_os = "linux") {
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+    }
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App::default();

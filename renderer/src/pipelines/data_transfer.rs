@@ -149,12 +149,15 @@ impl DTP {
         let fence = Fence::new(device.clone(), false)?;
 
         unsafe {
-            device.device().queue_submit(
+            device.sync2_device().queue_submit2(
                 device.graphics_queue(),
-                &[vk::SubmitInfo::default().command_buffers(&[command_buffer.command_buffer()])],
+                &[vk::SubmitInfo2::default()
+                    .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
+                        .command_buffer(command_buffer.command_buffer())])],
                 fence.fence(),
             )?;
         }
+
         fence.wait(u64::MAX)?;
 
         drop(stage_buffer);

@@ -20,7 +20,7 @@ use crate::{
     wrappers::{
         buffer::Buffer,
         command::{Command, RenderCommand},
-        command_buffer::{self, CommandBuffer},
+        command_buffer::CommandBuffer,
         descriptor_pool::DescriptorPool,
         descriptor_set::DescriptorSet,
         descriptor_set_layout::DescriptorSetLayout,
@@ -31,7 +31,7 @@ use crate::{
         pipeline::Pipeline,
         pipeline_layout::PipelineLayout,
         render_pass::RenderPass,
-        sampler::{self, Sampler},
+        sampler::Sampler,
         shader_module::make_shader_module,
     },
 };
@@ -209,6 +209,7 @@ pub struct TTMPAttachments {
     framebuffer: Arc<Framebuffer>,
     #[get_copy = "pub"]
     extent: vk::Extent2D,
+    #[get = "pub"]
     ttmp: Arc<TTMP>,
 }
 
@@ -302,7 +303,11 @@ impl TTMP {
         };
         let max_dset_textures = device_limits.limits.max_descriptor_set_sampled_images;
         let max_stage_textures = device_limits.limits.max_per_stage_descriptor_sampled_images;
-        let max_textures = max_dset_textures.min(max_stage_textures);
+        let max_stage_resources = device_limits.limits.max_per_stage_resources;
+        let max_textures = max_dset_textures
+            .min(max_stage_textures)
+            .min(max_stage_resources)
+            .min(1024);
         let render_pass = make_render_pass(device.clone()).map(Arc::new)?;
 
         let set_layouts = make_set_layouts(device.clone(), max_textures)?;
@@ -336,7 +341,7 @@ impl TTMP {
             clear_values: vec![
                 vk::ClearValue {
                     color: vk::ClearColorValue {
-                        float32: [0.2, 0.2, 0.4, 0.0],
+                        float32: [0.2, 0.2, 0.4, 1.0],
                     },
                 },
                 vk::ClearValue {
@@ -368,25 +373,27 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::STORE)
-                    .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+                    .initial_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+                    .final_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL),
                 vk::AttachmentDescription2::default()
                     .format(vk::Format::D24_UNORM_S8_UINT)
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                    .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                    .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+                    .initial_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+                    .final_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL),
             ])
             .subpasses(&[vk::SubpassDescription2::default()
                 .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
                 .color_attachments(&[vk::AttachmentReference2::default()
                     .attachment(0)
-                    .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)])
+                    .layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)])
                 .depth_stencil_attachment(
                     &vk::AttachmentReference2::default()
                         .attachment(1)
-                        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+                        .layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+                        .aspect_mask(vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL),
                 )]),
     )?)
 }
