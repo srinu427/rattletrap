@@ -16,6 +16,6 @@ void main() {
     // debugPrintfEXT("My UV is %v2f\n", inUV);
     outFragColor = texture(nonuniformEXT(sampler2D(textures[objId], samplers)), inUV);
     // debugPrintfEXT("UV: %v2f outFragColor: %v4f\n", inUV, outFragColor);
-    // outFragColor.r = 1.0;
+    // outFragColor.a = 0.0;
     // outFragColor = vec4(1.0,1.0,1.0,0.0);
 }

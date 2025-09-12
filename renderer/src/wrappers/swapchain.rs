@@ -209,7 +209,6 @@ impl Swapchain {
     }
 
     pub fn refresh_resolution(&mut self) -> Result<Vec<Command>, SwapchainError> {
-        println!("refreshing sw res");
         let surface_instance = self.device.instance().surface_instance();
         let surface = self.device.instance().surface();
 
@@ -225,8 +224,6 @@ impl Swapchain {
             extent.width = window_res.width;
             extent.height = window_res.height;
         }
-
-        println!("new_res: {:?}", extent);
 
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(self.device.instance().surface())
@@ -253,8 +250,6 @@ impl Swapchain {
                 .create_swapchain(&swapchain_create_info, None)
                 .map_err(SwapchainError::SwapchainCreateError)?
         };
-
-        println!("new swapchain created");
 
         unsafe {
             self.device

@@ -137,13 +137,11 @@ impl DTP {
         let (stage_buffer, commands) = self.do_transfers_custom(transfers)?;
         command_buffer.record_commands(&commands, true)?;
 
-        let fence = Fence::new(device.clone(), false)?;
-
+        let mut fence = Fence::new(device.clone(), false)?;
         command_buffer.submit(&[], &[], Some(&fence))?;
-
+        fence.preserve_buffer(stage_buffer);
         fence.wait(u64::MAX)?;
 
-        drop(stage_buffer);
         Ok(())
     }
 }

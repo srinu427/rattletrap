@@ -15,22 +15,12 @@ use winit::window::Window;
 
 use crate::{
     pipelines::{
-        data_transfer::{DTP, DTPInput},
-        textured_tri_mesh::{TTMP, TTMPAttachments, TTMPSets},
+        data_transfer::{DTPInput, DTP},
+        textured_tri_mesh::{TTMPAttachments, TTMPSets, TTMP},
     },
     renderables::{camera::Camera, texture::Texture, tri_mesh::TriMesh},
     wrappers::{
-        command::{BarrierCommand, Command},
-        command_buffer::CommandBuffer,
-        command_pool::CommandPool,
-        descriptor_pool::DescriptorPool,
-        fence::Fence,
-        image::{Image, ImageAccess},
-        image_view::ImageView,
-        instance::Instance,
-        logical_device::{LogicalDevice, QueueType},
-        semaphore::Semaphore,
-        swapchain::Swapchain,
+        buffer::Buffer, command::{BarrierCommand, Command}, command_buffer::CommandBuffer, command_pool::CommandPool, descriptor_pool::DescriptorPool, fence::Fence, image::{Image, ImageAccess}, image_view::ImageView, instance::Instance, logical_device::{LogicalDevice, QueueType}, semaphore::Semaphore, swapchain::Swapchain
     },
 };
 
@@ -45,6 +35,7 @@ pub struct PerFrameData {
     draw_fence: Fence,
     ttmp_set: TTMPSets,
     ttmp_attachments: TTMPAttachments,
+    ttmp_stage_buffer: Option<Buffer>,
 }
 
 impl PerFrameData {
@@ -57,7 +48,7 @@ impl PerFrameData {
     ) -> AnyResult<(Self, Vec<Command>)> {
         let draw_cb = CommandBuffer::new(global_cp.clone(), 1)?.remove(0);
         let draw_emit_sem = Semaphore::new(global_cp.device().clone())?;
-        let draw_fence = Fence::new(global_cp.device().clone(), false)?;
+        let draw_fence = Fence::new(global_cp.device().clone(), true)?;
         let ttmp_set = TTMPSets::new(ttmp.clone(), global_allocator.clone(), descriptor_pool)?;
         let (ttmp_attachments, commands) = TTMPAttachments::new(ttmp, global_allocator, extent)?;
 
@@ -67,6 +58,7 @@ impl PerFrameData {
             draw_fence,
             ttmp_set,
             ttmp_attachments,
+            ttmp_stage_buffer: None,
         },
         commands))
     }
@@ -95,7 +87,6 @@ pub struct Renderer {
     ttmp: Arc<TTMP>,
     swapchain: Swapchain,
     device: Arc<LogicalDevice>,
-    instance: Arc<Instance>,
     #[get = "pub"]
     window: Arc<Window>,
 }
@@ -142,7 +133,7 @@ impl Renderer {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let (per_frame_datas, pfd_commands): (Vec<_>, Vec<_>) = per_frame_datas
+        let (mut per_frame_datas, pfd_commands): (Vec<_>, Vec<_>) = per_frame_datas
             .into_iter()
             .unzip();
 
@@ -154,9 +145,9 @@ impl Renderer {
             .collect::<Vec<_>>();
 
         per_frame_datas[0].draw_cb.record_commands(&init_commands, true)?;
+        per_frame_datas[0].draw_fence.reset()?;
         per_frame_datas[0].draw_cb.submit(&[], &[], Some(&per_frame_datas[0].draw_fence))?;
         per_frame_datas[0].draw_fence.wait(u64::MAX)?;
-        per_frame_datas[0].draw_fence.reset()?;
 
         Ok(Self {
             per_frame_datas,
@@ -169,7 +160,6 @@ impl Renderer {
             ttmp,
             swapchain,
             device,
-            instance,
             window,
         })
     }
@@ -186,7 +176,7 @@ impl Renderer {
         };
         let mut image = Image::new_2d(
             self.device.clone(),
-            vk::Format::R8G8B8A8_SRGB,
+            vk::Format::R8G8B8A8_UNORM,
             extent,
             1,
             vec![ImageAccess::TransferDst, ImageAccess::TransferSrc, ImageAccess::ShaderRead],
@@ -201,7 +191,6 @@ impl Renderer {
                 ImageAccess::TransferDst,
             )),
         ];
-
         let (stage_buffer, upload_cmds) = self.dtp.do_transfers_custom(
             vec![DTPInput::CopyToImage {
                 data: &image_data.into_bytes(),
@@ -209,9 +198,7 @@ impl Renderer {
                 subresource_layers: image.all_subresource_layers(0),
             }],
         )?;
-
         commands.extend(upload_cmds);
-
         commands.push(Command::Barrier(BarrierCommand::new_image_2d_barrier(
             &image,
             ImageAccess::TransferDst,
@@ -219,16 +206,11 @@ impl Renderer {
         )));
 
         let command_buffer = self.dtp.create_temp_command_buffer()?;
-
         command_buffer.record_commands(&commands, true)?;
-
-        let fence = Fence::new(self.device.clone(), false)?;
-
+        let mut fence = Fence::new(self.device.clone(), false)?;
         command_buffer.submit(&[], &[], Some(&fence))?;
-
+        fence.preserve_buffer(stage_buffer);
         fence.wait(u64::MAX)?;
-
-        drop(stage_buffer);
 
         let image_view = ImageView::new(
             image.clone(),
@@ -271,13 +253,14 @@ impl Renderer {
 
     pub fn draw(&mut self) -> AnyResult<()> {
         // Aquire next image from swapchain
-        let (present_img_idx, init_cmds) = self.swapchain.acquire_image()?;
+        let (present_img_idx, mut init_cmds) = self.swapchain.acquire_image()?;
 
         let draw_idx = present_img_idx as usize;
 
         if self.swapchain.extent() != self.per_frame_datas[draw_idx].ttmp_attachments.framebuffer().extent() {
-            self.per_frame_datas[draw_idx]
+            let ta_init_commands = self.per_frame_datas[draw_idx]
                 .resize(self.global_allocator.clone(), self.swapchain.extent())?;
+            init_cmds.extend(ta_init_commands);
         }
 
         let mut meshes_per_material = HashMap::new();
@@ -313,10 +296,12 @@ impl Renderer {
         let camera = Camera::new(
             glam::vec4(1.0, 1.0, 1.0, 0.0),
             glam::vec4(-1.0, -1.0, -1.0, 0.0),
-            70.0,
+            90.0,
         );
 
         // Record command buffer
+        self.per_frame_datas[draw_idx].draw_fence.wait(u64::MAX)?;
+        self.per_frame_datas[draw_idx].draw_fence.reset()?;
         let (update_stage_buffer, update_cmds) = self.per_frame_datas[draw_idx]
             .ttmp_set
             .update_ssbos(&self.dtp, &mesh_list, camera)?;
@@ -347,11 +332,6 @@ impl Renderer {
                 self.swapchain.image_views()[draw_idx].image(),
                 vk::Filter::NEAREST,
             ),
-            // Command::blit_full_image(
-            //     self.textures["default"].albedo().image(),
-            //     self.swapchain.image_views()[draw_idx].image(),
-            //     vk::Filter::NEAREST,
-            // ),
             Command::Barrier(BarrierCommand::new_image_2d_barrier(
                 self.swapchain.image_views()[draw_idx].image(),
                 ImageAccess::TransferDst,
@@ -369,19 +349,15 @@ impl Renderer {
 
         draw_cb.submit(
             &[],
-            &[],
-            // &[(&self.per_frame_datas[draw_idx].draw_emit_sem, vk::PipelineStageFlags2::BOTTOM_OF_PIPE)],
+            &[(&self.per_frame_datas[draw_idx].draw_emit_sem, vk::PipelineStageFlags2::TRANSFER)],
             Some(&self.per_frame_datas[draw_idx].draw_fence)
         )?;
 
-        self.per_frame_datas[draw_idx].draw_fence.wait(u64::MAX)?;
-        self.per_frame_datas[draw_idx].draw_fence.reset()?;
-        drop(update_stage_buffer);
-
+        self.per_frame_datas[draw_idx].draw_fence.preserve_buffer(update_stage_buffer);
+        
         self.swapchain.present(
             present_img_idx,
-            &[],
-            // &[&self.per_frame_datas[draw_idx].draw_emit_sem],
+            &[&self.per_frame_datas[draw_idx].draw_emit_sem],
         )?;
         Ok(())
     }

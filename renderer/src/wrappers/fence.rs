@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ash::vk;
 use thiserror::Error;
 
-use crate::wrappers::logical_device::LogicalDevice;
+use crate::wrappers::{buffer::Buffer, logical_device::LogicalDevice};
 
 #[derive(Debug, Error)]
 pub enum FenceError {
@@ -17,6 +17,7 @@ pub enum FenceError {
 
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct Fence {
+    preserve_buffers: Vec<Buffer>,
     #[get_copy = "pub"]
     fence: vk::Fence,
     #[get = "pub"]
@@ -38,7 +39,15 @@ impl Fence {
                 .map_err(FenceError::CreateError)?
         };
 
-        Ok(Self { fence, device })
+        Ok(Self { preserve_buffers: vec![], fence, device })
+    }
+
+    pub fn preserve_buffer(&mut self, buffer: Buffer) {
+        self.preserve_buffers.push(buffer);
+    }
+
+    pub fn flush_buffers(&mut self) {
+        self.preserve_buffers.clear();
     }
 
     pub fn wait(&self, timeout: u64) -> Result<(), FenceError> {
@@ -50,7 +59,8 @@ impl Fence {
         }
     }
 
-    pub fn reset(&self) -> Result<(), FenceError> {
+    pub fn reset(&mut self) -> Result<(), FenceError> {
+        self.flush_buffers();
         unsafe {
             self.device
                 .device()

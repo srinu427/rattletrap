@@ -188,8 +188,6 @@ impl TTMPSets {
                 &[],
             );
         }
-
-        // println!("Updating TTMP with {} textures", image_infos.len());
     }
 
     pub fn update_ssbos(&mut self, dtp: &DTP, meshes: &[TriMesh], camera: Camera) -> AnyResult<(Buffer, Vec<Command>)> {
@@ -256,8 +254,8 @@ impl TTMPSets {
 pub struct TTMPAttachments {
     #[get = "pub"]
     color: Arc<ImageView>,
-    // #[get = "pub"]
-    // depth: Arc<ImageView>,
+    #[get = "pub"]
+    depth: Arc<ImageView>,
     #[get = "pub"]
     framebuffer: Arc<Framebuffer>,
     #[get = "pub"]
@@ -289,28 +287,28 @@ impl TTMPAttachments {
         )
         .map(Arc::new)?;
 
-        // // Create depth attachment
-        // let mut depth_image = Image::new_2d(
-        //     device.clone(),
-        //     vk::Format::D24_UNORM_S8_UINT,
-        //     extent,
-        //     1,
-        //     vec![ImageAccess::Attachment],
-        // )?;
-        // depth_image.allocate_memory(allocator, true)?;
-        // let depth_image = Arc::new(depth_image);
-        // let depth_view = ImageView::new(
-        //     depth_image.clone(),
-        //     vk::ImageViewType::TYPE_2D,
-        //     depth_image.full_subresource_range(),
-        // )
-        // .map(Arc::new)?;
+        // Create depth attachment
+        let mut depth_image = Image::new_2d(
+            device.clone(),
+            vk::Format::D24_UNORM_S8_UINT,
+            extent,
+            1,
+            vec![ImageAccess::Attachment],
+        )?;
+        depth_image.allocate_memory(allocator, true)?;
+        let depth_image = Arc::new(depth_image);
+        let depth_view = ImageView::new(
+            depth_image.clone(),
+            vk::ImageViewType::TYPE_2D,
+            depth_image.full_subresource_range(),
+        )
+        .map(Arc::new)?;
 
         // Create framebuffer
         let framebuffer = Framebuffer::new(
             ttmp.pipeline.render_pass().clone(),
-            // vec![color_view.clone(), depth_view.clone()],
-            vec![color_view.clone()],
+            vec![color_view.clone(), depth_view.clone()],
+            // vec![color_view.clone()],
             extent,
             1,
         )
@@ -322,16 +320,16 @@ impl TTMPAttachments {
                 ImageAccess::Undefined,
                 ImageAccess::TransferSrc,
             )),
-            // Command::Barrier(BarrierCommand::new_image_2d_barrier(
-            //     depth_image.as_ref(),
-            //     ImageAccess::Undefined,
-            //     ImageAccess::Attachment,
-            // )),
+            Command::Barrier(BarrierCommand::new_image_2d_barrier(
+                depth_image.as_ref(),
+                ImageAccess::Undefined,
+                ImageAccess::Attachment,
+            )),
         ];
 
         Ok((Self {
             color: color_view,
-            // depth: depth_view,
+            depth: depth_view,
             framebuffer,
             ttmp,
         },
@@ -399,12 +397,12 @@ impl TTMP {
                             float32: [0.0, 1.0, 0.0, 1.0],
                         },
                     },
-                    // vk::ClearValue {
-                    //     depth_stencil: vk::ClearDepthStencilValue {
-                    //         depth: 1.0,
-                    //         stencil: 1,
-                    //     },
-                    // },
+                    vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 1,
+                        },
+                    },
                 ],
                 vec![
                     RenderCommand::BindPipeline(0),
@@ -428,15 +426,15 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
                     .store_op(vk::AttachmentStoreOp::STORE)
                     .initial_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                     .final_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL),
-                // vk::AttachmentDescription2::default()
-                //     .format(vk::Format::D24_UNORM_S8_UINT)
-                //     .samples(vk::SampleCountFlags::TYPE_1)
-                //     .load_op(vk::AttachmentLoadOp::CLEAR)
-                //     .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                //     .stencil_load_op(vk::AttachmentLoadOp::CLEAR)
-                //     .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                //     .initial_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-                //     .final_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL),
+                vk::AttachmentDescription2::default()
+                    .format(vk::Format::D24_UNORM_S8_UINT)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .stencil_load_op(vk::AttachmentLoadOp::CLEAR)
+                    .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .initial_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+                    .final_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL),
             ])
             .subpasses(&[vk::SubpassDescription2::default()
                 .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
@@ -444,11 +442,11 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
                     .attachment(0)
                     .layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
                     .aspect_mask(vk::ImageAspectFlags::COLOR)])
-                // .depth_stencil_attachment(
-                //     &vk::AttachmentReference2::default()
-                //         .attachment(1)
-                //         .layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-                //         .aspect_mask(vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL))
+                .depth_stencil_attachment(
+                    &vk::AttachmentReference2::default()
+                        .attachment(1)
+                        .layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+                        .aspect_mask(vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL))
                 ])
             .dependencies(&[
                 vk::SubpassDependency2::default()
