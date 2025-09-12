@@ -204,7 +204,7 @@ impl Renderer {
 
         let (stage_buffer, upload_cmds) = self.dtp.do_transfers_custom(
             vec![DTPInput::CopyToImage {
-                data: image_data.as_bytes(),
+                data: &image_data.into_bytes(),
                 image: &image,
                 subresource_layers: image.all_subresource_layers(0),
             }],
@@ -275,7 +275,7 @@ impl Renderer {
 
         let draw_idx = present_img_idx as usize;
 
-        if self.swapchain.extent() != self.per_frame_datas[draw_idx].ttmp_attachments.extent() {
+        if self.swapchain.extent() != self.per_frame_datas[draw_idx].ttmp_attachments.framebuffer().extent() {
             self.per_frame_datas[draw_idx]
                 .resize(self.global_allocator.clone(), self.swapchain.extent())?;
         }
@@ -339,19 +339,19 @@ impl Renderer {
                 ImageAccess::Present,
                 ImageAccess::TransferDst,
             )),
-            // Command::blit_full_image(
-            //     self.per_frame_datas[draw_idx]
-            //         .ttmp_attachments
-            //         .color()
-            //         .image(),
-            //     self.swapchain.image_views()[draw_idx].image(),
-            //     vk::Filter::NEAREST,
-            // ),
             Command::blit_full_image(
-                self.textures["default"].albedo().image(),
+                self.per_frame_datas[draw_idx]
+                    .ttmp_attachments
+                    .color()
+                    .image(),
                 self.swapchain.image_views()[draw_idx].image(),
                 vk::Filter::NEAREST,
             ),
+            // Command::blit_full_image(
+            //     self.textures["default"].albedo().image(),
+            //     self.swapchain.image_views()[draw_idx].image(),
+            //     vk::Filter::NEAREST,
+            // ),
             Command::Barrier(BarrierCommand::new_image_2d_barrier(
                 self.swapchain.image_views()[draw_idx].image(),
                 ImageAccess::TransferDst,
@@ -361,22 +361,7 @@ impl Renderer {
 
         commands.extend(init_cmds);
         commands.extend(update_cmds);
-
-        draw_cb.reset()?;
-        draw_cb.record_commands(&commands, false)?;
-
-        draw_cb.submit(
-            &[],
-            &[],
-            Some(&self.per_frame_datas[draw_idx].draw_fence)
-        )?;
-
-        self.per_frame_datas[draw_idx].draw_fence.wait(u64::MAX)?;
-        self.per_frame_datas[draw_idx].draw_fence.reset()?;
-
-        commands.clear();
-
-        // commands.extend(ttpm_cmds);
+        commands.extend(ttpm_cmds);
         commands.extend(post_sync_commands);
 
         draw_cb.reset()?;
@@ -384,7 +369,8 @@ impl Renderer {
 
         draw_cb.submit(
             &[],
-            &[(&self.per_frame_datas[draw_idx].draw_emit_sem, vk::PipelineStageFlags2::BOTTOM_OF_PIPE)],
+            &[],
+            // &[(&self.per_frame_datas[draw_idx].draw_emit_sem, vk::PipelineStageFlags2::BOTTOM_OF_PIPE)],
             Some(&self.per_frame_datas[draw_idx].draw_fence)
         )?;
 
@@ -394,7 +380,8 @@ impl Renderer {
 
         self.swapchain.present(
             present_img_idx,
-            &[&self.per_frame_datas[draw_idx].draw_emit_sem],
+            &[],
+            // &[&self.per_frame_datas[draw_idx].draw_emit_sem],
         )?;
         Ok(())
     }

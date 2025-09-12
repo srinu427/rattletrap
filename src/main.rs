@@ -30,7 +30,7 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let state = self.renderer.as_mut().unwrap();
+        // let state = self.renderer.as_mut().unwrap();
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();

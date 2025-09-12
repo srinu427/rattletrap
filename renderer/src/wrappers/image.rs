@@ -265,6 +265,7 @@ impl Image {
                 )
                 .map_err(ImageError::MemoryBindError)?;
         }
+        self.allocation = Some(allocation);
         Ok(())
     }
 

@@ -17,6 +17,13 @@ pub enum BarrierCommand {
         old_access: ImageAccess,
         new_access: ImageAccess,
     },
+    Buffer {
+        buffer: vk::Buffer,
+        old_access: vk::AccessFlags2,
+        new_access: vk::AccessFlags2,
+        old_stage: vk::PipelineStageFlags2,
+        new_stage: vk::PipelineStageFlags2,
+    }
 }
 
 impl BarrierCommand {
@@ -62,6 +69,31 @@ impl BarrierCommand {
                             .image_memory_barriers(std::slice::from_ref(&barrier)),
                     );
                 }
+            },
+            BarrierCommand::Buffer {
+                buffer,
+                old_access,
+                new_access,
+                old_stage,
+                new_stage,
+            } => {
+                let barrier = vk::BufferMemoryBarrier2::default()
+                    .src_stage_mask(*old_stage)
+                    .src_access_mask(*old_access)
+                    .dst_stage_mask(*new_stage)
+                    .dst_access_mask(*new_access)
+                    .buffer(*buffer)
+                    .offset(0)
+                    .size(vk::WHOLE_SIZE);
+
+                unsafe {
+                    device.cmd_pipeline_barrier2(
+                        cmd_buffer.command_buffer(),
+                        &vk::DependencyInfo::default()
+                            .dependency_flags(vk::DependencyFlags::BY_REGION)
+                            .buffer_memory_barriers(std::slice::from_ref(&barrier)),
+                    );
+                }
             }
         }
     }
@@ -97,7 +129,7 @@ impl RenderCommand {
                 }
             }
             RenderCommand::BindDescriptorSets { pipeline_id, sets } => {
-                let sets: Vec<vk::DescriptorSet> =
+                let vk_sets: Vec<vk::DescriptorSet> =
                     sets.iter().map(|&i| dsets[i as usize]).collect();
                 unsafe {
                     device.cmd_bind_descriptor_sets(
@@ -105,7 +137,7 @@ impl RenderCommand {
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline_layouts[*pipeline_id],
                         0,
-                        &sets,
+                        &vk_sets,
                         &[],
                     );
                 }

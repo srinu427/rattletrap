@@ -1,4 +1,4 @@
-#version 460 core
+#version 450
 
 #include "common_structs.glsl"
 

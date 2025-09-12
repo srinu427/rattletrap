@@ -31,10 +31,9 @@ impl DescriptorSetLayout {
         bindings: &[(vk::DescriptorType, u32, bool)],
     ) -> Result<Self, DescriptorSetLayoutError> {
         let bindless_binding_flags = vk::DescriptorBindingFlags::PARTIALLY_BOUND
-            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
             | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT;
 
-        let bindless_layout_flags = vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL;
+        // let bindless_layout_flags = vk::DescriptorSetLayoutCreateFlags::;
 
         let vk_bindings = bindings
             .iter()
@@ -57,7 +56,7 @@ impl DescriptorSetLayout {
 
         let create_info = vk::DescriptorSetLayoutCreateInfo::default()
             .bindings(&vk_bindings)
-            .flags(bindless_layout_flags)
+            // .flags(bindless_binding_flags);
             .push_next(&mut binding_flags_info);
         let layout = unsafe {
             device
