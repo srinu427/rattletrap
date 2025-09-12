@@ -1,58 +1,64 @@
 use ash::vk;
 
 use crate::wrappers::{
-    buffer::Buffer, command_buffer::CommandBuffer, descriptor_set::DescriptorSet,
-    framebuffer::Framebuffer, image::Image, pipeline::Pipeline, render_pass::RenderPass,
+    buffer::Buffer,
+    command_buffer::{CommandBuffer, CommandBufferError},
+    descriptor_set::DescriptorSet,
+    framebuffer::Framebuffer,
+    image::{Image, ImageAccess},
+    pipeline::Pipeline,
 };
 
-pub enum BarrierCommand<'a> {
+pub enum BarrierCommand {
     Image2d {
-        image: &'a Image,
-        old_layout: vk::ImageLayout,
-        old_stage: vk::PipelineStageFlags2,
-        old_access: vk::AccessFlags2,
-        new_layout: vk::ImageLayout,
-        new_stage: vk::PipelineStageFlags2,
-        new_access: vk::AccessFlags2,
-        aspect_mask: vk::ImageAspectFlags,
+        image: vk::Image,
+        format: vk::Format,
+        subresource_range: vk::ImageSubresourceRange,
+        old_access: ImageAccess,
+        new_access: ImageAccess,
     },
 }
 
-impl<'a> BarrierCommand<'a> {
+impl BarrierCommand {
+    pub fn new_image_2d_barrier(
+        image: &Image,
+        old_access: ImageAccess,
+        new_access: ImageAccess,
+    ) -> Self {
+        Self::Image2d {
+            image: image.image(),
+            format: image.format(),
+            subresource_range: image.full_subresource_range(),
+            old_access,
+            new_access,
+        }
+    }
+
     pub fn apply_command(&self, cmd_buffer: &CommandBuffer) {
-        let device = cmd_buffer.command_pool().device();
+        let device = cmd_buffer.command_pool().device().sync2_device();
         match self {
             BarrierCommand::Image2d {
                 image,
-                old_layout,
-                old_stage,
+                format,
+                subresource_range,
                 old_access,
-                new_layout,
-                new_stage,
                 new_access,
-                aspect_mask,
             } => {
                 let barrier = vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(*old_stage)
-                    .src_access_mask(*old_access)
-                    .dst_stage_mask(*new_stage)
-                    .dst_access_mask(*new_access)
-                    .old_layout(*old_layout)
-                    .new_layout(*new_layout)
-                    .image(image.image())
-                    .subresource_range(
-                        vk::ImageSubresourceRange::default()
-                            .aspect_mask(*aspect_mask)
-                            .base_mip_level(0)
-                            .level_count(image.mip_levels())
-                            .base_array_layer(0)
-                            .layer_count(image.array_layers()),
-                    );
+                    .src_stage_mask(old_access.to_stage_flags(*format))
+                    .src_access_mask(old_access.to_access_flags(*format))
+                    .dst_stage_mask(new_access.to_stage_flags(*format))
+                    .dst_access_mask(new_access.to_access_flags(*format))
+                    .old_layout(old_access.to_layout(*format))
+                    .new_layout(new_access.to_layout(*format))
+                    .image(*image)
+                    .subresource_range(*subresource_range);
 
                 unsafe {
-                    device.sync2_device().cmd_pipeline_barrier2(
+                    device.cmd_pipeline_barrier2(
                         cmd_buffer.command_buffer(),
                         &vk::DependencyInfo::default()
+                            .dependency_flags(vk::DependencyFlags::BY_REGION)
                             .image_memory_barriers(std::slice::from_ref(&barrier)),
                     );
                 }
@@ -62,8 +68,11 @@ impl<'a> BarrierCommand<'a> {
 }
 
 pub enum RenderCommand {
-    BindPipeline(u32),
-    BindDescriptorSets(Vec<u32>),
+    BindPipeline(usize),
+    BindDescriptorSets {
+        pipeline_id: usize,
+        sets: Vec<usize>,
+    },
     Draw(u32),
 }
 
@@ -71,29 +80,30 @@ impl RenderCommand {
     pub fn record(
         &self,
         cmd_buffer: &CommandBuffer,
-        pipelines: &[&Pipeline],
-        dsets: &[&DescriptorSet],
+        pipelines: &[vk::Pipeline],
+        pipeline_layouts: &[vk::PipelineLayout],
+        dsets: &[vk::DescriptorSet],
     ) {
-        let device = cmd_buffer.command_pool().device();
+        let device = cmd_buffer.command_pool().device().device();
         match self {
             RenderCommand::BindPipeline(index) => {
                 let pipeline = pipelines[*index as usize];
                 unsafe {
-                    device.device().cmd_bind_pipeline(
+                    device.cmd_bind_pipeline(
                         cmd_buffer.command_buffer(),
                         vk::PipelineBindPoint::GRAPHICS,
-                        pipeline.pipeline(),
+                        pipeline,
                     );
                 }
             }
-            RenderCommand::BindDescriptorSets(indices) => {
+            RenderCommand::BindDescriptorSets { pipeline_id, sets } => {
                 let sets: Vec<vk::DescriptorSet> =
-                    indices.iter().map(|&i| dsets[i as usize].set()).collect();
+                    sets.iter().map(|&i| dsets[i as usize]).collect();
                 unsafe {
-                    device.device().cmd_bind_descriptor_sets(
+                    device.cmd_bind_descriptor_sets(
                         cmd_buffer.command_buffer(),
                         vk::PipelineBindPoint::GRAPHICS,
-                        pipelines[0].layout().pipeline_layout(),
+                        pipeline_layouts[*pipeline_id],
                         0,
                         &sets,
                         &[],
@@ -101,119 +111,162 @@ impl RenderCommand {
                 }
             }
             RenderCommand::Draw(vertex_count) => unsafe {
-                device
-                    .device()
-                    .cmd_draw(cmd_buffer.command_buffer(), *vertex_count, 1, 0, 0);
+                device.cmd_draw(cmd_buffer.command_buffer(), *vertex_count, 1, 0, 0);
             },
         }
     }
 }
 
-pub enum Command<'a> {
+pub enum Command {
     CopyBufferToBuffer {
-        src: &'a Buffer,
-        dst: &'a Buffer,
+        src: vk::Buffer,
+        dst: vk::Buffer,
         regions: Vec<vk::BufferCopy>,
     },
     CopyBufferToImage {
-        src: &'a Buffer,
-        dst: &'a Image,
+        src: vk::Buffer,
+        dst: vk::Image,
         regions: Vec<vk::BufferImageCopy>,
     },
-    BlitImage2dFull {
-        src: &'a Image,
-        dst: &'a Image,
+    BlitImage {
+        src: vk::Image,
+        dst: vk::Image,
         filter: vk::Filter,
+        regions: Vec<vk::ImageBlit>,
     },
     RunRenderPass {
-        pipelines: Vec<&'a Pipeline>,
-        dsets: Vec<&'a DescriptorSet>,
-        framebuffer: &'a Framebuffer,
+        render_pass: vk::RenderPass,
+        pipelines: Vec<vk::Pipeline>,
+        pipeline_layouts: Vec<vk::PipelineLayout>,
+        dsets: Vec<vk::DescriptorSet>,
+        framebuffer: vk::Framebuffer,
+        extent: vk::Extent2D,
         clear_values: Vec<vk::ClearValue>,
         commands: Vec<RenderCommand>,
     },
-    Barrier(BarrierCommand<'a>),
+    Barrier(BarrierCommand),
 }
 
-impl<'a> Command<'a> {
+impl Command {
+    pub fn copy_buffer_to_buffer(src: &Buffer, dst: &Buffer, regions: Vec<vk::BufferCopy>) -> Self {
+        Self::CopyBufferToBuffer {
+            src: src.buffer(),
+            dst: dst.buffer(),
+            regions,
+        }
+    }
+
+    pub fn copy_buffer_to_image(
+        src: &Buffer,
+        dst: &Image,
+        regions: Vec<vk::BufferImageCopy>,
+    ) -> Self {
+        Self::CopyBufferToImage {
+            src: src.buffer(),
+            dst: dst.image(),
+            regions,
+        }
+    }
+
+    pub fn blit_full_image(src: &Image, dst: &Image, filter: vk::Filter) -> Self {
+        let blit_region = vk::ImageBlit::default()
+            .src_subresource(src.all_subresource_layers(0))
+            .src_offsets([
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: src.extent().width as i32,
+                    y: src.extent().height as i32,
+                    z: 1,
+                },
+            ])
+            .dst_subresource(dst.all_subresource_layers(0))
+            .dst_offsets([
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: dst.extent().width as i32,
+                    y: dst.extent().height as i32,
+                    z: 1,
+                },
+            ]);
+        Self::BlitImage {
+            src: src.image(),
+            dst: dst.image(),
+            filter,
+            regions: vec![blit_region],
+        }
+    }
+
+    pub fn run_render_pass(
+        pipelines: Vec<&Pipeline>,
+        dsets: Vec<&DescriptorSet>,
+        framebuffer: &Framebuffer,
+        clear_values: Vec<vk::ClearValue>,
+        commands: Vec<RenderCommand>,
+    ) -> Self {
+        Self::RunRenderPass {
+            render_pass: pipelines[0].render_pass().render_pass(),
+            pipelines: pipelines.iter().map(|p| p.pipeline()).collect(),
+            pipeline_layouts: pipelines
+                .iter()
+                .map(|pl| pl.layout().pipeline_layout())
+                .collect(),
+            dsets: dsets.iter().map(|ds| ds.set()).collect(),
+            framebuffer: framebuffer.framebuffer(),
+            extent: framebuffer.extent(),
+            clear_values,
+            commands,
+        }
+    }
+
     pub fn record(&self, cmd_buffer: &CommandBuffer) {
         let device = cmd_buffer.command_pool().device();
         match self {
             Self::CopyBufferToBuffer { src, dst, regions } => unsafe {
-                device.device().cmd_copy_buffer(
-                    cmd_buffer.command_buffer(),
-                    src.buffer(),
-                    dst.buffer(),
-                    regions,
-                );
+                device
+                    .device()
+                    .cmd_copy_buffer(cmd_buffer.command_buffer(), *src, *dst, regions);
             },
             Self::CopyBufferToImage { src, dst, regions } => unsafe {
                 device.device().cmd_copy_buffer_to_image(
                     cmd_buffer.command_buffer(),
-                    src.buffer(),
-                    dst.image(),
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    *src,
+                    *dst,
+                    ImageAccess::TransferDst.to_layout(vk::Format::UNDEFINED),
                     regions,
                 );
             },
-            Self::BlitImage2dFull { src, dst, filter } => {
-                let blit = vk::ImageBlit::default()
-                    .src_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .mip_level(0)
-                            .base_array_layer(0)
-                            .layer_count(1),
-                    )
-                    .src_offsets([
-                        vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D {
-                            x: src.extent().width as i32,
-                            y: src.extent().height as i32,
-                            z: 1,
-                        },
-                    ])
-                    .dst_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .mip_level(0)
-                            .base_array_layer(0)
-                            .layer_count(1),
-                    )
-                    .dst_offsets([
-                        vk::Offset3D { x: 0, y: 0, z: 0 },
-                        vk::Offset3D {
-                            x: dst.extent().width as i32,
-                            y: dst.extent().height as i32,
-                            z: 1,
-                        },
-                    ]);
-
-                unsafe {
-                    device.device().cmd_blit_image(
-                        cmd_buffer.command_buffer(),
-                        src.image(),
-                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                        dst.image(),
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        &[blit],
-                        *filter,
-                    );
-                }
-            }
+            Self::BlitImage {
+                src,
+                dst,
+                filter,
+                regions,
+            } => unsafe {
+                device.device().cmd_blit_image(
+                    cmd_buffer.command_buffer(),
+                    *src,
+                    ImageAccess::TransferSrc.to_layout(vk::Format::UNDEFINED),
+                    *dst,
+                    ImageAccess::TransferDst.to_layout(vk::Format::UNDEFINED),
+                    &regions,
+                    *filter,
+                );
+            },
             Self::RunRenderPass {
                 pipelines,
+                pipeline_layouts,
                 dsets,
                 framebuffer,
                 commands,
                 clear_values,
+                render_pass,
+                extent,
             } => {
                 let render_pass_begin_info = vk::RenderPassBeginInfo::default()
-                    .render_pass(framebuffer.render_pass().render_pass())
-                    .framebuffer(framebuffer.framebuffer())
+                    .render_pass(*render_pass)
+                    .framebuffer(*framebuffer)
                     .render_area(vk::Rect2D {
                         offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: framebuffer.extent(),
+                        extent: *extent,
                     })
                     .clear_values(&clear_values);
                 unsafe {
@@ -229,8 +282,8 @@ impl<'a> Command<'a> {
                         &[vk::Viewport {
                             x: 0.0,
                             y: 0.0,
-                            width: framebuffer.extent().width as f32,
-                            height: framebuffer.extent().height as f32,
+                            width: extent.width as f32,
+                            height: extent.height as f32,
                             min_depth: 0.0,
                             max_depth: 1.0,
                         }],
@@ -241,12 +294,12 @@ impl<'a> Command<'a> {
                         0,
                         &[vk::Rect2D {
                             offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: framebuffer.extent(),
+                            extent: *extent,
                         }],
                     );
 
                     for command in commands {
-                        command.record(cmd_buffer, &pipelines, &dsets);
+                        command.record(&cmd_buffer, &pipelines, &pipeline_layouts, &dsets);
                     }
                     device
                         .device()
@@ -257,5 +310,16 @@ impl<'a> Command<'a> {
                 barrier_command.apply_command(cmd_buffer);
             }
         }
+    }
+}
+
+impl CommandBuffer {
+    pub fn record_commands(&self, commands: &[Command], one_time: bool) -> Result<(), CommandBufferError> {
+        self.begin(one_time)?;
+        for command in commands {
+            command.record(self);
+        }
+        self.end()?;
+        Ok(())
     }
 }

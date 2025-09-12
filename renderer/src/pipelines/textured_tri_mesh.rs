@@ -11,7 +11,7 @@ use include_bytes_aligned::include_bytes_aligned;
 use anyhow::Result as AnyResult;
 
 use crate::{
-    pipelines::data_transfer::{DTP, DTPInput},
+    pipelines::data_transfer::{DTPInput, DTP},
     renderables::{
         camera::Camera,
         texture::Texture,
@@ -19,13 +19,13 @@ use crate::{
     },
     wrappers::{
         buffer::Buffer,
-        command::{Command, RenderCommand},
+        command::{BarrierCommand, Command, RenderCommand},
         command_buffer::CommandBuffer,
         descriptor_pool::DescriptorPool,
         descriptor_set::DescriptorSet,
         descriptor_set_layout::DescriptorSetLayout,
         framebuffer::Framebuffer,
-        image::Image,
+        image::{Image, ImageAccess},
         image_view::ImageView,
         logical_device::LogicalDevice,
         pipeline::Pipeline,
@@ -97,7 +97,9 @@ impl TTMPSets {
             device.device().allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(descriptor_pool.pool())
-                    .set_layouts(&vk_set_layouts),
+                    .set_layouts(&vk_set_layouts)
+                    .push_next(&mut vk::DescriptorSetVariableDescriptorCountAllocateInfo::default()
+                        .descriptor_counts(&[4, 1, ttmp.max_textures - 1])),
             )?
         };
         let descriptor_sets = descriptor_sets
@@ -157,6 +159,7 @@ impl TTMPSets {
             .map(|tex| {
                 vk::DescriptorImageInfo::default()
                     .image_view(tex.albedo().image_view())
+                    .sampler(vk::Sampler::null())
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             })
             .collect();
@@ -166,6 +169,7 @@ impl TTMPSets {
                 &[vk::WriteDescriptorSet::default()
                     .dst_set(self.descriptor_sets[2].set())
                     .dst_binding(0)
+                    .descriptor_count(image_infos.len() as u32)
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(&image_infos)],
                 &[],
@@ -173,7 +177,7 @@ impl TTMPSets {
         }
     }
 
-    pub fn update_ssbos(&mut self, dtp: &DTP, meshes: &[TriMesh], camera: Camera) -> AnyResult<()> {
+    pub fn update_ssbos(&mut self, dtp: &DTP, meshes: &[TriMesh], camera: Camera) -> AnyResult<(Buffer, Vec<Command>)> {
         let vert_data: Vec<u8> = meshes
             .iter()
             .flat_map(|m| bytemuck::cast_slice(&m.vertices).to_vec())
@@ -189,14 +193,12 @@ impl TTMPSets {
         self.index_count = (index_data.len() / 4) as u32;
         let cam_data: Vec<u8> = bytemuck::cast_slice(&[camera]).to_vec();
 
-        dtp.do_transfers(vec![
+        dtp.do_transfers_custom(vec![
             DTPInput::CopyToBuffer(&vert_data, &self.ssbos[0]),
             DTPInput::CopyToBuffer(&triangle_data, &self.ssbos[1]),
             DTPInput::CopyToBuffer(&index_data, &self.ssbos[2]),
             DTPInput::CopyToBuffer(&cam_data, &self.ssbos[3]),
-        ])?;
-
-        Ok(())
+        ])
     }
 }
 
@@ -218,28 +220,23 @@ impl TTMPAttachments {
         ttmp: Arc<TTMP>,
         allocator: Arc<Mutex<Allocator>>,
         extent: vk::Extent2D,
-    ) -> AnyResult<Self> {
+    ) -> AnyResult<(Self, Vec<Command>)> {
         let device = ttmp.pipeline.render_pass().device();
 
         // Create color attachment
         let mut color_image = Image::new_2d(
             device.clone(),
-            vk::Format::R8G8B8A8_SRGB,
+            vk::Format::R8G8B8A8_UNORM,
             extent,
             1,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
+            vec![ImageAccess::Attachment, ImageAccess::TransferSrc]
         )?;
         color_image.allocate_memory(allocator.clone(), true)?;
         let color_image = Arc::new(color_image);
         let color_view = ImageView::new(
-            color_image,
+            color_image.clone(),
             vk::ImageViewType::TYPE_2D,
-            vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .base_mip_level(0)
-                .level_count(1)
-                .base_array_layer(0)
-                .layer_count(1),
+            color_image.full_subresource_range(),
         )
         .map(Arc::new)?;
 
@@ -249,19 +246,14 @@ impl TTMPAttachments {
             vk::Format::D24_UNORM_S8_UINT,
             extent,
             1,
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            vec![ImageAccess::Attachment],
         )?;
         depth_image.allocate_memory(allocator, true)?;
         let depth_image = Arc::new(depth_image);
         let depth_view = ImageView::new(
-            depth_image,
+            depth_image.clone(),
             vk::ImageViewType::TYPE_2D,
-            vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL)
-                .base_mip_level(0)
-                .level_count(1)
-                .base_array_layer(0)
-                .layer_count(1),
+            depth_image.full_subresource_range(),
         )
         .map(Arc::new)?;
 
@@ -274,13 +266,27 @@ impl TTMPAttachments {
         )
         .map(Arc::new)?;
 
-        Ok(Self {
+        let commands = vec![
+            Command::Barrier(BarrierCommand::new_image_2d_barrier(
+                color_image.as_ref(),
+                ImageAccess::Undefined,
+                ImageAccess::TransferSrc,
+            )),
+            Command::Barrier(BarrierCommand::new_image_2d_barrier(
+                depth_image.as_ref(),
+                ImageAccess::Undefined,
+                ImageAccess::Attachment,
+            )),
+        ];
+
+        Ok((Self {
             color: color_view,
             depth: depth_view,
             framebuffer,
             extent,
             ttmp,
-        })
+        },
+        commands))
     }
 }
 
@@ -326,40 +332,38 @@ impl TTMP {
 
     pub fn render(
         &self,
-        command_buffer: &CommandBuffer,
         set: &TTMPSets,
         attachment: &TTMPAttachments,
-    ) {
-        let commands = [Command::RunRenderPass {
-            pipelines: vec![&self.pipeline],
-            dsets: vec![
-                &set.descriptor_sets[0],
-                &set.descriptor_sets[1],
-                &set.descriptor_sets[2],
-            ],
-            framebuffer: &attachment.framebuffer,
-            clear_values: vec![
-                vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [0.2, 0.2, 0.4, 1.0],
+    ) -> Vec<Command> {
+        vec![
+            Command::run_render_pass(
+                vec![&self.pipeline],
+                vec![
+                    &set.descriptor_sets[0],
+                    &set.descriptor_sets[1],
+                    &set.descriptor_sets[2],
+                ],
+                &attachment.framebuffer,
+                vec![
+                    vk::ClearValue {
+                        color: vk::ClearColorValue {
+                            float32: [0.0, 0.0, 0.3, 0.0],
+                        },
                     },
-                },
-                vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue {
-                        depth: 1.0,
-                        stencil: 0,
+                    vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 1,
+                        },
                     },
-                },
-            ],
-            commands: vec![
-                RenderCommand::BindPipeline(0),
-                RenderCommand::BindDescriptorSets(vec![0, 1, 2]),
-                RenderCommand::Draw(set.index_count),
-            ],
-        }];
-        for command in &commands {
-            command.record(command_buffer);
-        }
+                ],
+                vec![
+                    RenderCommand::BindPipeline(0),
+                    RenderCommand::BindDescriptorSets { pipeline_id: 0, sets: vec![0, 1, 2] },
+                    RenderCommand::Draw(set.index_count),
+                ]
+            )
+        ]
     }
 }
 
@@ -369,17 +373,19 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
         &vk::RenderPassCreateInfo2::default()
             .attachments(&[
                 vk::AttachmentDescription2::default()
-                    .format(vk::Format::R8G8B8A8_SRGB)
+                    .format(vk::Format::R8G8B8A8_UNORM)
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::STORE)
-                    .initial_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-                    .final_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL),
+                    .initial_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .final_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL),
                 vk::AttachmentDescription2::default()
                     .format(vk::Format::D24_UNORM_S8_UINT)
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
                     .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .stencil_load_op(vk::AttachmentLoadOp::CLEAR)
+                    .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                     .initial_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
                     .final_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL),
             ])
@@ -394,7 +400,31 @@ fn make_render_pass(device: Arc<LogicalDevice>) -> AnyResult<RenderPass> {
                         .attachment(1)
                         .layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
                         .aspect_mask(vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL),
-                )]),
+                )])
+            .dependencies(&[
+                vk::SubpassDependency2::default()
+                    .src_subpass(vk::SUBPASS_EXTERNAL)
+                    .dst_subpass(0)
+                    .push_next(
+                        &mut vk::MemoryBarrier2::default()
+                            .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT),
+                    )
+                    .dependency_flags(vk::DependencyFlags::BY_REGION),
+                vk::SubpassDependency2::default()
+                    .src_subpass(0)
+                    .dst_subpass(vk::SUBPASS_EXTERNAL)
+                    .push_next(
+                        &mut vk::MemoryBarrier2::default()
+                            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                            .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER),
+                    )
+                    .dependency_flags(vk::DependencyFlags::BY_REGION),
+            ]),
     )?)
 }
 
@@ -405,15 +435,15 @@ fn make_set_layouts(
     let layout0 = DescriptorSetLayout::new(
         device.clone(),
         &[
-            (vk::DescriptorType::STORAGE_BUFFER, 1),
-            (vk::DescriptorType::STORAGE_BUFFER, 1),
-            (vk::DescriptorType::STORAGE_BUFFER, 1),
-            (vk::DescriptorType::STORAGE_BUFFER, 1),
+            (vk::DescriptorType::STORAGE_BUFFER, 1, false),
+            (vk::DescriptorType::STORAGE_BUFFER, 1, false),
+            (vk::DescriptorType::STORAGE_BUFFER, 1, false),
+            (vk::DescriptorType::STORAGE_BUFFER, 1, false),
         ],
     )?;
-    let layout1 = DescriptorSetLayout::new(device.clone(), &[(vk::DescriptorType::SAMPLER, 1)])?;
+    let layout1 = DescriptorSetLayout::new(device.clone(), &[(vk::DescriptorType::SAMPLER, 1, false)])?;
     let layout2 =
-        DescriptorSetLayout::new(device, &[(vk::DescriptorType::SAMPLED_IMAGE, max_textures)])?;
+        DescriptorSetLayout::new(device, &[(vk::DescriptorType::SAMPLED_IMAGE, max_textures, true)])?;
     Ok(vec![
         Arc::new(layout0),
         Arc::new(layout1),

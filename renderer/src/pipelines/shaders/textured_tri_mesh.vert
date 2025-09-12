@@ -23,5 +23,6 @@ void main() {
     outUV = inUV;
     objId = vertex_buffer[vert_index].obj_id;
     gl_Position = invert_y_axis(camera.view_proj_mat * inPosition);
-    // debugPrintfEXT("My vec is %v", gl_Position);
+    // debugPrintfEXT("My vec is %v4f\n", gl_Position);
+    // debugPrintfEXT("My matid is %u\n", objId);
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ash::{ext, khr, vk};
+use ash::{khr, vk};
 use gpu_allocator::{
     AllocationError,
     vulkan::{Allocator, AllocatorCreateDesc},

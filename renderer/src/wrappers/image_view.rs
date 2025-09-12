@@ -30,6 +30,12 @@ impl ImageView {
             .image(image.image())
             .view_type(type_)
             .format(image.format())
+            .components(vk::ComponentMapping {
+                r: vk::ComponentSwizzle::R,
+                g: vk::ComponentSwizzle::G,
+                b: vk::ComponentSwizzle::B,
+                a: vk::ComponentSwizzle::A,
+            })
             .subresource_range(subresource_range);
 
         let image_view = unsafe {

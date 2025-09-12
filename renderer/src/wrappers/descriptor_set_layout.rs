@@ -28,8 +28,14 @@ pub struct DescriptorSetLayout {
 impl DescriptorSetLayout {
     pub fn new(
         device: Arc<LogicalDevice>,
-        bindings: &[(vk::DescriptorType, u32)],
+        bindings: &[(vk::DescriptorType, u32, bool)],
     ) -> Result<Self, DescriptorSetLayoutError> {
+        let bindless_binding_flags = vk::DescriptorBindingFlags::PARTIALLY_BOUND
+            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+            | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT;
+
+        let bindless_layout_flags = vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL;
+
         let vk_bindings = bindings
             .iter()
             .enumerate()
@@ -41,7 +47,18 @@ impl DescriptorSetLayout {
                     .stage_flags(vk::ShaderStageFlags::ALL)
             })
             .collect::<Vec<_>>();
-        let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&vk_bindings);
+
+        let binding_flags = bindings
+            .iter()
+            .map(|b| if b.2 { bindless_binding_flags } else { vk::DescriptorBindingFlags::empty() })
+            .collect::<Vec<_>>();
+        let mut binding_flags_info = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
+            .binding_flags(&binding_flags);
+
+        let create_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(&vk_bindings)
+            .flags(bindless_layout_flags)
+            .push_next(&mut binding_flags_info);
         let layout = unsafe {
             device
                 .device()

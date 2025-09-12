@@ -61,9 +61,7 @@ impl Instance {
     pub fn new(window: Arc<Window>) -> Result<Self, InstanceError> {
         let entry = unsafe { ash::Entry::load()? };
 
-        let info = unsafe {
-            entry.enumerate_instance_extension_properties(None)
-        };
+        let info = unsafe { entry.enumerate_instance_extension_properties(None) };
         println!("{:#?}", info);
 
         let app_info = vk::ApplicationInfo::default()

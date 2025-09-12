@@ -53,8 +53,7 @@ impl DTP {
     pub fn do_transfers_custom(
         &self,
         transfers: Vec<DTPInput>,
-        command_buffer: &CommandBuffer,
-    ) -> AnyResult<Buffer> {
+    ) -> AnyResult<(Buffer, Vec<Command>)> {
         let device = self.command_pool.device();
         let stage_buffer_size: u64 = transfers
             .iter()
@@ -76,11 +75,17 @@ impl DTP {
             match transfer {
                 DTPInput::CopyToBuffer(data, ..) => {
                     let data_len = data.len();
+                    if data_len == 0 {
+                        continue;
+                    }
                     stage_mem_ptr[offset..offset + data_len].copy_from_slice(data);
                     offset += data_len;
                 }
                 DTPInput::CopyToImage { data, .. } => {
                     let data_len = data.len();
+                    if data_len == 0 {
+                        continue;
+                    }
                     stage_mem_ptr[offset..offset + data_len].copy_from_slice(data);
                     offset += data_len;
                 }
@@ -100,11 +105,7 @@ impl DTP {
                         .src_offset(current_offset)
                         .dst_offset(0)
                         .size(data_len);
-                    commands.push(Command::CopyBufferToBuffer {
-                        src: &stage_buffer,
-                        dst: buffer,
-                        regions: vec![copy_region],
-                    });
+                    commands.push(Command::copy_buffer_to_buffer(&stage_buffer, buffer, vec![copy_region]));
                     current_offset += data_len;
                 }
                 DTPInput::CopyToImage {
@@ -118,45 +119,27 @@ impl DTP {
                     }
                     let buffer_image_regions = vk::BufferImageCopy::default()
                         .buffer_offset(current_offset)
-                        .buffer_row_length(0)
-                        .buffer_image_height(0)
                         .image_subresource(subresource_layers)
                         .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
                         .image_extent(image.extent());
-                    commands.push(Command::CopyBufferToImage {
-                        src: &stage_buffer,
-                        dst: image,
-                        regions: vec![buffer_image_regions],
-                    });
+                    commands.push(Command::copy_buffer_to_image(&stage_buffer, image, vec![buffer_image_regions]));
                     current_offset += data_len;
                 }
             }
         }
-        for command in &commands {
-            command.record(command_buffer);
-        }
 
-        Ok(stage_buffer)
+        Ok((stage_buffer, commands))
     }
 
     pub fn do_transfers(&self, transfers: Vec<DTPInput>) -> AnyResult<()> {
         let device = self.command_pool.device();
         let command_buffer = self.create_temp_command_buffer()?;
-        command_buffer.begin(true)?;
-        let stage_buffer = self.do_transfers_custom(transfers, &command_buffer)?;
-        command_buffer.end()?;
+        let (stage_buffer, commands) = self.do_transfers_custom(transfers)?;
+        command_buffer.record_commands(&commands, true)?;
 
         let fence = Fence::new(device.clone(), false)?;
 
-        unsafe {
-            device.sync2_device().queue_submit2(
-                device.graphics_queue(),
-                &[vk::SubmitInfo2::default()
-                    .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
-                        .command_buffer(command_buffer.command_buffer())])],
-                fence.fence(),
-            )?;
-        }
+        command_buffer.submit(&[], &[], Some(&fence))?;
 
         fence.wait(u64::MAX)?;
 

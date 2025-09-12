@@ -4,15 +4,13 @@ use ash::vk;
 use thiserror::Error;
 
 use crate::wrappers::{
-    fence::{Fence, FenceError},
-    image::Image,
-    image_view::{ImageView, ImageViewError},
-    logical_device::LogicalDevice,
-    semaphore::Semaphore,
+    command::{BarrierCommand, Command}, fence::{Fence, FenceError}, image::{Image, ImageAccess}, image_view::{ImageView, ImageViewError}, logical_device::LogicalDevice, semaphore::{Semaphore, SemaphoreError}
 };
 
 #[derive(Debug, Error)]
 pub enum SwapchainError {
+    #[error("Vulkan semaphore error: {0}")]
+    SemaphoreError(#[from] SemaphoreError),
     #[error("Vulkan surface format listing error: {0}")]
     GetSurfaceFormatsError(vk::Result),
     #[error("Vulkan surface capabilities listing error: {0}")]
@@ -59,12 +57,7 @@ fn fetch_images_make_views(
             ImageView::new(
                 img.clone(),
                 vk::ImageViewType::TYPE_2D,
-                vk::ImageSubresourceRange::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .base_mip_level(0)
-                    .level_count(1)
-                    .base_array_layer(0)
-                    .layer_count(1),
+                img.full_subresource_range(),
             )
             .map(Arc::new)
         })
@@ -75,6 +68,8 @@ fn fetch_images_make_views(
 
 #[derive(getset::Getters, getset::CopyGetters)]
 pub struct Swapchain {
+    acquire_semaphore: Semaphore,
+    fence: Fence,
     #[get = "pub"]
     image_views: Vec<Arc<ImageView>>,
     #[get_copy = "pub"]
@@ -89,7 +84,7 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    pub fn new(device: Arc<LogicalDevice>) -> Result<Self, SwapchainError> {
+    pub fn new(device: Arc<LogicalDevice>) -> Result<(Self, Vec<Command>), SwapchainError> {
         let surface_instance = device.instance().surface_instance();
         let surface = device.instance().surface();
         let instance = device.instance().instance();
@@ -116,6 +111,12 @@ impl Swapchain {
             .iter()
             .filter(|format| format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
             .filter(|format| {
+                format.format == vk::Format::B8G8R8A8_UNORM
+                    || format.format == vk::Format::R8G8B8A8_UNORM
+                    || format.format == vk::Format::B8G8R8A8_SRGB
+                    || format.format == vk::Format::R8G8B8A8_SRGB
+            })
+            .filter(|format| {
                 let supported = unsafe {
                     instance
                         .get_physical_device_format_properties(device.gpu(), format.format)
@@ -126,10 +127,6 @@ impl Swapchain {
                         )
                 };
                 supported
-                    && (format.format == vk::Format::B8G8R8A8_UNORM
-                        || format.format == vk::Format::R8G8B8A8_UNORM
-                        || format.format == vk::Format::B8G8R8A8_SRGB
-                        || format.format == vk::Format::R8G8B8A8_SRGB)
             })
             .next()
             .cloned()
@@ -185,17 +182,33 @@ impl Swapchain {
 
         let image_views = fetch_images_make_views(device.clone(), swapchain, format, extent)?;
 
-        Ok(Self {
+        let acquire_semaphore = Semaphore::new(device.clone())?;
+        let fence = Fence::new(device.clone(), false)?;
+
+        let commands = image_views
+            .iter()
+            .map(|iv| {
+                Command::Barrier(BarrierCommand::new_image_2d_barrier(
+                    iv.image(),
+                    ImageAccess::Undefined,
+                    ImageAccess::Present
+                ))
+            })
+            .collect();
+        Ok((Self {
+            acquire_semaphore,
+            fence,
             present_mode,
             image_views,
             swapchain,
             format,
             extent,
             device,
-        })
+        },
+        commands))
     }
 
-    pub fn refresh_resolution(&mut self) -> Result<(), SwapchainError> {
+    pub fn refresh_resolution(&mut self) -> Result<Vec<Command>, SwapchainError> {
         println!("refreshing sw res");
         let surface_instance = self.device.instance().surface_instance();
         let surface = self.device.instance().surface();
@@ -257,18 +270,31 @@ impl Swapchain {
         self.swapchain = swapchain;
 
         self.extent = extent;
-        Ok(())
+        
+        let commands = self
+            .image_views
+            .iter()
+            .map(|iv| {
+                Command::Barrier(BarrierCommand::new_image_2d_barrier(
+                    iv.image(),
+                    ImageAccess::Undefined,
+                    ImageAccess::Present
+                ))
+            })
+            .collect();
+
+        Ok(commands)
     }
 
-    pub fn acquire_image(&mut self, fence: &Fence) -> Result<(u32, bool), SwapchainError> {
-        let mut swapchain_refreshed = false;
+    pub fn acquire_image(&mut self) -> Result<(u32, Vec<Command>), SwapchainError> {
+        let mut commands = vec![];
         loop {
             let aquire_out = unsafe {
                 self.device.swapchain_device().acquire_next_image(
                     self.swapchain,
                     u64::MAX,
                     vk::Semaphore::null(),
-                    fence.fence(),
+                    self.fence.fence(),
                 )
             };
 
@@ -279,16 +305,17 @@ impl Swapchain {
             };
 
             if is_suboptimal {
-                self.refresh_resolution()?;
-                swapchain_refreshed = true;
+                commands = self.refresh_resolution()?;
                 if idx.is_some() {
-                    fence.wait(u64::MAX)?;
-                    fence.reset()?;
+                    self.fence.wait(u64::MAX)?;
+                    self.fence.reset()?;
                 }
                 continue;
             }
             if let Some(img_idx) = idx {
-                return Ok((img_idx, swapchain_refreshed));
+                self.fence.wait(u64::MAX)?;
+                self.fence.reset()?;
+                return Ok((img_idx, commands));
             }
         }
     }

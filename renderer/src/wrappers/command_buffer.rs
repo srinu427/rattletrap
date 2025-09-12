@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ash::vk;
 use thiserror::Error;
 
-use crate::wrappers::command_pool::CommandPool;
+use crate::wrappers::{command_pool::CommandPool, fence::Fence, semaphore::Semaphore};
 
 #[derive(Debug, Error)]
 pub enum CommandBufferError {
@@ -15,6 +15,8 @@ pub enum CommandBufferError {
     EndError(vk::Result),
     #[error("Command buffer reset error: {0}")]
     ResetError(vk::Result),
+    #[error("Command buffer submit error: {0}")]
+    SubmitError(vk::Result),
 }
 
 #[derive(getset::Getters, getset::CopyGetters)]
@@ -93,5 +95,47 @@ impl CommandBuffer {
         };
 
         Ok(())
+    }
+
+    pub fn submit(
+        &self,
+        wait_sems: &[(&Semaphore, vk::PipelineStageFlags2)],
+        signal_sems: &[(&Semaphore, vk::PipelineStageFlags2)],
+        fence: Option<&Fence>,
+    ) -> Result<(), CommandBufferError> {
+        let wait_semaphore_infos: Vec<vk::SemaphoreSubmitInfo> = wait_sems
+            .iter()
+            .map(|(sem, stage)| {
+                vk::SemaphoreSubmitInfo::default()
+                    .semaphore(sem.semaphore())
+                    .stage_mask(*stage)
+            })
+            .collect();
+
+        let signal_semaphore_infos: Vec<vk::SemaphoreSubmitInfo> = signal_sems
+            .iter()
+            .map(|(sem, stage)| {
+                vk::SemaphoreSubmitInfo::default()
+                    .semaphore(sem.semaphore())
+                    .stage_mask(*stage)
+            })
+            .collect();
+
+        let command_buffer_infos = [vk::CommandBufferSubmitInfo::default()
+            .command_buffer(self.command_buffer)
+            .device_mask(0)];
+        let submit_info = vk::SubmitInfo2::default()
+            .command_buffer_infos(&command_buffer_infos)
+            .wait_semaphore_infos(&wait_semaphore_infos)
+            .signal_semaphore_infos(&signal_semaphore_infos);
+
+        unsafe {
+            self.command_pool.device().sync2_device().queue_submit2(
+                self.command_pool.device().graphics_queue(),
+                &[submit_info],
+                fence.map(|f| f.fence()).unwrap_or(vk::Fence::null()),
+            ).map_err(CommandBufferError::SubmitError)
+        }
+        
     }
 }
