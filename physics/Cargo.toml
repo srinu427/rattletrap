@@ -4,4 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+getset = "0.1.6"
 glam = "0.30.5"
