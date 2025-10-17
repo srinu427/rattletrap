@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 getset = "0.1.6"
 glam = "0.30.5"
+hashbrown = "0.16.0"

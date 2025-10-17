@@ -6,50 +6,42 @@ pub mod sphere;
 pub mod capsule;
 pub mod triangle;
 
+#[derive(Debug, Clone)]
 pub enum CollisionShape {
     Sphere(Sphere),
     Capsule(Capsule),
     Triangle(Triangle),
 }
 
-pub fn sphere_sphere_pen(s1: &Sphere, s2: &Sphere) -> Option<(f32, glam::Vec3)> {
+pub fn sphere_sphere_dist(s1: &Sphere, s2: &Sphere) -> (f32, glam::Vec3) {
     let delta = s2.center() - s1.center();
     let dist = delta.length();
-    let penetration = s1.radius() + s2.radius() - dist;
-    if penetration > 0.0 {
-        let normal = if dist > 0.0 {
-            delta / dist
-        } else {
-            glam::Vec3::ZERO
-        };
-        Some((penetration, normal))
+    let min_dist = dist - s1.radius() - s2.radius();
+    let min_dir = if dist == 0.0 {
+        glam::Vec3::ZERO
     } else {
-        None
-    }
-
+        delta / dist
+    };
+    (min_dist, min_dir)
 }
 
-pub fn sphere_capsule_pen(sphere: &Sphere, capsule: &Capsule) -> Option<(f32, glam::Vec3)> {
+pub fn sphere_capsule_dist(sphere: &Sphere, capsule: &Capsule) -> (f32, glam::Vec3) {
     let ab = capsule.point_b() - capsule.point_a();
     let t = (sphere.center() - capsule.point_a()).dot(ab) / ab.dot(ab);
     let t = t.clamp(0.0, 1.0);
     let closest_point = capsule.point_a() + t * ab;
     let delta = sphere.center() - closest_point;
     let dist = delta.length();
-    let penetration = sphere.radius() + capsule.radius() - dist;
-    if penetration > 0.0 {
-        let normal = if dist > 0.0 {
-            delta / dist
-        } else {
-            glam::Vec3::ZERO
-        };
-        Some((penetration, normal))
+    let min_dist = dist - sphere.radius() - capsule.radius();
+    let min_dir = if dist == 0.0 {
+        glam::Vec3::ZERO
     } else {
-        None
-    }
+        delta / dist
+    };
+    (min_dist, min_dir)
 }
 
-pub fn sphere_triangle_pen(sphere: &Sphere, triangle: &Triangle) -> Option<(f32, glam::Vec3)> {
+pub fn sphere_triangle_dist(sphere: &Sphere, triangle: &Triangle) -> (f32, glam::Vec3) {
     let dist_to_plane = triangle.normal().dot(sphere.center() - triangle.points()[0]);
     let plane_proj = sphere.center() - dist_to_plane * triangle.normal();
 
@@ -60,17 +52,15 @@ pub fn sphere_triangle_pen(sphere: &Sphere, triangle: &Triangle) -> Option<(f32,
     let max_side_dist = side_dists.iter().cloned().fold(-f32::INFINITY, f32::max);
 
     if max_side_dist <= 0.0 {
-        let penetration = sphere.radius() + triangle.radius() - dist_to_plane.abs();
-        if penetration > 0.0 {
-            let normal = if dist_to_plane > 0.0 {
-                triangle.normal()
-            } else {
-                -triangle.normal()
-            };
-            Some((penetration, normal))
+        let min_dist = dist_to_plane.abs() - sphere.radius() - triangle.radius();
+        let min_dir = if dist_to_plane > 0.0 {
+            triangle.normal()
         } else {
-            None
-        }
+            -triangle.normal()
+        };
+ 
+        (min_dist, min_dir)
+
     } else {
         let mut min_dist_id = 0;
         let mut min_dist = f32::INFINITY;
@@ -93,21 +83,17 @@ pub fn sphere_triangle_pen(sphere: &Sphere, triangle: &Triangle) -> Option<(f32,
 
         let delta = min_dist_point - sphere.center();
         let dist = delta.length();
-        let penetration = sphere.radius() + triangle.radius() - dist;
-        if penetration > 0.0 {
-            let normal = if dist > 0.0 {
-                delta / dist
-            } else {
-                glam::Vec3::ZERO
-            };
-            Some((penetration, normal))
+        let min_dist = dist - sphere.radius() - triangle.radius();
+        let min_dir = if dist == 0.0 {
+            glam::Vec3::ZERO
         } else {
-            None
-        }
+            delta / dist
+        };
+        (min_dist, min_dir)
     }
 }
 
-pub fn capsule_capsule_pen(c1: &Capsule, c2: &Capsule) -> Option<(f32, glam::Vec3)> {
+pub fn capsule_capsule_dist(c1: &Capsule, c2: &Capsule) -> (f32, glam::Vec3) {
     let d1 = c1.point_b() - c1.point_a();
     let d2 = c2.point_b() - c2.point_a();
 
@@ -134,15 +120,40 @@ pub fn capsule_capsule_pen(c1: &Capsule, c2: &Capsule) -> Option<(f32, glam::Vec
 
     let delta = p2 - p1;
     let dist = delta.length();
-    let penetration = c1.radius() + c2.radius() - dist;
-    if penetration > 0.0 {
-        let normal = if dist > 0.0 {
-            delta / dist
-        } else {
-            glam::Vec3::ZERO
-        };
-        Some((penetration, normal))
+    let min_dist = dist - c1.radius() - c2.radius();
+    let min_dir = if dist == 0.0 {
+        glam::Vec3::ZERO
     } else {
-        None
+        delta / dist
+    };
+    (min_dist, min_dir)
+}
+
+
+pub fn capsule_triangle_dist(capsule: &Capsule, triangle: &Triangle) -> (f32, glam::Vec3) {
+    // Dist from points to plane
+    let pda = triangle.normal().dot(capsule.point_a());
+    let pdb = triangle.normal().dot(capsule.point_b());
+
+    let min_pd = pda.min(pdb);
+
+    // Dist from edge to edge
+    let min_ed = (0..3)
+        .into_iter()
+        .map(|i| {
+            let edge_capsule = Capsule::new(
+                triangle.points()[i],
+                triangle.points()[i + 1 % 3],
+                triangle.radius()
+            );
+            capsule_capsule_dist(&edge_capsule, capsule)
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .unwrap_or((f32::MAX, glam::Vec3::ZERO));
+
+    if min_pd < min_ed.0 {
+        (min_pd - triangle.radius() - capsule.radius(), triangle.normal())
+    } else {
+        min_ed
     }
 }
