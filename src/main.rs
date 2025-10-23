@@ -1,29 +1,28 @@
-use std::{path::Path, sync::Arc};
-
+use cougher::UnivRenderer;
 use winit::{
-    application::ApplicationHandler, dpi::LogicalSize, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}
+    application::ApplicationHandler,
+    dpi::LogicalSize,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    window::{Window, WindowId},
 };
-
-use renderer::{renderables::tri_mesh, Renderer};
 
 #[derive(Default)]
 struct App {
-    renderer: Option<Renderer>,
+    renderer: Option<UnivRenderer>,
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // Create window object
-        let window = Arc::new(
-            event_loop
-                .create_window(Window::default_attributes().with_inner_size(LogicalSize { width: 800.0, height: 600.0 }))
-                .unwrap(),
-        );
+        let window = event_loop
+            .create_window(Window::default_attributes().with_inner_size(LogicalSize {
+                width: 800.0,
+                height: 600.0,
+            }))
+            .unwrap();
 
-        let mut state = Renderer::new(window.clone()).unwrap();
-        state.add_mesh("square".to_string(), tri_mesh::make_square());
-        state.add_texture("default".to_string(), Path::new("resources/default.png")).unwrap();
-        state.add_ttpm_renderable("def".to_string(), "square".to_string(), "default".to_string()).unwrap();
+        let state = UnivRenderer::new(window).unwrap();
         self.renderer = Some(state);
 
         // window.request_redraw();
@@ -53,7 +52,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         let state = self.renderer.as_mut().unwrap();
-        state.draw().ok();
+        state.draw().inspect_err(|e| eprintln!("{e}")).ok();
     }
 }
 

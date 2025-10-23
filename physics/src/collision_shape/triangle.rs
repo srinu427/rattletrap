@@ -1,15 +1,12 @@
+use glam::Vec4Swizzles;
+
 #[derive(Debug, Clone, getset::CopyGetters, getset::Getters)]
 pub struct Triangle {
-    #[getset(get = "pub")]
-    points: [glam::Vec3; 3],
-    #[getset(get = "pub")]
-    side_len: [f32; 3],
-    #[getset(get_copy = "pub")]
-    normal: glam::Vec3,
-    #[getset(get = "pub")]
-    bound_planes: [glam::Vec4; 3],
-    #[getset(get_copy = "pub")]
-    radius: f32,
+    pub(crate) points: [glam::Vec3; 3],
+    pub(crate) side_len: [f32; 3],
+    pub(crate) normal: glam::Vec3,
+    pub(crate) bound_planes: [glam::Vec4; 3],
+    pub(crate) radius: f32,
 }
 
 impl Triangle {
@@ -38,6 +35,27 @@ impl Triangle {
             normal,
             bound_planes,
             radius,
+        }
+    }
+
+    pub fn apply_orientation(&self, trans: glam::Vec3, rot: glam::Mat4) -> Self {
+        let new_points = self
+            .points
+            .map(|p| (rot * glam::Vec4::from((p, 1.0))).xyz() + trans);
+        let new_normal = (rot * glam::Vec4::from((self.normal, 1.0))).xyz();
+        let new_bound_planes = self.bound_planes.map(|bp| {
+            let n = bp.xyz();
+            let new_n = (rot * glam::Vec4::from((n, 0.0))).xyz();
+            let new_d = bp.w + new_n.dot(trans);
+            glam::Vec4::from((new_n, new_d))
+        });
+
+        Self {
+            points: new_points,
+            side_len: self.side_len.clone(),
+            normal: new_normal,
+            bound_planes: new_bound_planes,
+            radius: self.radius,
         }
     }
 }

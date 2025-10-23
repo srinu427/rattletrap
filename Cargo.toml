@@ -6,5 +6,5 @@ edition = "2024"
 [dependencies]
 thiserror = "2.0.16"
 winit = { version = "0.30.12", features = ["android-native-activity"] }
-renderer = { path = "renderer" }
+cougher = { path = "cougher" }
 physics = { path = "physics" }

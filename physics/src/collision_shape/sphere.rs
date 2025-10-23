@@ -1,9 +1,7 @@
 #[derive(Debug, Clone, Copy, getset::CopyGetters)]
 pub struct Sphere {
-    #[getset(get_copy = "pub")]
-    center: glam::Vec3,
-    #[getset(get_copy = "pub")]
-    radius: f32,
+    pub(crate) center: glam::Vec3,
+    pub(crate) radius: f32,
 }
 
 impl Sphere {
@@ -13,5 +11,12 @@ impl Sphere {
 
     pub fn dist_from_point(&self, point: glam::Vec3) -> f32 {
         (point - self.center).length() - self.radius
+    }
+
+    pub fn apply_translation(&self, trans: glam::Vec3) -> Sphere {
+        Sphere {
+            center: self.center + trans,
+            radius: self.radius,
+        }
     }
 }

@@ -1,11 +1,10 @@
+use glam::Vec4Swizzles;
+
 #[derive(Debug, Clone, Copy, getset::CopyGetters)]
 pub struct Capsule {
-    #[getset(get_copy = "pub")]
-    point_a: glam::Vec3,
-    #[getset(get_copy = "pub")]
-    point_b: glam::Vec3,
-    #[getset(get_copy = "pub")]
-    radius: f32,
+    pub(crate) point_a: glam::Vec3,
+    pub(crate) point_b: glam::Vec3,
+    pub(crate) radius: f32,
 }
 
 impl Capsule {
@@ -14,6 +13,17 @@ impl Capsule {
             point_a,
             point_b,
             radius,
+        }
+    }
+
+    pub fn apply_orientation(&self, trans: glam::Vec3, rot: glam::Mat4) -> Self {
+        let new_point_a = (rot * glam::Vec4::from((self.point_a, 1.0))).xyz() + trans;
+        let new_point_b = (rot * glam::Vec4::from((self.point_b, 1.0))).xyz() + trans;
+
+        Self {
+            point_a: new_point_a,
+            point_b: new_point_b,
+            radius: self.radius,
         }
     }
 }
