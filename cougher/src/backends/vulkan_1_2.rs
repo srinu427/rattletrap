@@ -11,9 +11,8 @@ use raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 
 use crate::{
     backends::vulkan_common::{
-        VkMemAllocation, VkMemAllocator, buffer_usage_to_vk, format_to_vk,
-        image_2d_subresource_layers, image_2d_subresource_range, res_to_extent_2d,
-        res_to_extent_3d, vk_to_format,
+        VkMemAllocation, VkMemAllocator, buffer_usage_to_vk, format_has_stencil, format_to_vk,
+        image_2d_subresource_layers, image_2d_subresource_range, is_format_depth, res_to_extent_3d,
     },
     traits::{
         ApiLoader, Buffer, BufferUsage, CommandBuffer, CpuFuture, GpuContext, GpuFuture, GpuInfo,
@@ -145,14 +144,14 @@ impl Drop for V12Buffer {
     }
 }
 
-pub fn image_usage_to_layout(usage: ImageUsage, format: ImageFormat) -> vk::ImageLayout {
+pub fn image_usage_to_layout(usage: ImageUsage, format: vk::Format) -> vk::ImageLayout {
     match usage {
         ImageUsage::None => vk::ImageLayout::UNDEFINED,
         ImageUsage::CopySrc => vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
         ImageUsage::CopyDst => vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         ImageUsage::PipelineAttachment => {
-            if format.is_depth() {
-                if format.has_stencil() {
+            if is_format_depth(format) {
+                if format_has_stencil(format) {
                     vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
                 } else {
                     vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
@@ -165,13 +164,13 @@ pub fn image_usage_to_layout(usage: ImageUsage, format: ImageFormat) -> vk::Imag
     }
 }
 
-pub fn image_usage_to_access(usage: ImageUsage, format: ImageFormat) -> vk::AccessFlags {
+pub fn image_usage_to_access(usage: ImageUsage, format: vk::Format) -> vk::AccessFlags {
     match usage {
         ImageUsage::None => vk::AccessFlags::empty(),
         ImageUsage::CopySrc => vk::AccessFlags::TRANSFER_READ,
         ImageUsage::CopyDst => vk::AccessFlags::TRANSFER_WRITE,
         ImageUsage::PipelineAttachment => {
-            if format.is_depth() {
+            if is_format_depth(format) {
                 vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
             } else {
                 vk::AccessFlags::COLOR_ATTACHMENT_WRITE
@@ -191,7 +190,7 @@ pub fn image_usage_to_stage(usage: ImageUsage) -> vk::PipelineStageFlags {
     }
 }
 
-pub fn image_usage_to_vk(usages: BitFlags<ImageUsage>, format: ImageFormat) -> vk::ImageUsageFlags {
+pub fn image_usage_to_vk(usages: BitFlags<ImageUsage>, format: vk::Format) -> vk::ImageUsageFlags {
     let mut vk_flags = vk::ImageUsageFlags::default();
     for usage in usages {
         match usage {
@@ -199,7 +198,7 @@ pub fn image_usage_to_vk(usages: BitFlags<ImageUsage>, format: ImageFormat) -> v
             ImageUsage::CopySrc => vk_flags |= vk::ImageUsageFlags::TRANSFER_SRC,
             ImageUsage::CopyDst => vk_flags |= vk::ImageUsageFlags::TRANSFER_DST,
             ImageUsage::PipelineAttachment => {
-                if format.is_depth() {
+                if is_format_depth(format) {
                     vk_flags |= vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
                 } else {
                     vk_flags |= vk::ImageUsageFlags::COLOR_ATTACHMENT
@@ -211,9 +210,19 @@ pub fn image_usage_to_vk(usages: BitFlags<ImageUsage>, format: ImageFormat) -> v
     vk_flags
 }
 
+pub fn usage_needs_image_view(usages: BitFlags<ImageUsage>) -> bool {
+    for usage in usages {
+        match usage {
+            ImageUsage::PipelineAttachment => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 pub fn image_usage_to_feature(
     usages: BitFlags<ImageUsage>,
-    format: ImageFormat,
+    format: vk::Format,
 ) -> vk::FormatFeatureFlags {
     let mut vk_flags = vk::FormatFeatureFlags::default();
     for usage in usages {
@@ -222,7 +231,7 @@ pub fn image_usage_to_feature(
             ImageUsage::CopySrc => vk_flags |= vk::FormatFeatureFlags::TRANSFER_SRC,
             ImageUsage::CopyDst => vk_flags |= vk::FormatFeatureFlags::TRANSFER_DST,
             ImageUsage::PipelineAttachment => {
-                if format.is_depth() {
+                if is_format_depth(format) {
                     vk_flags |= vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT
                 } else {
                     vk_flags |= vk::FormatFeatureFlags::COLOR_ATTACHMENT
@@ -251,8 +260,8 @@ pub enum V12Image2dError {
 pub struct V12Image2d {
     name: String,
     image: vk::Image,
-    res: Resolution2d,
-    format: ImageFormat,
+    res: vk::Extent2D,
+    format: vk::Format,
     usage: BitFlags<ImageUsage>,
     memory: Option<VkMemAllocation>,
     view: vk::ImageView,
@@ -269,12 +278,13 @@ impl V12Image2d {
         format: ImageFormat,
         usage: BitFlags<ImageUsage>,
     ) -> Result<V12Image2d, V12Image2dError> {
-        let usage_flags = image_usage_to_vk(usage, format);
+        let vk_format = format_to_vk(format);
+        let usage_flags = image_usage_to_vk(usage, vk_format);
         let image_create_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .samples(vk::SampleCountFlags::TYPE_1)
             .usage(usage_flags)
-            .format(format_to_vk(format))
+            .format(vk_format)
             .extent(res_to_extent_3d(resolution))
             .array_layers(1)
             .mip_levels(1)
@@ -316,29 +326,39 @@ impl V12Image2d {
             is_gpu_local: gpu_local,
         });
 
-        Self::new_wrap(device, name, resolution, format, image, memory, usage)
+        let extent = vk::Extent2D {
+            width: resolution.width,
+            height: resolution.height,
+        };
+
+        Self::new_wrap(device, name, extent, vk_format, image, memory, usage)
     }
 
     pub fn new_wrap(
         device: Arc<V12Device>,
         name: &str,
-        resolution: Resolution2d,
-        format: ImageFormat,
+        resolution: vk::Extent2D,
+        format: vk::Format,
         image: vk::Image,
         memory: Option<VkMemAllocation>,
         usage: BitFlags<ImageUsage>,
     ) -> Result<Self, V12Image2dError> {
-        let view_create_info = vk::ImageViewCreateInfo::default()
-            .format(format_to_vk(format))
-            .image(image)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .subresource_range(image_2d_subresource_range(format));
-        let view = unsafe {
-            device
-                .device
-                .create_image_view(&view_create_info, None)
-                .map_err(V12Image2dError::ViewCreateError)?
+        let view = if usage_needs_image_view(usage) {
+            let view_create_info = vk::ImageViewCreateInfo::default()
+                .format(format)
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .subresource_range(image_2d_subresource_range(format));
+            unsafe {
+                device
+                    .device
+                    .create_image_view(&view_create_info, None)
+                    .map_err(V12Image2dError::ViewCreateError)?
+            }
+        } else {
+            vk::ImageView::null()
         };
+
         Ok(Self {
             name: name.to_string(),
             image,
@@ -360,15 +380,10 @@ impl Image2d for V12Image2d {
     type E = V12Image2dError;
 
     fn resolution(&self) -> Resolution2d {
-        self.res
-    }
-
-    fn format(&self) -> ImageFormat {
-        self.format
-    }
-
-    fn usage(&self) -> BitFlags<ImageUsage> {
-        self.usage
+        Resolution2d {
+            width: self.res.width,
+            height: self.res.height,
+        }
     }
 }
 
@@ -540,10 +555,9 @@ impl V12Swapchain {
             .iter()
             .filter(|format| format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
             .filter(|format| {
-                // format.format == vk::Format::B8G8R8A8_UNORM
-                //     || format.format == vk::Format::R8G8B8A8_UNORM
-                //    ||
-                format.format == vk::Format::B8G8R8A8_SRGB
+                format.format == vk::Format::B8G8R8A8_UNORM
+                    || format.format == vk::Format::R8G8B8A8_UNORM
+                    || format.format == vk::Format::B8G8R8A8_SRGB
                     || format.format == vk::Format::R8G8B8A8_SRGB
             })
             .filter(|format| {
@@ -554,10 +568,7 @@ impl V12Swapchain {
                             format.format,
                         )
                         .optimal_tiling_features
-                        .contains(image_usage_to_feature(
-                            usages,
-                            vk_to_format(format.format).unwrap_or(ImageFormat::Rgba8Srgb),
-                        ))
+                        .contains(image_usage_to_feature(usages, format.format))
                 };
                 supported
             })
@@ -599,10 +610,7 @@ impl V12Swapchain {
             .image_color_space(format.color_space)
             .image_extent(extent)
             .image_array_layers(1)
-            .image_usage(image_usage_to_vk(
-                usages,
-                vk_to_format(format.format).unwrap_or(ImageFormat::Rgba8Srgb),
-            ))
+            .image_usage(image_usage_to_vk(usages, format.format))
             .pre_transform(caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(present_mode)
@@ -626,8 +634,8 @@ impl V12Swapchain {
                     V12Image2d::new_wrap(
                         device.clone(),
                         &format!("swapchain_image_{i}"),
-                        resolution,
-                        vk_to_format(format.format).unwrap_or(ImageFormat::Rgba8Srgb),
+                        extent,
+                        format.format,
                         img,
                         None,
                         usages,
@@ -724,10 +732,7 @@ impl Swapchain for V12Swapchain {
             .image_color_space(self.format.color_space)
             .image_extent(extent)
             .image_array_layers(1)
-            .image_usage(image_usage_to_vk(
-                self.usages,
-                vk_to_format(self.format.format).unwrap_or(ImageFormat::Rgba8Srgb),
-            ))
+            .image_usage(image_usage_to_vk(self.usages, self.format.format))
             .pre_transform(caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(self.present_mode)
@@ -757,8 +762,8 @@ impl Swapchain for V12Swapchain {
                     V12Image2d::new_wrap(
                         self.device.clone(),
                         &format!("swapchain_image_{i}"),
-                        resolution,
-                        vk_to_format(self.format.format).unwrap_or(ImageFormat::Rgba8Srgb),
+                        extent,
+                        self.format.format,
                         img,
                         None,
                         self.usages,
@@ -816,21 +821,21 @@ impl Drop for V12Swapchain {
 pub enum GpuCommand {
     Image2dOptimize {
         img: vk::Image,
-        format: ImageFormat,
+        format: vk::Format,
         usage: ImageUsage,
     },
     BufferToImage2d {
         buffer: vk::Buffer,
         image: vk::Image,
-        image_format: ImageFormat,
+        image_format: vk::Format,
         image_size: vk::Extent2D,
     },
     BlitImage2dFull {
         src: vk::Image,
-        src_format: ImageFormat,
+        src_format: vk::Format,
         src_size: vk::Extent2D,
         dst: vk::Image,
-        dst_format: ImageFormat,
+        dst_format: vk::Format,
         dst_size: vk::Extent2D,
     },
 }
@@ -839,7 +844,7 @@ impl GpuCommand {
     fn cmd_image_2d_barrier(
         command_buffer: &V12CommandBuffer,
         img: vk::Image,
-        format: ImageFormat,
+        format: vk::Format,
         src_usage: ImageUsage,
         dst_usage: ImageUsage,
     ) {
@@ -1071,7 +1076,7 @@ impl CommandBuffer for V12CommandBuffer {
             buffer: buffer.buffer,
             image: image.image,
             image_format: image.format,
-            image_size: res_to_extent_2d(image.res),
+            image_size: image.res,
         });
     }
 
@@ -1079,10 +1084,10 @@ impl CommandBuffer for V12CommandBuffer {
         self.command_to_record.push(GpuCommand::BlitImage2dFull {
             src: src.image,
             src_format: src.format,
-            src_size: res_to_extent_2d(src.res),
+            src_size: src.res,
             dst: dst.image,
             dst_format: dst.format,
-            dst_size: res_to_extent_2d(dst.res),
+            dst_size: dst.res,
         });
     }
 
@@ -1100,7 +1105,6 @@ impl CommandBuffer for V12CommandBuffer {
                 .end_command_buffer(self.command_buffer)
                 .map_err(V12CommandBufferError::EndError)?;
         }
-        self.command_to_record.clear();
         Ok(())
     }
 
@@ -1260,7 +1264,12 @@ impl GpuContext for V12Context {
         .map_err(V12ContextError::AllocatorError)
     }
 
-    fn new_swapchain(&self, usages: BitFlags<ImageUsage>) -> Result<Self::SwapchainType, Self::E> {
+    fn new_swapchain(
+        &self,
+        mut usages: BitFlags<ImageUsage>,
+    ) -> Result<Self::SwapchainType, Self::E> {
+        usages |= ImageUsage::PipelineAttachment;
+        usages |= ImageUsage::Present;
         let swapchain = V12Swapchain::new(self.device.clone(), usages)?;
         Ok(swapchain)
     }

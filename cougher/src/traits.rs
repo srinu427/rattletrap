@@ -81,8 +81,6 @@ pub trait Image2d {
     type E: Error;
 
     fn resolution(&self) -> Resolution2d;
-    fn format(&self) -> ImageFormat;
-    fn usage(&self) -> BitFlags<ImageUsage>;
 }
 
 pub trait GpuFuture {}

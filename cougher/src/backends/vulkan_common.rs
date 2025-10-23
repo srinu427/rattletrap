@@ -124,10 +124,31 @@ pub fn res_to_extent_3d(res: Resolution2d) -> vk::Extent3D {
     }
 }
 
-pub fn format_to_aspect_mask(format: ImageFormat) -> vk::ImageAspectFlags {
-    if format.is_depth() {
+pub fn is_format_depth(format: vk::Format) -> bool {
+    match format {
+        vk::Format::D16_UNORM
+        | vk::Format::D16_UNORM_S8_UINT
+        | vk::Format::D24_UNORM_S8_UINT
+        | vk::Format::D32_SFLOAT
+        | vk::Format::D32_SFLOAT_S8_UINT
+        | vk::Format::X8_D24_UNORM_PACK32 => true,
+        _ => false,
+    }
+}
+
+pub fn format_has_stencil(format: vk::Format) -> bool {
+    match format {
+        vk::Format::D16_UNORM_S8_UINT
+        | vk::Format::D24_UNORM_S8_UINT
+        | vk::Format::D32_SFLOAT_S8_UINT => true,
+        _ => false,
+    }
+}
+
+pub fn format_to_aspect_mask(format: vk::Format) -> vk::ImageAspectFlags {
+    if is_format_depth(format) {
         let mut aspect = vk::ImageAspectFlags::DEPTH;
-        if format.has_stencil() {
+        if format_has_stencil(format) {
             aspect |= vk::ImageAspectFlags::STENCIL;
         }
         aspect
@@ -136,7 +157,7 @@ pub fn format_to_aspect_mask(format: ImageFormat) -> vk::ImageAspectFlags {
     }
 }
 
-pub fn image_2d_subresource_range(format: ImageFormat) -> vk::ImageSubresourceRange {
+pub fn image_2d_subresource_range(format: vk::Format) -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange::default()
         .aspect_mask(format_to_aspect_mask(format))
         .base_array_layer(0)
@@ -145,7 +166,7 @@ pub fn image_2d_subresource_range(format: ImageFormat) -> vk::ImageSubresourceRa
         .level_count(1)
 }
 
-pub fn image_2d_subresource_layers(format: ImageFormat) -> vk::ImageSubresourceLayers {
+pub fn image_2d_subresource_layers(format: vk::Format) -> vk::ImageSubresourceLayers {
     vk::ImageSubresourceLayers::default()
         .aspect_mask(format_to_aspect_mask(format))
         .base_array_layer(0)

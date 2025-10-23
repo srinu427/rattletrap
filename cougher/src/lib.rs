@@ -19,7 +19,7 @@ pub struct Renderer<T: GpuContext> {
 
 impl<T: GpuContext> Renderer<T> {
     pub fn from(ctx: T) -> Result<Self, T::E> {
-        let swapchain = ctx.new_swapchain(ImageUsage::CopyDst | ImageUsage::PipelineAttachment)?;
+        let swapchain = ctx.new_swapchain(ImageUsage::CopyDst.into())?;
         println!("count: {}", swapchain.images().len());
         let mut allocator = ctx.new_allocator()?;
         let command_buffers: Vec<_> = (0..swapchain.images().len())
@@ -51,7 +51,7 @@ impl<T: GpuContext> Renderer<T> {
                 height: bg_image_obj.height(),
             },
             ImageFormat::Rgba8,
-            ImageUsage::CopyDst | ImageUsage::CopySrc | ImageUsage::PipelineAttachment,
+            ImageUsage::CopyDst | ImageUsage::CopySrc,
         )?;
         let mut stage_cmd_buffer = ctx.new_command_buffer(QueueType::Graphics)?;
         stage_cmd_buffer.add_image_2d_optimize_cmd(&bg_image, ImageUsage::None);
@@ -105,14 +105,12 @@ impl<T: GpuContext> Renderer<T> {
         );
         self.command_buffers[next_img as usize].build()?;
         self.command_buffers[next_img as usize]
-            .emit_gpu_future_on_finish(&self.gpu_futures[next_img as usize]);
-        self.command_buffers[next_img as usize]
             .emit_cpu_future_on_finish(&self.cpu_futures[next_img as usize]);
         self.command_buffers[next_img as usize].submit()?;
-
-        self.swapchain
-            .present(next_img, &[&self.gpu_futures[next_img as usize]])?;
         self.cpu_futures[next_img as usize].wait()?;
+
+        self.swapchain.present(next_img, &[])?;
+
         Ok(())
     }
 }
