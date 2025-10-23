@@ -1297,6 +1297,7 @@ impl GpuContext for V12Context {
 impl Drop for V12Context {
     fn drop(&mut self) {
         unsafe {
+            let _ = self.device.device.device_wait_idle();
             self.device
                 .device
                 .destroy_command_pool(self.command_pool, None);

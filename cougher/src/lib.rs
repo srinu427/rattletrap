@@ -1,5 +1,5 @@
 use crate::traits::{
-    ApiLoader, BufferUsage, CommandBuffer, CpuFuture, GpuContext, ImageFormat, ImageUsage,
+    ApiLoader, Buffer, BufferUsage, CommandBuffer, CpuFuture, GpuContext, ImageFormat, ImageUsage,
     QueueType, Resolution2d, Swapchain,
 };
 
@@ -20,28 +20,27 @@ pub struct Renderer<T: GpuContext> {
 impl<T: GpuContext> Renderer<T> {
     pub fn from(ctx: T) -> Result<Self, T::E> {
         let swapchain = ctx.new_swapchain(ImageUsage::CopyDst.into())?;
-        println!("count: {}", swapchain.images().len());
         let mut allocator = ctx.new_allocator()?;
         let command_buffers: Vec<_> = (0..swapchain.images().len())
             .map(|_| ctx.new_command_buffer(QueueType::Graphics))
             .collect::<Result<_, _>>()?;
         let cpu_futures: Vec<_> = (0..swapchain.images().len())
-            .map(|_| ctx.new_cpu_future(false))
+            .map(|_| ctx.new_cpu_future(true))
             .collect::<Result<_, _>>()?;
         let gpu_futures: Vec<_> = (0..swapchain.images().len())
             .map(|_| ctx.new_gpu_future())
             .collect::<Result<_, _>>()?;
         let bg_image_obj = image::open("default.png")?;
         let bg_image_data = bg_image_obj.as_bytes();
-        println!("bg image len: {}", bg_image_data.len());
         let upload_cfut = ctx.new_cpu_future(false)?;
-        let stage_buffer = ctx.new_buffer(
+        let mut stage_buffer = ctx.new_buffer(
             &mut allocator,
             false,
             bg_image_data.len() as _,
             "stage_buffer",
             BufferUsage::TransferSrc.into(),
         )?;
+        stage_buffer.write_data(0, &bg_image_data)?;
         let bg_image = ctx.new_image_2d(
             &mut allocator,
             true,
@@ -50,7 +49,7 @@ impl<T: GpuContext> Renderer<T> {
                 width: bg_image_obj.width(),
                 height: bg_image_obj.height(),
             },
-            ImageFormat::Rgba8,
+            ImageFormat::Rgba8Srgb,
             ImageUsage::CopyDst | ImageUsage::CopySrc,
         )?;
         let mut stage_cmd_buffer = ctx.new_command_buffer(QueueType::Graphics)?;
@@ -82,6 +81,7 @@ impl<T: GpuContext> Renderer<T> {
             .get_next_image(Some(&self.image_acquire_cfut), None)?;
         self.image_acquire_cfut.wait()?;
 
+        self.cpu_futures[next_img as usize].wait()?;
         self.command_buffers[next_img as usize].reset()?;
         if !self.swapchain.is_optimized() {
             for img in self.swapchain.images() {
@@ -105,11 +105,13 @@ impl<T: GpuContext> Renderer<T> {
         );
         self.command_buffers[next_img as usize].build()?;
         self.command_buffers[next_img as usize]
+            .emit_gpu_future_on_finish(&self.gpu_futures[next_img as usize]);
+        self.command_buffers[next_img as usize]
             .emit_cpu_future_on_finish(&self.cpu_futures[next_img as usize]);
         self.command_buffers[next_img as usize].submit()?;
-        self.cpu_futures[next_img as usize].wait()?;
 
-        self.swapchain.present(next_img, &[])?;
+        self.swapchain
+            .present(next_img, &[&self.gpu_futures[next_img as usize]])?;
 
         Ok(())
     }
