@@ -53,10 +53,11 @@ impl<T: GpuContext> Renderer<T> {
             ImageUsage::CopyDst | ImageUsage::CopySrc,
         )?;
         let mut stage_cmd_buffer = ctx.new_command_buffer(QueueType::Graphics)?;
-        stage_cmd_buffer.add_image_2d_optimize_cmd(&bg_image, ImageUsage::None);
-        stage_cmd_buffer.copy_buffer_to_image_2d_cmd(&stage_buffer, &bg_image);
-        stage_cmd_buffer.add_image_2d_optimize_cmd(&bg_image, ImageUsage::CopySrc);
-        stage_cmd_buffer.build()?;
+        stage_cmd_buffer.begin_record()?;
+        stage_cmd_buffer.cmd_image_2d_optimize(&bg_image, ImageUsage::None);
+        stage_cmd_buffer.cmd_copy_buffer_to_image_2d(&stage_buffer, &bg_image);
+        stage_cmd_buffer.cmd_image_2d_optimize(&bg_image, ImageUsage::CopySrc);
+        stage_cmd_buffer.end_record()?;
         stage_cmd_buffer.emit_cpu_future_on_finish(&upload_cfut);
         stage_cmd_buffer.submit()?;
         upload_cfut.wait()?;
@@ -82,28 +83,28 @@ impl<T: GpuContext> Renderer<T> {
         self.image_acquire_cfut.wait()?;
 
         self.cpu_futures[next_img as usize].wait()?;
-        self.command_buffers[next_img as usize].reset()?;
+        self.command_buffers[next_img as usize].begin_record()?;
         if !self.swapchain.is_optimized() {
             for img in self.swapchain.images() {
                 self.command_buffers[next_img as usize]
-                    .add_image_2d_optimize_cmd(img, ImageUsage::None);
+                    .cmd_image_2d_optimize(img, ImageUsage::None);
                 self.command_buffers[next_img as usize]
-                    .add_image_2d_optimize_cmd(img, ImageUsage::Present);
+                    .cmd_image_2d_optimize(img, ImageUsage::Present);
             }
         } else {
-            self.command_buffers[next_img as usize].add_image_2d_optimize_cmd(
+            self.command_buffers[next_img as usize].cmd_image_2d_optimize(
                 &self.swapchain.images()[next_img as usize],
                 ImageUsage::Present,
             );
         }
 
         self.command_buffers[next_img as usize]
-            .add_blit_image_2d_cmd(&self.bg_image, &self.swapchain.images()[next_img as usize]);
-        self.command_buffers[next_img as usize].add_image_2d_optimize_cmd(
+            .cmd_blit_image_2d(&self.bg_image, &self.swapchain.images()[next_img as usize]);
+        self.command_buffers[next_img as usize].cmd_image_2d_optimize(
             &self.swapchain.images()[next_img as usize],
             ImageUsage::Present,
         );
-        self.command_buffers[next_img as usize].build()?;
+        self.command_buffers[next_img as usize].end_record()?;
         self.command_buffers[next_img as usize]
             .emit_gpu_future_on_finish(&self.gpu_futures[next_img as usize]);
         self.command_buffers[next_img as usize]

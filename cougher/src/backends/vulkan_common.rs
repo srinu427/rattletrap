@@ -10,7 +10,10 @@ use gpu_allocator::{
     vulkan::{Allocation, Allocator, AllocatorCreateDesc},
 };
 
-use crate::traits::{BufferUsage, ImageFormat, MemAllocation, MemAllocator, Resolution2d};
+use crate::traits::{
+    BufferUsage, ImageFormat, MemAllocation, MemAllocator, PipelineSetBindingType, Resolution2d,
+    ShaderType,
+};
 
 pub struct VkMemAllocator {
     pub(crate) allocator: Arc<Mutex<Allocator>>,
@@ -172,4 +175,19 @@ pub fn image_2d_subresource_layers(format: vk::Format) -> vk::ImageSubresourceLa
         .base_array_layer(0)
         .layer_count(1)
         .mip_level(0)
+}
+
+pub fn binding_type_to_vk(t: PipelineSetBindingType) -> vk::DescriptorType {
+    match t {
+        PipelineSetBindingType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
+        PipelineSetBindingType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
+        PipelineSetBindingType::Sampler2d => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+    }
+}
+
+pub fn shader_type_to_vk(t: ShaderType) -> vk::ShaderStageFlags {
+    match t {
+        ShaderType::Vertex => vk::ShaderStageFlags::VERTEX,
+        ShaderType::Fragment => vk::ShaderStageFlags::FRAGMENT,
+    }
 }

@@ -11,12 +11,15 @@ use raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 
 use crate::{
     backends::vulkan_common::{
-        VkMemAllocation, VkMemAllocator, buffer_usage_to_vk, format_has_stencil, format_to_vk,
-        image_2d_subresource_layers, image_2d_subresource_range, is_format_depth, res_to_extent_3d,
+        VkMemAllocation, VkMemAllocator, binding_type_to_vk, buffer_usage_to_vk,
+        format_has_stencil, format_to_vk, image_2d_subresource_layers, image_2d_subresource_range,
+        is_format_depth, res_to_extent_3d, shader_type_to_vk,
     },
     traits::{
         ApiLoader, Buffer, BufferUsage, CommandBuffer, CpuFuture, GpuContext, GpuFuture, GpuInfo,
-        Image2d, ImageFormat, ImageUsage, QueueType, Resolution2d, Swapchain,
+        GraphicsPass, GraphicsPassAttachments, Image2d, ImageFormat, ImageUsage, PipelineSet,
+        PipelineSetBindingInfo, PipelineSetBindingType, PipelineSetBindingWritable, QueueType,
+        Resolution2d, ShaderType, SubpassInfo, Swapchain,
     },
 };
 
@@ -818,175 +821,508 @@ impl Drop for V12Swapchain {
     }
 }
 
-pub enum GpuCommand {
-    Image2dOptimize {
-        img: vk::Image,
-        format: vk::Format,
-        usage: ImageUsage,
-    },
-    BufferToImage2d {
-        buffer: vk::Buffer,
-        image: vk::Image,
-        image_format: vk::Format,
-        image_size: vk::Extent2D,
-    },
-    BlitImage2dFull {
-        src: vk::Image,
-        src_format: vk::Format,
-        src_size: vk::Extent2D,
-        dst: vk::Image,
-        dst_format: vk::Format,
-        dst_size: vk::Extent2D,
-    },
+pub struct V12GPassAttachments {
+    res: Resolution2d,
+    framebuffer: vk::Framebuffer,
+    attachments: Vec<V12Image2d>,
+    device: Arc<V12Device>,
 }
 
-impl GpuCommand {
-    fn cmd_image_2d_barrier(
-        command_buffer: &V12CommandBuffer,
-        img: vk::Image,
-        format: vk::Format,
-        src_usage: ImageUsage,
-        dst_usage: ImageUsage,
-    ) {
+impl GraphicsPassAttachments for V12GPassAttachments {
+    type I2dType = V12Image2d;
+
+    fn get_attachments(&self) -> Vec<&Self::I2dType> {
+        self.attachments.iter().collect()
+    }
+
+    fn resolution(&self) -> Resolution2d {
+        self.res
+    }
+}
+
+impl Drop for V12GPassAttachments {
+    fn drop(&mut self) {
         unsafe {
-            command_buffer.device.device.cmd_pipeline_barrier(
-                command_buffer.command_buffer,
-                image_usage_to_stage(src_usage),
-                image_usage_to_stage(dst_usage),
-                vk::DependencyFlags::BY_REGION,
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier::default()
-                    .image(img)
-                    .old_layout(image_usage_to_layout(src_usage, format))
-                    .new_layout(image_usage_to_layout(dst_usage, format))
-                    .src_access_mask(image_usage_to_access(src_usage, format))
-                    .dst_access_mask(image_usage_to_access(dst_usage, format))
-                    .subresource_range(image_2d_subresource_range(format))],
-            );
+            self.device
+                .device
+                .destroy_framebuffer(self.framebuffer, None);
         }
     }
-    pub fn record_commands(commands: &[GpuCommand], command_buffer: &V12CommandBuffer) {
-        let mut image_last_states = HashMap::new();
-        for command in commands {
-            match *command {
-                GpuCommand::Image2dOptimize { img, format, usage } => {
-                    if let Some(last_usage) = image_last_states.get_mut(&img) {
-                        if *last_usage == usage {
-                            continue;
-                        }
-                        Self::cmd_image_2d_barrier(command_buffer, img, format, *last_usage, usage);
-                        *last_usage = usage;
-                    } else {
-                        image_last_states.insert(img, usage);
-                    }
-                }
-                GpuCommand::BufferToImage2d {
-                    buffer,
-                    image,
-                    image_format,
-                    image_size,
-                } => {
-                    if let Some(last_usage) = image_last_states.get_mut(&image) {
-                        if *last_usage == ImageUsage::CopyDst {
-                            continue;
-                        }
-                        Self::cmd_image_2d_barrier(
-                            command_buffer,
-                            image,
-                            image_format,
-                            *last_usage,
-                            ImageUsage::CopyDst,
-                        );
-                        *last_usage = ImageUsage::CopyDst;
-                    } else {
-                        image_last_states.insert(image, ImageUsage::CopyDst);
-                    }
-                    unsafe {
-                        command_buffer.device.device.cmd_copy_buffer_to_image(
-                            command_buffer.command_buffer,
-                            buffer,
-                            image,
-                            image_usage_to_layout(ImageUsage::CopyDst, image_format),
-                            &[vk::BufferImageCopy::default()
-                                .image_offset(vk::Offset3D::default())
-                                .image_extent(vk::Extent3D::from(image_size).depth(1))
-                                .image_subresource(image_2d_subresource_layers(image_format))],
-                        );
-                    }
-                }
-                GpuCommand::BlitImage2dFull {
-                    src,
-                    src_format,
-                    src_size,
-                    dst,
-                    dst_format,
-                    dst_size,
-                } => {
-                    if let Some(last_usage) = image_last_states.get_mut(&src) {
-                        if *last_usage == ImageUsage::CopySrc {
-                            continue;
-                        }
-                        Self::cmd_image_2d_barrier(
-                            command_buffer,
-                            src,
-                            src_format,
-                            *last_usage,
-                            ImageUsage::CopySrc,
-                        );
-                        *last_usage = ImageUsage::CopySrc;
-                    } else {
-                        image_last_states.insert(src, ImageUsage::CopySrc);
-                    }
+}
 
-                    if let Some(last_usage) = image_last_states.get_mut(&dst) {
-                        if *last_usage == ImageUsage::CopyDst {
-                            continue;
-                        }
-                        Self::cmd_image_2d_barrier(
-                            command_buffer,
-                            dst,
-                            dst_format,
-                            *last_usage,
-                            ImageUsage::CopyDst,
-                        );
-                        *last_usage = ImageUsage::CopyDst;
-                    } else {
-                        image_last_states.insert(dst, ImageUsage::CopyDst);
-                    }
+#[derive(Debug, thiserror::Error)]
+pub enum V12PipelineSetError {
+    #[error("Error writing set bindings: {0}")]
+    SetWriteError(vk::Result),
+}
 
-                    unsafe {
-                        command_buffer.device.device.cmd_blit_image(
-                            command_buffer.command_buffer,
-                            src,
-                            image_usage_to_layout(ImageUsage::CopySrc, src_format),
-                            dst,
-                            image_usage_to_layout(ImageUsage::CopyDst, dst_format),
-                            &[vk::ImageBlit::default()
-                                .src_offsets([
-                                    vk::Offset3D::default(),
-                                    vk::Offset3D {
-                                        x: src_size.width as _,
-                                        y: src_size.height as _,
-                                        z: 1,
-                                    },
-                                ])
-                                .dst_offsets([
-                                    vk::Offset3D::default(),
-                                    vk::Offset3D {
-                                        x: dst_size.width as _,
-                                        y: dst_size.height as _,
-                                        z: 1,
-                                    },
-                                ])
-                                .src_subresource(image_2d_subresource_layers(src_format))
-                                .dst_subresource(image_2d_subresource_layers(dst_format))],
-                            vk::Filter::NEAREST,
-                        );
+pub struct V12PipelineSet {
+    set: vk::DescriptorSet,
+    bindings: Vec<PipelineSetBindingInfo>,
+    device: Arc<V12Device>,
+}
+
+impl PipelineSet for V12PipelineSet {
+    type BType = V12Buffer;
+
+    type I2dType = V12Image2d;
+
+    type E = V12PipelineSetError;
+
+    fn update_bindings(
+        &mut self,
+        binding_writables: Vec<PipelineSetBindingWritable<Self::BType, Self::I2dType>>,
+    ) -> Result<(), Self::E> {
+        let write_infos: Vec<_> = binding_writables
+            .iter()
+            .map(|b_writes| match b_writes {
+                PipelineSetBindingWritable::Buffer(items) => (
+                    items
+                        .iter()
+                        .map(|x| {
+                            vk::DescriptorBufferInfo::default()
+                                .buffer(x.buffer)
+                                .offset(0)
+                                .range(vk::WHOLE_SIZE)
+                        })
+                        .collect(),
+                    vec![],
+                ),
+                PipelineSetBindingWritable::Image2d(items) => (
+                    vec![],
+                    items
+                        .iter()
+                        .map(|x| {
+                            vk::DescriptorImageInfo::default()
+                                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .image_view(x.view)
+                        })
+                        .collect(),
+                ),
+            })
+            .collect();
+        let writes: Vec<_> = write_infos
+            .iter()
+            .zip(self.bindings.iter())
+            .enumerate()
+            .map(|(b_id, (write_info, binding_info))| {
+                let mut write_vk = vk::WriteDescriptorSet::default()
+                    .dst_set(self.set)
+                    .dst_binding(b_id as _)
+                    .descriptor_type(binding_type_to_vk(binding_info._type));
+
+                if write_info.0.len() > 0 {
+                    write_vk = write_vk.buffer_info(&write_info.0);
+                }
+                if write_info.1.len() > 0 {
+                    write_vk = write_vk.image_info(&write_info.1);
+                }
+                write_vk
+            })
+            .collect();
+        unsafe {
+            self.device.device.update_descriptor_sets(&writes, &[]);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum V12GraphicsPassError {
+    #[error("Error creating Vulkan Render Pass: {0}")]
+    RenderPassCreateError(vk::Result),
+    #[error("Error creating Vulkan Descriptor Set Layout: {0}")]
+    SetLayoutCreateError(vk::Result),
+    #[error("Error creating Vulkan Descriptor Pool: {0}")]
+    SetPoolCreateError(vk::Result),
+    #[error("Error creating Vulkan Pipeline Layout: {0}")]
+    PipelineLayoutCreateError(vk::Result),
+    #[error("Error creating Vulkan Shader Module: {0}")]
+    ShaderLoadError(vk::Result),
+    #[error("Error creating Vulkan Pipeline: {0}")]
+    PipelineCreateError(vk::Result),
+    #[error("Error creating Graphics Pass attachment: {0}")]
+    AttachmentCreateError(#[from] V12Image2dError),
+    #[error("Error creating Vulkan Framebuffer: {0}")]
+    FramebufferCreateError(vk::Result),
+    #[error("Error allocating Vulkan Descriptor Sets: {0}")]
+    SetAllocateError(vk::Result),
+}
+
+pub struct V12GraphicsPass {
+    render_pass: vk::RenderPass,
+    pipelines: Vec<vk::Pipeline>,
+    pipeline_layouts: Vec<vk::PipelineLayout>,
+    dsls: Vec<Vec<vk::DescriptorSetLayout>>,
+    desc_pool: vk::DescriptorPool,
+    subpass_infos: Vec<SubpassInfo>,
+    attachment_formats: Vec<ImageFormat>,
+    device: Arc<V12Device>,
+}
+
+impl V12GraphicsPass {
+    fn make_render_pass(
+        device: &V12Device,
+        attachments: &[ImageFormat],
+        subpass_infos: &[SubpassInfo],
+    ) -> Result<vk::RenderPass, V12GraphicsPassError> {
+        let attach_descs: Vec<_> = attachments
+            .iter()
+            .map(|&x| {
+                let vk_fmt = format_to_vk(x);
+                let vk_layout = image_usage_to_layout(ImageUsage::PipelineAttachment, vk_fmt);
+                let store_op = if x.is_depth() {
+                    vk::AttachmentStoreOp::DONT_CARE
+                } else {
+                    vk::AttachmentStoreOp::STORE
+                };
+                vk::AttachmentDescription::default()
+                    .initial_layout(vk_layout)
+                    .final_layout(vk_layout)
+                    .format(vk_fmt)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(store_op)
+            })
+            .collect();
+        let color_refs: Vec<Vec<_>> = subpass_infos
+            .iter()
+            .enumerate()
+            .map(|(s_i, s)| {
+                s.color_attachments
+                    .iter()
+                    .map(|&i| {
+                        let vk_fmt = format_to_vk(attachments[i]);
+                        let vk_layout =
+                            image_usage_to_layout(ImageUsage::PipelineAttachment, vk_fmt);
+                        vk::AttachmentReference::default()
+                            .layout(vk_layout)
+                            .attachment(i as _)
+                    })
+                    .collect()
+            })
+            .collect();
+        let depth_refs: Vec<Option<_>> = subpass_infos
+            .iter()
+            .map(|s| {
+                s.depth_attachment.map(|i| {
+                    let vk_fmt = format_to_vk(attachments[i]);
+                    let vk_layout = image_usage_to_layout(ImageUsage::PipelineAttachment, vk_fmt);
+                    vk::AttachmentReference::default()
+                        .layout(vk_layout)
+                        .attachment(i as _)
+                })
+            })
+            .collect();
+        let subpass_descs: Vec<_> = subpass_infos
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mut desc = vk::SubpassDescription::default()
+                    .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS);
+                if color_refs[i].len() > 0 {
+                    desc = desc.color_attachments(&color_refs[i]);
+                }
+                if let Some(d_img) = depth_refs[i].as_ref() {
+                    desc = desc.depth_stencil_attachment(d_img);
+                }
+                desc
+            })
+            .collect();
+        let rp_create_info = vk::RenderPassCreateInfo::default()
+            .attachments(&attach_descs)
+            .subpasses(&subpass_descs);
+        unsafe {
+            device
+                .device
+                .create_render_pass(&rp_create_info, None)
+                .map_err(V12GraphicsPassError::RenderPassCreateError)
+        }
+    }
+
+    fn make_set_layout(
+        device: &V12Device,
+        bindings: &[PipelineSetBindingInfo],
+    ) -> Result<vk::DescriptorSetLayout, V12GraphicsPassError> {
+        let bindings: Vec<_> = bindings
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(i as _)
+                    .descriptor_type(binding_type_to_vk(b._type))
+                    .descriptor_count(b.count as _)
+            })
+            .collect();
+        let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        unsafe {
+            device
+                .device
+                .create_descriptor_set_layout(&create_info, None)
+                .map_err(V12GraphicsPassError::SetLayoutCreateError)
+        }
+    }
+
+    fn make_pipeline_layout(
+        device: &V12Device,
+        sets: &[vk::DescriptorSetLayout],
+    ) -> Result<vk::PipelineLayout, V12GraphicsPassError> {
+        let create_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&sets);
+        unsafe {
+            device
+                .device
+                .create_pipeline_layout(&create_info, None)
+                .map_err(V12GraphicsPassError::PipelineLayoutCreateError)
+        }
+    }
+
+    fn load_shader(
+        device: &V12Device,
+        code: &[u32],
+    ) -> Result<vk::ShaderModule, V12GraphicsPassError> {
+        unsafe {
+            device
+                .device
+                .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(code), None)
+                .map_err(V12GraphicsPassError::ShaderLoadError)
+        }
+    }
+
+    fn make_pipeline(
+        device: &V12Device,
+        render_pass: vk::RenderPass,
+        subpass_id: usize,
+        subpass_info: &SubpassInfo,
+        layout: vk::PipelineLayout,
+        shaders: &HashMap<ShaderType, vk::ShaderModule>,
+    ) -> Result<vk::Pipeline, V12GraphicsPassError> {
+        let vertex_state = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let dyn_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dyn_state = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dyn_states);
+        let vp_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let raster_state = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::BACK);
+        let stages: Vec<_> = shaders
+            .iter()
+            .map(|(stg, shader)| {
+                vk::PipelineShaderStageCreateInfo::default()
+                    .stage(shader_type_to_vk(*stg))
+                    .module(*shader)
+                    .name(c"main")
+            })
+            .collect();
+        let depth_state = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS)
+            .min_depth_bounds(0.0)
+            .max_depth_bounds(1.0);
+        let mut create_info = vk::GraphicsPipelineCreateInfo::default()
+            .render_pass(render_pass)
+            .subpass(subpass_id as _)
+            .layout(layout)
+            .vertex_input_state(&vertex_state)
+            .input_assembly_state(&input_assembly)
+            .dynamic_state(&dyn_state)
+            .viewport_state(&vp_state)
+            .rasterization_state(&raster_state)
+            .stages(&stages);
+        if subpass_info.depth_attachment.is_some() {
+            create_info = create_info.depth_stencil_state(&depth_state);
+        }
+        let pipeline = unsafe {
+            device
+                .device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[create_info], None)
+                .map_err(|(_, e)| V12GraphicsPassError::PipelineCreateError(e))?
+                .remove(0)
+        };
+        Ok(pipeline)
+    }
+
+    pub fn new(
+        device: Arc<V12Device>,
+        attachments: Vec<ImageFormat>,
+        subpass_infos: Vec<SubpassInfo>,
+        max_sets: usize,
+    ) -> Result<Self, V12GraphicsPassError> {
+        let render_pass = Self::make_render_pass(&device, &attachments, &subpass_infos)?;
+        let set_layouts: Vec<Vec<_>> = subpass_infos
+            .iter()
+            .map(|s| {
+                s.set_infos
+                    .iter()
+                    .map(|sb| Self::make_set_layout(&device, sb))
+                    .collect::<Result<_, _>>()
+            })
+            .collect::<Result<_, _>>()?;
+        let pipeline_layouts: Vec<_> = set_layouts
+            .iter()
+            .map(|sl| Self::make_pipeline_layout(&device, sl))
+            .collect::<Result<_, _>>()?;
+        let shaders: Vec<HashMap<_, _>> = subpass_infos
+            .iter()
+            .map(|s| {
+                s.shaders
+                    .iter()
+                    .map(|(st, sc)| {
+                        let sm = Self::load_shader(&device, sc)?;
+                        Ok::<_, V12GraphicsPassError>((*st, sm))
+                    })
+                    .collect::<Result<_, _>>()
+            })
+            .collect::<Result<_, _>>()?;
+        let pipelines: Vec<_> = (0..subpass_infos.len())
+            .map(|i| {
+                Self::make_pipeline(
+                    &device,
+                    render_pass,
+                    i,
+                    &subpass_infos[i],
+                    pipeline_layouts[i],
+                    &shaders[i],
+                )
+            })
+            .collect::<Result<_, _>>()?;
+
+        let mut uniform_buffer_count = 0;
+        let mut storage_buffer_count = 0;
+        let mut sampler_2d_count = 0;
+        for sd in &subpass_infos {
+            for psd in &sd.set_infos {
+                for bd in psd {
+                    match bd._type {
+                        PipelineSetBindingType::UniformBuffer => uniform_buffer_count += bd.count,
+                        PipelineSetBindingType::StorageBuffer => storage_buffer_count += bd.count,
+                        PipelineSetBindingType::Sampler2d => sampler_2d_count += bd.count,
                     }
                 }
             }
         }
+        uniform_buffer_count *= max_sets;
+        storage_buffer_count *= max_sets;
+
+        let desc_pool = unsafe {
+            device
+                .device
+                .create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default()
+                        .max_sets(max_sets as _)
+                        .pool_sizes(&[
+                            vk::DescriptorPoolSize::default()
+                                .ty(binding_type_to_vk(PipelineSetBindingType::UniformBuffer))
+                                .descriptor_count(uniform_buffer_count as _),
+                            vk::DescriptorPoolSize::default()
+                                .ty(binding_type_to_vk(PipelineSetBindingType::StorageBuffer))
+                                .descriptor_count(storage_buffer_count as _),
+                            vk::DescriptorPoolSize::default()
+                                .ty(binding_type_to_vk(PipelineSetBindingType::StorageBuffer))
+                                .descriptor_count(sampler_2d_count as _),
+                        ]),
+                    None,
+                )
+                .map_err(V12GraphicsPassError::SetPoolCreateError)?
+        };
+
+        Ok(Self {
+            render_pass,
+            pipelines,
+            pipeline_layouts,
+            dsls: set_layouts,
+            desc_pool,
+            subpass_infos,
+            attachment_formats: attachments,
+            device,
+        })
+    }
+}
+
+impl GraphicsPass for V12GraphicsPass {
+    type AllocatorType = VkMemAllocator;
+
+    type MemType = VkMemAllocation;
+
+    type BType = V12Buffer;
+
+    type I2dType = V12Image2d;
+
+    type PSetType = V12PipelineSet;
+
+    type PAttachType = V12GPassAttachments;
+
+    type E = V12GraphicsPassError;
+
+    fn create_sets(&self, subpass_id: usize) -> Result<Vec<Self::PSetType>, Self::E> {
+        let sets = unsafe {
+            self.device
+                .device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(self.desc_pool)
+                        .set_layouts(&self.dsls[subpass_id]),
+                )
+                .map_err(V12GraphicsPassError::SetAllocateError)?
+        };
+
+        Ok(sets
+            .into_iter()
+            .enumerate()
+            .map(|(i, set)| V12PipelineSet {
+                set,
+                bindings: self.subpass_infos[subpass_id].set_infos[i].clone(),
+                device: self.device.clone(),
+            })
+            .collect())
+    }
+
+    fn create_attachments(
+        &self,
+        name: &str,
+        allocator: &mut Self::AllocatorType,
+        res: Resolution2d,
+    ) -> Result<Self::PAttachType, Self::E> {
+        let attachments: Vec<_> = self
+            .attachment_formats
+            .iter()
+            .map(|&fmt| {
+                V12Image2d::new(
+                    self.device.clone(),
+                    allocator,
+                    true,
+                    name,
+                    res,
+                    fmt,
+                    ImageUsage::CopySrc | ImageUsage::PipelineAttachment,
+                )
+            })
+            .collect::<Result<_, _>>()?;
+
+        let framebuffer = unsafe {
+            let attachment_views: Vec<_> = attachments.iter().map(|img| img.view).collect();
+            self.device
+                .device
+                .create_framebuffer(
+                    &vk::FramebufferCreateInfo::default()
+                        .width(res.width)
+                        .height(res.width)
+                        .layers(1)
+                        .render_pass(self.render_pass)
+                        .attachments(&attachment_views),
+                    None,
+                )
+                .map_err(V12GraphicsPassError::FramebufferCreateError)?
+        };
+        Ok(V12GPassAttachments {
+            framebuffer,
+            res,
+            attachments,
+            device: self.device.clone(),
+        })
     }
 }
 
@@ -1005,10 +1341,11 @@ pub enum V12CommandBufferError {
 }
 
 pub struct V12CommandBuffer {
+    image_states: HashMap<vk::Image, ImageUsage>,
+    recording: bool,
     wait_sems: Vec<vk::Semaphore>,
     emit_sems: Vec<vk::Semaphore>,
     emit_fence: Option<vk::Fence>,
-    command_to_record: Vec<GpuCommand>,
     command_buffer: vk::CommandBuffer,
     queue_type: QueueType,
     device: Arc<V12Device>,
@@ -1033,83 +1370,19 @@ impl V12CommandBuffer {
                 .remove(0)
         };
         Ok(Self {
+            image_states: HashMap::new(),
+            recording: false,
             wait_sems: vec![],
             emit_sems: vec![],
             emit_fence: None,
-            command_to_record: vec![],
             command_buffer,
             queue_type,
             device,
         })
     }
-}
 
-impl CommandBuffer for V12CommandBuffer {
-    type BufferType = V12Buffer;
-
-    type Image2dType = V12Image2d;
-
-    type GFutType = V12Semaphore;
-
-    type CFutType = V12Fence;
-
-    type E = V12CommandBufferError;
-
-    fn queue_type(&self) -> QueueType {
-        self.queue_type
-    }
-
-    fn add_image_2d_optimize_cmd(&mut self, image: &Self::Image2dType, usage: ImageUsage) {
-        self.command_to_record.push(GpuCommand::Image2dOptimize {
-            img: image.image,
-            format: image.format,
-            usage,
-        });
-    }
-
-    fn copy_buffer_to_image_2d_cmd(
-        &mut self,
-        buffer: &Self::BufferType,
-        image: &Self::Image2dType,
-    ) {
-        self.command_to_record.push(GpuCommand::BufferToImage2d {
-            buffer: buffer.buffer,
-            image: image.image,
-            image_format: image.format,
-            image_size: image.res,
-        });
-    }
-
-    fn add_blit_image_2d_cmd(&mut self, src: &Self::Image2dType, dst: &Self::Image2dType) {
-        self.command_to_record.push(GpuCommand::BlitImage2dFull {
-            src: src.image,
-            src_format: src.format,
-            src_size: src.res,
-            dst: dst.image,
-            dst_format: dst.format,
-            dst_size: dst.res,
-        });
-    }
-
-    fn build(&mut self) -> Result<(), Self::E> {
-        unsafe {
-            self.device
-                .device
-                .begin_command_buffer(self.command_buffer, &vk::CommandBufferBeginInfo::default())
-                .map_err(V12CommandBufferError::BeginError)?;
-        }
-        GpuCommand::record_commands(&self.command_to_record, &self);
-        unsafe {
-            self.device
-                .device
-                .end_command_buffer(self.command_buffer)
-                .map_err(V12CommandBufferError::EndError)?;
-        }
-        Ok(())
-    }
-
-    fn reset(&mut self) -> Result<(), Self::E> {
-        self.command_to_record.clear();
+    fn begin(&mut self) -> Result<(), V12CommandBufferError> {
+        self.image_states.clear();
         self.emit_sems.clear();
         self.wait_sems.clear();
         self.emit_fence.take();
@@ -1117,8 +1390,151 @@ impl CommandBuffer for V12CommandBuffer {
             self.device
                 .device
                 .reset_command_buffer(self.command_buffer, vk::CommandBufferResetFlags::empty())
-                .map_err(V12CommandBufferError::ResetError)
+                .map_err(V12CommandBufferError::ResetError)?;
         }
+        if !self.recording {
+            unsafe {
+                self.device
+                    .device
+                    .begin_command_buffer(
+                        self.command_buffer,
+                        &vk::CommandBufferBeginInfo::default(),
+                    )
+                    .map_err(V12CommandBufferError::BeginError)?;
+            }
+            self.recording = true;
+        }
+        Ok(())
+    }
+
+    fn end(&mut self) -> Result<(), V12CommandBufferError> {
+        if self.recording {
+            unsafe {
+                self.device
+                    .device
+                    .end_command_buffer(self.command_buffer)
+                    .map_err(V12CommandBufferError::EndError)?;
+                self.recording = false;
+            }
+        }
+        Ok(())
+    }
+
+    fn cmd_image_2d_barrier(
+        &self,
+        img: vk::Image,
+        format: vk::Format,
+        src_usage: ImageUsage,
+        dst_usage: ImageUsage,
+    ) {
+        unsafe {
+            self.device.device.cmd_pipeline_barrier(
+                self.command_buffer,
+                image_usage_to_stage(src_usage),
+                image_usage_to_stage(dst_usage),
+                vk::DependencyFlags::BY_REGION,
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier::default()
+                    .image(img)
+                    .old_layout(image_usage_to_layout(src_usage, format))
+                    .new_layout(image_usage_to_layout(dst_usage, format))
+                    .src_access_mask(image_usage_to_access(src_usage, format))
+                    .dst_access_mask(image_usage_to_access(dst_usage, format))
+                    .subresource_range(image_2d_subresource_range(format))],
+            );
+        }
+    }
+
+    fn update_image_usage(&mut self, image: vk::Image, usage: ImageUsage, format: vk::Format) {
+        if let Some(last_usage) = self.image_states.insert(image, usage) {
+            if last_usage == usage {
+                return;
+            }
+            self.cmd_image_2d_barrier(image, format, last_usage, usage);
+        }
+    }
+}
+
+impl CommandBuffer for V12CommandBuffer {
+    type BType = V12Buffer;
+
+    type I2dType = V12Image2d;
+
+    type GFutType = V12Semaphore;
+
+    type CFutType = V12Fence;
+
+    type PSetType = V12PipelineSet;
+
+    type PAttachType = V12GPassAttachments;
+
+    type E = V12CommandBufferError;
+
+    fn queue_type(&self) -> QueueType {
+        self.queue_type
+    }
+
+    fn begin_record(&mut self) -> Result<(), Self::E> {
+        self.begin()
+    }
+
+    fn cmd_image_2d_optimize(&mut self, image: &Self::I2dType, usage: ImageUsage) {
+        self.update_image_usage(image.image, usage, image.format);
+    }
+
+    fn cmd_copy_buffer_to_image_2d(&mut self, buffer: &Self::BType, image: &Self::I2dType) {
+        self.update_image_usage(image.image, ImageUsage::CopyDst, image.format);
+        unsafe {
+            self.device.device.cmd_copy_buffer_to_image(
+                self.command_buffer,
+                buffer.buffer,
+                image.image,
+                image_usage_to_layout(ImageUsage::CopyDst, image.format),
+                &[vk::BufferImageCopy::default()
+                    .image_offset(vk::Offset3D::default())
+                    .image_extent(vk::Extent3D::from(image.res).depth(1))
+                    .image_subresource(image_2d_subresource_layers(image.format))],
+            );
+        }
+    }
+
+    fn cmd_blit_image_2d(&mut self, src: &Self::I2dType, dst: &Self::I2dType) {
+        self.update_image_usage(src.image, ImageUsage::CopySrc, src.format);
+        self.update_image_usage(dst.image, ImageUsage::CopyDst, dst.format);
+        unsafe {
+            self.device.device.cmd_blit_image(
+                self.command_buffer,
+                src.image,
+                image_usage_to_layout(ImageUsage::CopySrc, src.format),
+                dst.image,
+                image_usage_to_layout(ImageUsage::CopyDst, dst.format),
+                &[vk::ImageBlit::default()
+                    .src_offsets([
+                        vk::Offset3D::default(),
+                        vk::Offset3D {
+                            x: src.res.width as _,
+                            y: src.res.height as _,
+                            z: 1,
+                        },
+                    ])
+                    .dst_offsets([
+                        vk::Offset3D::default(),
+                        vk::Offset3D {
+                            x: dst.res.width as _,
+                            y: dst.res.height as _,
+                            z: 1,
+                        },
+                    ])
+                    .src_subresource(image_2d_subresource_layers(src.format))
+                    .dst_subresource(image_2d_subresource_layers(dst.format))],
+                vk::Filter::NEAREST,
+            );
+        }
+    }
+
+    fn end_record(&mut self) -> Result<(), Self::E> {
+        self.end()
     }
 
     fn add_wait_for_gpu_future(&mut self, fut: &Self::GFutType) {
@@ -1196,6 +1612,8 @@ pub enum V12ContextError {
     CommandBufferError(#[from] V12CommandBufferError),
     #[error("'image' library related error: {0}")]
     ImageLibError(#[from] image::ImageError),
+    #[error("Graphics Pass related error: {0}")]
+    GraphicsPassError(#[from] V12GraphicsPassError),
 }
 
 pub struct V12Context {
@@ -1215,6 +1633,12 @@ impl GpuContext for V12Context {
     type SwapchainType = V12Swapchain;
 
     type CommandBufferType = V12CommandBuffer;
+
+    type PSetType = V12PipelineSet;
+
+    type PAttachType = V12GPassAttachments;
+
+    type GPassType = V12GraphicsPass;
 
     type GFutType = V12Semaphore;
 
@@ -1291,6 +1715,17 @@ impl GpuContext for V12Context {
         let command_buffer =
             V12CommandBuffer::new(self.device.clone(), self.command_pool, queue_type)?;
         Ok(command_buffer)
+    }
+
+    fn new_graphics_pass(
+        &self,
+        attachments: Vec<ImageFormat>,
+        subpass_infos: Vec<SubpassInfo>,
+        max_sets: usize,
+    ) -> Result<Self::GPassType, Self::E> {
+        let g_pass =
+            V12GraphicsPass::new(self.device.clone(), attachments, subpass_infos, max_sets)?;
+        Ok(g_pass)
     }
 }
 
