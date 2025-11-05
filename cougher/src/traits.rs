@@ -178,34 +178,45 @@ pub struct SubpassInfo {
     pub depends_on: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum QueueType {
     Graphics,
 }
 
-pub trait CommandBuffer {
+pub enum GpuCommand<'a, B: Buffer, I2d: Image2d> {
+    Image2dUsageHint { image: &'a I2d, usage: ImageUsage },
+    CopyBufferToImage2d { src: &'a B, dst: &'a I2d },
+    BlitImage2d { src: &'a I2d, dst: &'a I2d },
+}
+
+pub struct GpuExecutorInput<'a, S: GpuFuture, F: CpuFuture> {
+    pub cmd_list: &'a str,
+    pub wait_for: Vec<&'a S>,
+    pub emit_gfuts: Vec<&'a S>,
+    pub emit_cfut: Option<&'a F>,
+}
+
+pub trait GpuExecutor {
     type BType: Buffer;
     type I2dType: Image2d;
     type GFutType: GpuFuture;
     type CFutType: CpuFuture;
-    type PSetType: PipelineSet<BType = Self::BType, I2dType = Self::I2dType>;
-    type PAttachType: GraphicsPassAttachments<I2dType = Self::I2dType>;
     type E: Error;
 
-    fn queue_type(&self) -> QueueType;
-
-    fn begin_record(&mut self) -> Result<(), Self::E>;
-    fn cmd_image_2d_optimize(&mut self, image: &Self::I2dType, usage: ImageUsage);
-    fn cmd_copy_buffer_to_image_2d(&mut self, buffer: &Self::BType, image: &Self::I2dType);
-    fn cmd_blit_image_2d(&mut self, src: &Self::I2dType, dst: &Self::I2dType);
-
-    fn end_record(&mut self) -> Result<(), Self::E>;
-
-    fn add_wait_for_gpu_future(&mut self, fut: &Self::GFutType);
-    fn emit_gpu_future_on_finish(&mut self, fut: &Self::GFutType);
-    fn emit_cpu_future_on_finish(&mut self, fut: &Self::CFutType);
-
-    fn submit(&self) -> Result<(), Self::E>;
+    fn type_(&self) -> QueueType;
+    fn new_command_list(&mut self, name: &str) -> Result<(), Self::E>;
+    fn update_command_list(
+        &mut self,
+        name: &str,
+        commands: Vec<GpuCommand<Self::BType, Self::I2dType>>,
+    ) -> Result<(), Self::E>;
+    fn run_command_lists(
+        &self,
+        lists: &[&str],
+        wait_for: Vec<&Self::GFutType>,
+        emit_gfuts: Vec<&Self::GFutType>,
+        emit_cfut: Option<&Self::CFutType>,
+    ) -> Result<(), Self::E>;
 }
 
 pub trait GpuContext {
@@ -220,13 +231,11 @@ pub trait GpuContext {
         >;
     type PSetType: PipelineSet<BType = Self::BufferType, I2dType = Self::Image2dType>;
     type PAttachType: GraphicsPassAttachments<I2dType = Self::Image2dType>;
-    type CommandBufferType: CommandBuffer<
+    type QType: GpuExecutor<
             BType = Self::BufferType,
             I2dType = Self::Image2dType,
             GFutType = Self::GFutType,
             CFutType = Self::CFutType,
-            PSetType = Self::PSetType,
-            PAttachType = Self::PAttachType,
         >;
     type GPassType: GraphicsPass<
             AllocatorType = Self::AllocatorType,
@@ -240,7 +249,7 @@ pub trait GpuContext {
         + From<<Self::GPassType as GraphicsPass>::E>
         + From<<Self::SwapchainType as Swapchain>::E>
         + From<<Self::CFutType as CpuFuture>::E>
-        + From<<Self::CommandBufferType as CommandBuffer>::E>
+        + From<<Self::QType as GpuExecutor>::E>
         + From<<Self::BufferType as Buffer>::E>
         + From<<Self::Image2dType as Image2d>::E>;
 
@@ -265,14 +274,13 @@ pub trait GpuContext {
     fn new_swapchain(&self, usages: BitFlags<ImageUsage>) -> Result<Self::SwapchainType, Self::E>;
     fn new_gpu_future(&self) -> Result<Self::GFutType, Self::E>;
     fn new_cpu_future(&self, signaled: bool) -> Result<Self::CFutType, Self::E>;
-    fn new_command_buffer(&self, queue_type: QueueType)
-    -> Result<Self::CommandBufferType, Self::E>;
     fn new_graphics_pass(
         &self,
         attachments: Vec<ImageFormat>,
         subpass_infos: Vec<SubpassInfo>,
         max_sets: usize,
     ) -> Result<Self::GPassType, Self::E>;
+    fn get_queue(&mut self) -> Result<Self::QType, Self::E>;
 }
 
 pub trait GpuInfo {

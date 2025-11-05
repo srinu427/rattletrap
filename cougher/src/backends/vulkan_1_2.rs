@@ -12,14 +12,14 @@ use raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 use crate::{
     backends::vulkan_common::{
         VkMemAllocation, VkMemAllocator, binding_type_to_vk, buffer_usage_to_vk,
-        format_has_stencil, format_to_vk, image_2d_subresource_layers, image_2d_subresource_range,
+        format_has_stencil, format_to_aspect_mask, format_to_vk, image_2d_subresource_range,
         is_format_depth, res_to_extent_3d, shader_type_to_vk,
     },
     traits::{
-        ApiLoader, Buffer, BufferUsage, CommandBuffer, CpuFuture, GpuContext, GpuFuture, GpuInfo,
-        GraphicsPass, GraphicsPassAttachments, Image2d, ImageFormat, ImageUsage, PipelineSet,
-        PipelineSetBindingInfo, PipelineSetBindingType, PipelineSetBindingWritable, QueueType,
-        Resolution2d, ShaderType, SubpassInfo, Swapchain,
+        ApiLoader, Buffer, BufferUsage, CpuFuture, GpuCommand, GpuContext, GpuExecutor, GpuFuture,
+        GpuInfo, GraphicsPass, GraphicsPassAttachments, Image2d, ImageFormat, ImageUsage,
+        PipelineSet, PipelineSetBindingInfo, PipelineSetBindingType, PipelineSetBindingWritable,
+        QueueType, Resolution2d, ShaderType, SubpassInfo, Swapchain,
     },
 };
 
@@ -40,12 +40,12 @@ pub enum V12BufferError {
 }
 
 pub struct V12Buffer {
-    name: String,
-    buffer: vk::Buffer,
-    size: u64,
-    usage: BitFlags<BufferUsage>,
-    memory: Option<VkMemAllocation>,
-    device: Arc<V12Device>,
+    pub(crate) name: String,
+    pub(crate) buffer: vk::Buffer,
+    pub(crate) size: u64,
+    pub(crate) usage: BitFlags<BufferUsage>,
+    pub(crate) memory: Option<VkMemAllocation>,
+    pub(crate) device: Arc<V12Device>,
 }
 
 impl V12Buffer {
@@ -372,6 +372,31 @@ impl V12Image2d {
             view,
             device,
         })
+    }
+
+    pub fn extent_3d(&self) -> vk::Extent3D {
+        vk::Extent3D::default()
+            .width(self.res.width)
+            .height(self.res.height)
+            .depth(1)
+    }
+
+    pub fn full_size_offset(&self) -> [vk::Offset3D; 2] {
+        [
+            vk::Offset3D::default(),
+            vk::Offset3D::default()
+                .x(self.res.width as _)
+                .y(self.res.height as _)
+                .z(1),
+        ]
+    }
+
+    pub fn subresource_layers(&self) -> vk::ImageSubresourceLayers {
+        vk::ImageSubresourceLayers::default()
+            .aspect_mask(format_to_aspect_mask(self.format))
+            .base_array_layer(0)
+            .layer_count(1)
+            .mip_level(0)
     }
 }
 
@@ -799,7 +824,7 @@ impl Swapchain for V12Swapchain {
             self.device
                 .swapchain_device
                 .queue_present(
-                    self.device.g_queue.1,
+                    self.device.queues[&QueueType::Graphics].1,
                     &vk::PresentInfoKHR::default()
                         .swapchains(&[self.swapchain])
                         .image_indices(&[idx])
@@ -1327,109 +1352,71 @@ impl GraphicsPass for V12GraphicsPass {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum V12CommandBufferError {
+pub enum V12ExecutorError {
+    #[error("Queue Type Unsupported")]
+    UnsupportedQueue,
+    #[error("Error creating Vulkan Command Pool: {0}")]
+    CommandPoolCreateError(vk::Result),
     #[error("Error creating Vulkan Command Buffer: {0}")]
-    CreateError(vk::Result),
-    #[error("Error resetting Command Buffer: {0}")]
-    ResetError(vk::Result),
-    #[error("Error beginning Command Buffer: {0}")]
-    BeginError(vk::Result),
-    #[error("Error ending Command Buffer: {0}")]
-    EndError(vk::Result),
-    #[error("Error submitting Command Buffer: {0}")]
-    SubmitError(vk::Result),
+    CommandBufferCreateError(vk::Result),
+    #[error("Unknown Command Buffer Name: {0}")]
+    UnknownCommandBuffer(String),
+    #[error("Error submitting work to Vulkan Queue: {0}")]
+    QueueSubmissionError(vk::Result),
+    #[error("Error starting Vulkan Command Buffer recording: {0}")]
+    CommandBufferBeginError(vk::Result),
+    #[error("Error ending Vulkan Command Buffer recording: {0}")]
+    CommandBufferEndError(vk::Result),
 }
 
-pub struct V12CommandBuffer {
-    image_states: HashMap<vk::Image, ImageUsage>,
-    recording: bool,
-    wait_sems: Vec<vk::Semaphore>,
-    emit_sems: Vec<vk::Semaphore>,
-    emit_fence: Option<vk::Fence>,
-    command_buffer: vk::CommandBuffer,
-    queue_type: QueueType,
-    device: Arc<V12Device>,
+pub struct V12Executor {
+    pub(crate) type_: QueueType,
+    pub(crate) queue: vk::Queue,
+    pub(crate) qf_id: u32,
+    pub(crate) cmd_pool: vk::CommandPool,
+    pub(crate) cmd_buffers: HashMap<String, vk::CommandBuffer>,
+    pub(crate) device: Arc<V12Device>,
 }
 
-impl V12CommandBuffer {
-    pub fn new(
-        device: Arc<V12Device>,
-        command_pool: vk::CommandPool,
-        queue_type: QueueType,
-    ) -> Result<Self, V12CommandBufferError> {
-        let command_buffer = unsafe {
+impl V12Executor {
+    pub fn new(device: Arc<V12Device>, type_: QueueType) -> Result<Self, V12ExecutorError> {
+        let (qf_id, queue) = device
+            .queues
+            .get(&type_)
+            .cloned()
+            .ok_or(V12ExecutorError::UnsupportedQueue)?;
+        let cmd_pool = unsafe {
             device
                 .device
-                .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::default()
-                        .command_pool(command_pool)
-                        .command_buffer_count(1)
-                        .level(vk::CommandBufferLevel::PRIMARY),
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default()
+                        .queue_family_index(qf_id)
+                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                    None,
                 )
-                .map_err(V12CommandBufferError::CreateError)?
-                .remove(0)
+                .map_err(V12ExecutorError::CommandPoolCreateError)?
         };
         Ok(Self {
-            image_states: HashMap::new(),
-            recording: false,
-            wait_sems: vec![],
-            emit_sems: vec![],
-            emit_fence: None,
-            command_buffer,
-            queue_type,
+            type_,
+            queue,
+            qf_id,
+            cmd_pool,
+            cmd_buffers: HashMap::default(),
             device,
         })
     }
 
-    fn begin(&mut self) -> Result<(), V12CommandBufferError> {
-        self.image_states.clear();
-        self.emit_sems.clear();
-        self.wait_sems.clear();
-        self.emit_fence.take();
-        unsafe {
-            self.device
-                .device
-                .reset_command_buffer(self.command_buffer, vk::CommandBufferResetFlags::empty())
-                .map_err(V12CommandBufferError::ResetError)?;
-        }
-        if !self.recording {
-            unsafe {
-                self.device
-                    .device
-                    .begin_command_buffer(
-                        self.command_buffer,
-                        &vk::CommandBufferBeginInfo::default(),
-                    )
-                    .map_err(V12CommandBufferError::BeginError)?;
-            }
-            self.recording = true;
-        }
-        Ok(())
-    }
-
-    fn end(&mut self) -> Result<(), V12CommandBufferError> {
-        if self.recording {
-            unsafe {
-                self.device
-                    .device
-                    .end_command_buffer(self.command_buffer)
-                    .map_err(V12CommandBufferError::EndError)?;
-                self.recording = false;
-            }
-        }
-        Ok(())
-    }
-
     fn cmd_image_2d_barrier(
-        &self,
+        device: &V12Device,
+        cmd_buffer: vk::CommandBuffer,
         img: vk::Image,
         format: vk::Format,
         src_usage: ImageUsage,
         dst_usage: ImageUsage,
     ) {
         unsafe {
-            self.device.device.cmd_pipeline_barrier(
-                self.command_buffer,
+            device.device.cmd_pipeline_barrier(
+                cmd_buffer,
                 image_usage_to_stage(src_usage),
                 image_usage_to_stage(dst_usage),
                 vk::DependencyFlags::BY_REGION,
@@ -1446,17 +1433,24 @@ impl V12CommandBuffer {
         }
     }
 
-    fn update_image_usage(&mut self, image: vk::Image, usage: ImageUsage, format: vk::Format) {
-        if let Some(last_usage) = self.image_states.insert(image, usage) {
+    fn update_image_usage(
+        state: &mut HashMap<vk::Image, ImageUsage>,
+        device: &V12Device,
+        cmd_buffer: vk::CommandBuffer,
+        image: vk::Image,
+        usage: ImageUsage,
+        format: vk::Format,
+    ) {
+        if let Some(last_usage) = state.insert(image, usage) {
             if last_usage == usage {
                 return;
             }
-            self.cmd_image_2d_barrier(image, format, last_usage, usage);
+            Self::cmd_image_2d_barrier(device, cmd_buffer, image, format, last_usage, usage);
         }
     }
 }
 
-impl CommandBuffer for V12CommandBuffer {
+impl GpuExecutor for V12Executor {
     type BType = V12Buffer;
 
     type I2dType = V12Image2d;
@@ -1465,131 +1459,160 @@ impl CommandBuffer for V12CommandBuffer {
 
     type CFutType = V12Fence;
 
-    type PSetType = V12PipelineSet;
+    type E = V12ExecutorError;
 
-    type PAttachType = V12GPassAttachments;
-
-    type E = V12CommandBufferError;
-
-    fn queue_type(&self) -> QueueType {
-        self.queue_type
+    fn type_(&self) -> QueueType {
+        self.type_
     }
 
-    fn begin_record(&mut self) -> Result<(), Self::E> {
-        self.begin()
+    fn new_command_list(&mut self, name: &str) -> Result<(), Self::E> {
+        let cmd_buffer = unsafe {
+            self.device
+                .device
+                .allocate_command_buffers(
+                    &vk::CommandBufferAllocateInfo::default()
+                        .command_pool(self.cmd_pool)
+                        .level(vk::CommandBufferLevel::PRIMARY)
+                        .command_buffer_count(1),
+                )
+                .map_err(V12ExecutorError::CommandBufferCreateError)?
+                .pop()
+                .ok_or(V12ExecutorError::CommandBufferCreateError(
+                    vk::Result::ERROR_UNKNOWN,
+                ))?
+        };
+        self.cmd_buffers.insert(name.to_string(), cmd_buffer);
+        Ok(())
     }
 
-    fn cmd_image_2d_optimize(&mut self, image: &Self::I2dType, usage: ImageUsage) {
-        self.update_image_usage(image.image, usage, image.format);
-    }
-
-    fn cmd_copy_buffer_to_image_2d(&mut self, buffer: &Self::BType, image: &Self::I2dType) {
-        self.update_image_usage(image.image, ImageUsage::CopyDst, image.format);
+    fn update_command_list(
+        &mut self,
+        name: &str,
+        commands: Vec<GpuCommand<Self::BType, Self::I2dType>>,
+    ) -> Result<(), Self::E> {
+        let Some(cmd_buffer) = self.cmd_buffers.get(name).cloned() else {
+            return Err(V12ExecutorError::UnknownCommandBuffer(name.to_string()));
+        };
         unsafe {
-            self.device.device.cmd_copy_buffer_to_image(
-                self.command_buffer,
-                buffer.buffer,
-                image.image,
-                image_usage_to_layout(ImageUsage::CopyDst, image.format),
-                &[vk::BufferImageCopy::default()
-                    .image_offset(vk::Offset3D::default())
-                    .image_extent(vk::Extent3D::from(image.res).depth(1))
-                    .image_subresource(image_2d_subresource_layers(image.format))],
-            );
+            self.device
+                .device
+                .begin_command_buffer(cmd_buffer, &vk::CommandBufferBeginInfo::default())
+                .map_err(V12ExecutorError::CommandBufferBeginError)?;
         }
-    }
-
-    fn cmd_blit_image_2d(&mut self, src: &Self::I2dType, dst: &Self::I2dType) {
-        self.update_image_usage(src.image, ImageUsage::CopySrc, src.format);
-        self.update_image_usage(dst.image, ImageUsage::CopyDst, dst.format);
+        let mut img_state = HashMap::new();
+        for command in commands {
+            match command {
+                GpuCommand::Image2dUsageHint { image, usage } => {
+                    Self::update_image_usage(
+                        &mut img_state,
+                        &self.device,
+                        cmd_buffer,
+                        image.image,
+                        usage,
+                        image.format,
+                    );
+                }
+                GpuCommand::CopyBufferToImage2d { src, dst } => {
+                    Self::update_image_usage(
+                        &mut img_state,
+                        &self.device,
+                        cmd_buffer,
+                        dst.image,
+                        ImageUsage::CopyDst,
+                        dst.format,
+                    );
+                    unsafe {
+                        self.device.device.cmd_copy_buffer_to_image(
+                            cmd_buffer,
+                            src.buffer,
+                            dst.image,
+                            image_usage_to_layout(ImageUsage::CopyDst, dst.format),
+                            &[vk::BufferImageCopy::default()
+                                .image_extent(dst.extent_3d())
+                                .image_subresource(dst.subresource_layers())],
+                        );
+                    }
+                }
+                GpuCommand::BlitImage2d { src, dst } => {
+                    Self::update_image_usage(
+                        &mut img_state,
+                        &self.device,
+                        cmd_buffer,
+                        src.image,
+                        ImageUsage::CopySrc,
+                        src.format,
+                    );
+                    Self::update_image_usage(
+                        &mut img_state,
+                        &self.device,
+                        cmd_buffer,
+                        dst.image,
+                        ImageUsage::CopyDst,
+                        dst.format,
+                    );
+                    unsafe {
+                        self.device.device.cmd_blit_image(
+                            cmd_buffer,
+                            src.image,
+                            image_usage_to_layout(ImageUsage::CopySrc, src.format),
+                            dst.image,
+                            image_usage_to_layout(ImageUsage::CopyDst, dst.format),
+                            &[vk::ImageBlit::default()
+                                .src_offsets(src.full_size_offset())
+                                .src_subresource(src.subresource_layers())
+                                .dst_offsets(dst.full_size_offset())
+                                .dst_subresource(dst.subresource_layers())],
+                            vk::Filter::NEAREST,
+                        );
+                    }
+                }
+            }
+        }
         unsafe {
-            self.device.device.cmd_blit_image(
-                self.command_buffer,
-                src.image,
-                image_usage_to_layout(ImageUsage::CopySrc, src.format),
-                dst.image,
-                image_usage_to_layout(ImageUsage::CopyDst, dst.format),
-                &[vk::ImageBlit::default()
-                    .src_offsets([
-                        vk::Offset3D::default(),
-                        vk::Offset3D {
-                            x: src.res.width as _,
-                            y: src.res.height as _,
-                            z: 1,
-                        },
-                    ])
-                    .dst_offsets([
-                        vk::Offset3D::default(),
-                        vk::Offset3D {
-                            x: dst.res.width as _,
-                            y: dst.res.height as _,
-                            z: 1,
-                        },
-                    ])
-                    .src_subresource(image_2d_subresource_layers(src.format))
-                    .dst_subresource(image_2d_subresource_layers(dst.format))],
-                vk::Filter::NEAREST,
-            );
+            self.device
+                .device
+                .end_command_buffer(cmd_buffer)
+                .map_err(V12ExecutorError::CommandBufferEndError)?;
         }
+        Ok(())
     }
 
-    fn end_record(&mut self) -> Result<(), Self::E> {
-        self.end()
-    }
-
-    fn add_wait_for_gpu_future(&mut self, fut: &Self::GFutType) {
-        self.wait_sems.push(fut.semaphore);
-    }
-
-    fn emit_gpu_future_on_finish(&mut self, fut: &Self::GFutType) {
-        self.emit_sems.push(fut.semaphore);
-    }
-
-    fn emit_cpu_future_on_finish(&mut self, fut: &Self::CFutType) {
-        self.emit_fence.replace(fut.fence);
-    }
-
-    fn submit(&self) -> Result<(), Self::E> {
-        let wait_stages: Vec<_> = (0..self.emit_sems.len())
-            .map(|_| vk::PipelineStageFlags::ALL_COMMANDS)
+    fn run_command_lists(
+        &self,
+        lists: &[&str],
+        wait_for: Vec<&Self::GFutType>,
+        emit_gfuts: Vec<&Self::GFutType>,
+        emit_cfut: Option<&Self::CFutType>,
+    ) -> Result<(), Self::E> {
+        let cmd_buffers: Vec<_> = lists
+            .iter()
+            .filter_map(|&n| self.cmd_buffers.get(n).cloned())
             .collect();
-        let cmd_buffers = [self.command_buffer];
-        let mut submit_info = vk::SubmitInfo::default().command_buffers(&cmd_buffers);
-        if self.emit_sems.len() > 0 {
-            submit_info = submit_info.signal_semaphores(&self.emit_sems);
-        };
-        if self.wait_sems.len() > 0 {
-            submit_info = submit_info
-                .wait_semaphores(&self.wait_sems)
-                .wait_dst_stage_mask(&wait_stages);
-        };
-        let queue = self.device.g_queue.1;
+        let wait_semaphores: Vec<_> = wait_for.iter().map(|s| s.semaphore).collect();
+        let emit_semaphores: Vec<_> = emit_gfuts.iter().map(|s| s.semaphore).collect();
+        let submit_info = vk::SubmitInfo::default()
+            .command_buffers(&cmd_buffers)
+            .wait_semaphores(&wait_semaphores)
+            .signal_semaphores(&emit_semaphores);
+
         unsafe {
             self.device
                 .device
                 .queue_submit(
-                    queue,
+                    self.queue,
                     &[submit_info],
-                    self.emit_fence.unwrap_or(vk::Fence::null()),
+                    emit_cfut.map(|f| f.fence).unwrap_or(vk::Fence::null()),
                 )
-                .map_err(V12CommandBufferError::SubmitError)?;
+                .map_err(V12ExecutorError::QueueSubmissionError)?
         }
         Ok(())
     }
 }
 
-pub struct V12Device {
-    physical_device: vk::PhysicalDevice,
-    g_queue: (u32, vk::Queue),
-    swapchain_device: khr::swapchain::Device,
-    device: ash::Device,
-    loader: V12ApiLoader,
-}
-
-impl Drop for V12Device {
+impl Drop for V12Executor {
     fn drop(&mut self) {
         unsafe {
-            self.device.destroy_device(None);
+            self.device.device.destroy_command_pool(self.cmd_pool, None);
         }
     }
 }
@@ -1609,7 +1632,7 @@ pub enum V12ContextError {
     #[error("Fence related error: {0}")]
     FenceError(#[from] V12FenceError),
     #[error("Command buffer related error: {0}")]
-    CommandBufferError(#[from] V12CommandBufferError),
+    ExecutorError(#[from] V12ExecutorError),
     #[error("'image' library related error: {0}")]
     ImageLibError(#[from] image::ImageError),
     #[error("Graphics Pass related error: {0}")]
@@ -1632,7 +1655,7 @@ impl GpuContext for V12Context {
 
     type SwapchainType = V12Swapchain;
 
-    type CommandBufferType = V12CommandBuffer;
+    type QType = V12Executor;
 
     type PSetType = V12PipelineSet;
 
@@ -1708,15 +1731,6 @@ impl GpuContext for V12Context {
         Ok(fence)
     }
 
-    fn new_command_buffer(
-        &self,
-        queue_type: QueueType,
-    ) -> Result<Self::CommandBufferType, Self::E> {
-        let command_buffer =
-            V12CommandBuffer::new(self.device.clone(), self.command_pool, queue_type)?;
-        Ok(command_buffer)
-    }
-
     fn new_graphics_pass(
         &self,
         attachments: Vec<ImageFormat>,
@@ -1726,6 +1740,10 @@ impl GpuContext for V12Context {
         let g_pass =
             V12GraphicsPass::new(self.device.clone(), attachments, subpass_infos, max_sets)?;
         Ok(g_pass)
+    }
+
+    fn get_queue(&mut self) -> Result<Self::QType, Self::E> {
+        Ok(V12Executor::new(self.device.clone(), QueueType::Graphics)?)
     }
 }
 
@@ -1798,9 +1816,9 @@ impl V12ApiLoader {
         let entry = unsafe { ash::Entry::load()? };
         let app_info = vk::ApplicationInfo::default()
             .api_version(vk::API_VERSION_1_2)
-            .application_name(c"Caugher App")
+            .application_name(c"Cougher App")
             .application_version(1)
-            .engine_name(c"Caugher Vulkan 1.2")
+            .engine_name(c"Cougher Vulkan 1.2")
             .engine_version(1);
         let layers = [
             #[cfg(debug_assertions)]
@@ -1920,6 +1938,7 @@ impl ApiLoader for V12ApiLoader {
                 .map_err(V12ApiLoaderError::DeviceCreateError)?
         };
         let g_queue = unsafe { device.get_device_queue(gpu.g_queue_family.0 as _, 0) };
+        let queues = HashMap::from([(QueueType::Graphics, (gpu.g_queue_family.0 as u32, g_queue))]);
 
         let swapchain_device = khr::swapchain::Device::new(&self.instance, &device);
 
@@ -1938,7 +1957,7 @@ impl ApiLoader for V12ApiLoader {
             command_pool,
             device: Arc::new(V12Device {
                 physical_device: gpu.physical_device,
-                g_queue: (gpu.g_queue_family.0 as _, g_queue),
+                queues,
                 swapchain_device,
                 device,
                 loader: self,
@@ -1952,6 +1971,22 @@ impl Drop for V12ApiLoader {
         unsafe {
             self.surface_instance.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
+        }
+    }
+}
+
+pub struct V12Device {
+    pub(crate) physical_device: vk::PhysicalDevice,
+    pub(crate) queues: HashMap<QueueType, (u32, vk::Queue)>,
+    pub(crate) swapchain_device: khr::swapchain::Device,
+    pub(crate) device: ash::Device,
+    pub(crate) loader: V12ApiLoader,
+}
+
+impl Drop for V12Device {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_device(None);
         }
     }
 }

@@ -69,6 +69,20 @@ impl Drop for VkMemAllocation {
     }
 }
 
+pub fn buffer_usage_to_vk(usages: BitFlags<BufferUsage>) -> vk::BufferUsageFlags {
+    let mut vk_flags = vk::BufferUsageFlags::default();
+    for usage in usages {
+        match usage {
+            BufferUsage::None => {}
+            BufferUsage::Uniform => vk_flags |= vk::BufferUsageFlags::UNIFORM_BUFFER,
+            BufferUsage::Storage => vk_flags |= vk::BufferUsageFlags::STORAGE_BUFFER,
+            BufferUsage::TransferSrc => vk_flags |= vk::BufferUsageFlags::TRANSFER_SRC,
+            BufferUsage::TransferDst => vk_flags |= vk::BufferUsageFlags::TRANSFER_DST,
+        }
+    }
+    vk_flags
+}
+
 pub fn format_to_vk(format: ImageFormat) -> vk::Format {
     match format {
         ImageFormat::R32 => vk::Format::R32_SFLOAT,
@@ -96,20 +110,6 @@ pub fn vk_to_format(format: vk::Format) -> Option<ImageFormat> {
         vk::Format::D32_SFLOAT_S8_UINT => Some(ImageFormat::D32S8),
         _ => None,
     }
-}
-
-pub fn buffer_usage_to_vk(usages: BitFlags<BufferUsage>) -> vk::BufferUsageFlags {
-    let mut vk_flags = vk::BufferUsageFlags::default();
-    for usage in usages {
-        match usage {
-            BufferUsage::None => {}
-            BufferUsage::Uniform => vk_flags |= vk::BufferUsageFlags::UNIFORM_BUFFER,
-            BufferUsage::Storage => vk_flags |= vk::BufferUsageFlags::STORAGE_BUFFER,
-            BufferUsage::TransferSrc => vk_flags |= vk::BufferUsageFlags::TRANSFER_SRC,
-            BufferUsage::TransferDst => vk_flags |= vk::BufferUsageFlags::TRANSFER_DST,
-        }
-    }
-    vk_flags
 }
 
 pub fn res_to_extent_2d(res: Resolution2d) -> vk::Extent2D {
@@ -167,14 +167,6 @@ pub fn image_2d_subresource_range(format: vk::Format) -> vk::ImageSubresourceRan
         .layer_count(1)
         .base_mip_level(0)
         .level_count(1)
-}
-
-pub fn image_2d_subresource_layers(format: vk::Format) -> vk::ImageSubresourceLayers {
-    vk::ImageSubresourceLayers::default()
-        .aspect_mask(format_to_aspect_mask(format))
-        .base_array_layer(0)
-        .layer_count(1)
-        .mip_level(0)
 }
 
 pub fn binding_type_to_vk(t: PipelineSetBindingType) -> vk::DescriptorType {

@@ -1,6 +1,6 @@
 use crate::traits::{
-    ApiLoader, Buffer, BufferUsage, CommandBuffer, CpuFuture, GpuContext, ImageFormat, ImageUsage,
-    QueueType, Resolution2d, Swapchain,
+    ApiLoader, Buffer, BufferUsage, CpuFuture, GpuCommand, GpuContext, GpuExecutor, ImageFormat,
+    ImageUsage, QueueType, Resolution2d, Swapchain,
 };
 
 pub mod backends;
@@ -11,19 +11,20 @@ pub struct Renderer<T: GpuContext> {
     swapchain: T::SwapchainType,
     bg_image: T::Image2dType,
     allocator: T::AllocatorType,
-    command_buffers: Vec<T::CommandBufferType>,
+    executor: T::QType,
     cpu_futures: Vec<T::CFutType>,
     gpu_futures: Vec<T::GFutType>,
     image_acquire_cfut: T::CFutType,
 }
 
 impl<T: GpuContext> Renderer<T> {
-    pub fn from(ctx: T) -> Result<Self, T::E> {
+    pub fn from(mut ctx: T) -> Result<Self, T::E> {
         let swapchain = ctx.new_swapchain(ImageUsage::CopyDst.into())?;
         let mut allocator = ctx.new_allocator()?;
-        let command_buffers: Vec<_> = (0..swapchain.images().len())
-            .map(|_| ctx.new_command_buffer(QueueType::Graphics))
-            .collect::<Result<_, _>>()?;
+        let mut executor = ctx.get_queue()?;
+        for i in 0..swapchain.images().len() {
+            executor.new_command_list(&format!("render_cmd_list_{i}"))?;
+        }
         let cpu_futures: Vec<_> = (0..swapchain.images().len())
             .map(|_| ctx.new_cpu_future(true))
             .collect::<Result<_, _>>()?;
@@ -52,14 +53,25 @@ impl<T: GpuContext> Renderer<T> {
             ImageFormat::Rgba8Srgb,
             ImageUsage::CopyDst | ImageUsage::CopySrc,
         )?;
-        let mut stage_cmd_buffer = ctx.new_command_buffer(QueueType::Graphics)?;
-        stage_cmd_buffer.begin_record()?;
-        stage_cmd_buffer.cmd_image_2d_optimize(&bg_image, ImageUsage::None);
-        stage_cmd_buffer.cmd_copy_buffer_to_image_2d(&stage_buffer, &bg_image);
-        stage_cmd_buffer.cmd_image_2d_optimize(&bg_image, ImageUsage::CopySrc);
-        stage_cmd_buffer.end_record()?;
-        stage_cmd_buffer.emit_cpu_future_on_finish(&upload_cfut);
-        stage_cmd_buffer.submit()?;
+        executor.new_command_list("bg_image_copy")?;
+        executor.update_command_list(
+            "bg_image_copy",
+            vec![
+                GpuCommand::Image2dUsageHint {
+                    image: &bg_image,
+                    usage: ImageUsage::None,
+                },
+                GpuCommand::CopyBufferToImage2d {
+                    src: &stage_buffer,
+                    dst: &bg_image,
+                },
+                GpuCommand::Image2dUsageHint {
+                    image: &bg_image,
+                    usage: ImageUsage::CopySrc,
+                },
+            ],
+        )?;
+        executor.run_command_lists(&["bg_image_copy"], vec![], vec![], Some(&upload_cfut))?;
         upload_cfut.wait()?;
         drop(stage_buffer);
         let image_acquire_cfut = ctx.new_cpu_future(false)?;
@@ -69,7 +81,7 @@ impl<T: GpuContext> Renderer<T> {
             swapchain,
             bg_image,
             allocator,
-            command_buffers,
+            executor,
             cpu_futures,
             gpu_futures,
             image_acquire_cfut,
@@ -83,33 +95,41 @@ impl<T: GpuContext> Renderer<T> {
         self.image_acquire_cfut.wait()?;
 
         self.cpu_futures[next_img as usize].wait()?;
-        self.command_buffers[next_img as usize].begin_record()?;
+        let mut commands = vec![];
         if !self.swapchain.is_optimized() {
             for img in self.swapchain.images() {
-                self.command_buffers[next_img as usize]
-                    .cmd_image_2d_optimize(img, ImageUsage::None);
-                self.command_buffers[next_img as usize]
-                    .cmd_image_2d_optimize(img, ImageUsage::Present);
+                commands.push(GpuCommand::Image2dUsageHint {
+                    image: img,
+                    usage: ImageUsage::None,
+                });
+                commands.push(GpuCommand::Image2dUsageHint {
+                    image: img,
+                    usage: ImageUsage::Present,
+                });
             }
         } else {
-            self.command_buffers[next_img as usize].cmd_image_2d_optimize(
-                &self.swapchain.images()[next_img as usize],
-                ImageUsage::Present,
-            );
+            commands.push(GpuCommand::Image2dUsageHint {
+                image: &self.swapchain.images()[next_img as usize],
+                usage: ImageUsage::Present,
+            });
         }
+        commands.push(GpuCommand::BlitImage2d {
+            src: &self.bg_image,
+            dst: &self.swapchain.images()[next_img as usize],
+        });
+        commands.push(GpuCommand::Image2dUsageHint {
+            image: &self.swapchain.images()[next_img as usize],
+            usage: ImageUsage::Present,
+        });
 
-        self.command_buffers[next_img as usize]
-            .cmd_blit_image_2d(&self.bg_image, &self.swapchain.images()[next_img as usize]);
-        self.command_buffers[next_img as usize].cmd_image_2d_optimize(
-            &self.swapchain.images()[next_img as usize],
-            ImageUsage::Present,
-        );
-        self.command_buffers[next_img as usize].end_record()?;
-        self.command_buffers[next_img as usize]
-            .emit_gpu_future_on_finish(&self.gpu_futures[next_img as usize]);
-        self.command_buffers[next_img as usize]
-            .emit_cpu_future_on_finish(&self.cpu_futures[next_img as usize]);
-        self.command_buffers[next_img as usize].submit()?;
+        self.executor
+            .update_command_list(&format!("render_cmd_list_{next_img}"), commands)?;
+        self.executor.run_command_lists(
+            &[&format!("render_cmd_list_{next_img}")],
+            vec![],
+            vec![&self.gpu_futures[next_img as usize]],
+            Some(&self.cpu_futures[next_img as usize]),
+        )?;
 
         self.swapchain
             .present(next_img, &[&self.gpu_futures[next_img as usize]])?;
