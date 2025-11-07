@@ -17,9 +17,9 @@ use crate::{
     },
     traits::{
         ApiLoader, Buffer, BufferUsage, CpuFuture, GpuCommand, GpuContext, GpuExecutor, GpuFuture,
-        GpuInfo, GraphicsPass, GraphicsPassAttachments, Image2d, ImageFormat, ImageUsage,
-        PipelineSet, PipelineSetBindingInfo, PipelineSetBindingType, PipelineSetBindingWritable,
-        QueueType, Resolution2d, ShaderType, SubpassInfo, Swapchain,
+        GpuInfo, GraphicsPass, GraphicsPassAttachments, GraphicsPassCommand, Image2d, ImageFormat,
+        ImageUsage, PipelineSet, PipelineSetBindingInfo, PipelineSetBindingType,
+        PipelineSetBindingWritable, QueueType, Resolution2d, ShaderType, SubpassInfo, Swapchain,
     },
 };
 
@@ -1459,6 +1459,8 @@ impl GpuExecutor for V12Executor {
 
     type CFutType = V12Fence;
 
+    type GPass = V12GraphicsPass;
+
     type E = V12ExecutorError;
 
     fn type_(&self) -> QueueType {
@@ -1488,7 +1490,7 @@ impl GpuExecutor for V12Executor {
     fn update_command_list(
         &mut self,
         name: &str,
-        commands: Vec<GpuCommand<Self::BType, Self::I2dType>>,
+        commands: Vec<GpuCommand<Self::BType, Self::I2dType, Self::GPass>>,
     ) -> Result<(), Self::E> {
         let Some(cmd_buffer) = self.cmd_buffers.get(name).cloned() else {
             return Err(V12ExecutorError::UnknownCommandBuffer(name.to_string()));
@@ -1564,6 +1566,50 @@ impl GpuExecutor for V12Executor {
                                 .dst_subresource(dst.subresource_layers())],
                             vk::Filter::NEAREST,
                         );
+                    }
+                }
+                GpuCommand::RunGraphicsPass {
+                    pass,
+                    attachments,
+                    commands,
+                } => {
+                    unsafe {
+                        self.device.device.cmd_begin_render_pass(
+                            cmd_buffer,
+                            &vk::RenderPassBeginInfo::default()
+                                .render_pass(pass.render_pass)
+                                .framebuffer(attachments.framebuffer)
+                                .render_area(vk::Rect2D::default().extent(vk::Extent2D {
+                                    width: attachments.res.width,
+                                    height: attachments.res.height,
+                                })),
+                            vk::SubpassContents::INLINE,
+                        );
+                    }
+                    for gpass_cmd in commands {
+                        match gpass_cmd {
+                            GraphicsPassCommand::BindSubpass { idx, sets } => unsafe {
+                                self.device.device.cmd_bind_pipeline(
+                                    cmd_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    pass.pipelines[idx],
+                                );
+                                self.device.device.cmd_bind_descriptor_sets(
+                                    cmd_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    pass.pipeline_layouts[idx],
+                                    0,
+                                    &sets.iter().map(|s| s.set).collect::<Vec<_>>(),
+                                    &[],
+                                );
+                            },
+                            GraphicsPassCommand::Draw(count) => unsafe {
+                                self.device.device.cmd_draw(cmd_buffer, count as _, 1, 0, 0);
+                            },
+                        }
+                    }
+                    unsafe {
+                        self.device.device.cmd_end_render_pass(cmd_buffer);
                     }
                 }
             }
@@ -1649,9 +1695,9 @@ impl GpuContext for V12Context {
 
     type AllocationType = VkMemAllocation;
 
-    type BufferType = V12Buffer;
+    type BType = V12Buffer;
 
-    type Image2dType = V12Image2d;
+    type I2dType = V12Image2d;
 
     type SwapchainType = V12Swapchain;
 
@@ -1663,9 +1709,9 @@ impl GpuContext for V12Context {
 
     type GPassType = V12GraphicsPass;
 
-    type GFutType = V12Semaphore;
+    type SemType = V12Semaphore;
 
-    type CFutType = V12Fence;
+    type FenType = V12Fence;
 
     type E = V12ContextError;
 
@@ -1676,7 +1722,7 @@ impl GpuContext for V12Context {
         size: u64,
         name: &str,
         usage: BitFlags<BufferUsage>,
-    ) -> Result<Self::BufferType, Self::E> {
+    ) -> Result<Self::BType, Self::E> {
         let buffer = V12Buffer::new(self.device.clone(), allocator, gpu_local, name, size, usage)?;
         Ok(buffer)
     }
@@ -1689,7 +1735,7 @@ impl GpuContext for V12Context {
         resolution: Resolution2d,
         format: ImageFormat,
         usage: BitFlags<ImageUsage>,
-    ) -> Result<Self::Image2dType, Self::E> {
+    ) -> Result<Self::I2dType, Self::E> {
         let image = V12Image2d::new(
             self.device.clone(),
             allocator,
@@ -1721,12 +1767,12 @@ impl GpuContext for V12Context {
         Ok(swapchain)
     }
 
-    fn new_gpu_future(&self) -> Result<Self::GFutType, Self::E> {
+    fn new_gpu_future(&self) -> Result<Self::SemType, Self::E> {
         let sem = V12Semaphore::new(self.device.clone())?;
         Ok(sem)
     }
 
-    fn new_cpu_future(&self, signalled: bool) -> Result<Self::CFutType, Self::E> {
+    fn new_cpu_future(&self, signalled: bool) -> Result<Self::FenType, Self::E> {
         let fence = V12Fence::new(self.device.clone(), signalled)?;
         Ok(fence)
     }

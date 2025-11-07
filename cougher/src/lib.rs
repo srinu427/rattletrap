@@ -1,20 +1,21 @@
 use crate::traits::{
     ApiLoader, Buffer, BufferUsage, CpuFuture, GpuCommand, GpuContext, GpuExecutor, ImageFormat,
-    ImageUsage, QueueType, Resolution2d, Swapchain,
+    ImageUsage, Resolution2d, Swapchain,
 };
 
 pub mod backends;
+pub mod render_objs;
 pub mod traits;
 
 pub struct Renderer<T: GpuContext> {
     ctx: T,
     swapchain: T::SwapchainType,
-    bg_image: T::Image2dType,
+    bg_image: T::I2dType,
     allocator: T::AllocatorType,
     executor: T::QType,
-    cpu_futures: Vec<T::CFutType>,
-    gpu_futures: Vec<T::GFutType>,
-    image_acquire_cfut: T::CFutType,
+    cpu_futures: Vec<T::FenType>,
+    gpu_futures: Vec<T::SemType>,
+    image_acquire_cfut: T::FenType,
 }
 
 impl<T: GpuContext> Renderer<T> {
