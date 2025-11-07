@@ -1,6 +1,7 @@
 use core::error::Error;
 use enumflags2::{BitFlags, bitflags};
 use hashbrown::HashMap;
+use slotmap::new_key_type;
 
 pub trait ApiLoader {
     type GpuInfoType: GpuInfo;
@@ -18,19 +19,11 @@ pub trait GpuInfo {
 }
 
 pub trait GpuContext {
-    type AllocatorType: MemAllocator;
-    type AllocationType: MemAllocation<AllocatorType = Self::AllocatorType>;
-    type BType: Buffer<MemType = Self::AllocationType, AllocatorType = Self::AllocatorType>;
-    type I2dType: Image2d<MemType = Self::AllocationType, AllocatorType = Self::AllocatorType>;
-    type SwapchainType: Swapchain<Image2dType = Self::I2dType, GFutType = Self::SemType, CFutType = Self::FenType>;
+    type AllocatorType: MemoryPool;
+    type SwapchainType: Swapchain<GFutType = Self::SemType, CFutType = Self::FenType>;
     type PSetType: PipelineSet<BType = Self::BType, I2dType = Self::I2dType>;
     type PAttachType: GraphicsPassAttachments<I2dType = Self::I2dType>;
-    type QType: GpuExecutor<
-            BType = Self::BType,
-            I2dType = Self::I2dType,
-            GFutType = Self::SemType,
-            CFutType = Self::FenType,
-        >;
+    type QType: GpuExecutor<GFutType = Self::SemType, CFutType = Self::FenType>;
     type GPassType: GraphicsPass<
             AllocatorType = Self::AllocatorType,
             PSetType = Self::PSetType,
@@ -43,27 +36,8 @@ pub trait GpuContext {
         + From<<Self::GPassType as GraphicsPass>::E>
         + From<<Self::SwapchainType as Swapchain>::E>
         + From<<Self::FenType as CpuFuture>::E>
-        + From<<Self::QType as GpuExecutor>::E>
-        + From<<Self::BType as Buffer>::E>
-        + From<<Self::I2dType as Image2d>::E>;
+        + From<<Self::QType as GpuExecutor>::E>;
 
-    fn new_buffer(
-        &self,
-        allocator: &mut Self::AllocatorType,
-        gpu_local: bool,
-        size: u64,
-        name: &str,
-        usage: BitFlags<BufferUsage>,
-    ) -> Result<Self::BType, Self::E>;
-    fn new_image_2d(
-        &self,
-        allocator: &mut Self::AllocatorType,
-        gpu_local: bool,
-        name: &str,
-        resolution: Resolution2d,
-        format: ImageFormat,
-        usage: BitFlags<ImageUsage>,
-    ) -> Result<Self::I2dType, Self::E>;
     fn new_allocator(&self) -> Result<Self::AllocatorType, Self::E>;
     fn new_swapchain(&self, usages: BitFlags<ImageUsage>) -> Result<Self::SwapchainType, Self::E>;
     fn new_gpu_future(&self) -> Result<Self::SemType, Self::E>;
@@ -108,8 +82,6 @@ pub enum GraphicsPassCommand<'a, PS: PipelineSet> {
 }
 
 pub trait GpuExecutor {
-    type BType: Buffer;
-    type I2dType: Image2d;
     type GPass: GraphicsPass<BType = Self::BType, I2dType = Self::I2dType>;
     type GFutType: GpuFuture;
     type CFutType: CpuFuture;
@@ -138,10 +110,7 @@ pub enum ShaderType {
 }
 
 pub trait GraphicsPass {
-    type AllocatorType: MemAllocator;
-    type MemType: MemAllocation<AllocatorType = Self::AllocatorType>;
-    type BType: Buffer<MemType = Self::MemType>;
-    type I2dType: Image2d<MemType = Self::MemType>;
+    type AllocatorType: MemoryPool;
     type PSetType: PipelineSet<BType = Self::BType, I2dType = Self::I2dType>;
     type PAttachType: GraphicsPassAttachments<I2dType = Self::I2dType>;
     type E: Error;
@@ -164,8 +133,6 @@ pub struct SubpassInfo {
 }
 
 pub trait PipelineSet {
-    type BType: Buffer;
-    type I2dType: Image2d;
     type E: Error;
 
     fn update_bindings(
@@ -188,24 +155,49 @@ pub struct PipelineSetBindingInfo {
     pub bindless: bool,
 }
 
-pub enum PipelineSetBindingWritable<'a, B: Buffer, I: Image2d> {
-    Buffer(&'a [&'a B]),
-    Image2d(&'a [&'a I]),
+pub enum PipelineSetBindingWritable<'a, MP: MemoryPool> {
+    Buffer(&'a MP, &'a [BufferId]),
+    Image2d(&'a MP, &'a [Image2dId]),
 }
 
 pub trait GraphicsPassAttachments {
-    type I2dType: Image2d;
+    type MP: MemoryPool;
 
     fn resolution(&self) -> Resolution2d;
-    fn get_attachments(&self) -> Vec<&Self::I2dType>;
+    fn get_attachments(&self) -> Vec<(&MP, Image2dId)>;
 }
 
-pub trait MemAllocator {}
+#[derive(Debug, Clone)]
+pub struct BufferProps {
+    gpu_local: bool,
+    size: u64,
+    usage: BitFlags<BufferUsage>,
+}
 
-pub trait MemAllocation {
-    type AllocatorType: MemAllocator;
+#[derive(Debug, Clone)]
+pub struct Image2dProps {
+    gpu_local: bool,
+    resolution: Resolution2d,
+    format: ImageFormat,
+    usage: BitFlags<ImageUsage>,
+}
 
-    fn is_gpu_local(&self) -> bool;
+new_key_type! {
+    pub struct BufferId;
+    pub struct Image2dId;
+}
+
+pub trait MemoryPool {
+    type E: Error;
+    type B: Buffer;
+    type I2d: Image2d;
+
+    fn new_buffer(&mut self, props: BufferProps) -> Result<BufferId, Self::E>;
+    fn get_buffer_props(&self, id: BufferId) -> Option<&BufferProps>;
+    fn write_to_buffer(&mut self, id: BufferId, data: &[u8]) -> Result<(), Self::E>;
+
+    fn new_image_2d(&mut self, props: Image2dProps) -> Result<Image2dId, Self::E>;
+    fn get_image_2d_props(&self, id: Image2dId) -> Option<&Image2dProps>;
 }
 
 #[bitflags]
@@ -217,17 +209,6 @@ pub enum BufferUsage {
     Storage = 1 << 2,
     TransferSrc = 1 << 3,
     TransferDst = 1 << 4,
-}
-
-pub trait Buffer {
-    type AllocatorType: MemAllocator;
-    type MemType: MemAllocation<AllocatorType = Self::AllocatorType>;
-    type E: Error;
-
-    fn name(&self) -> &str;
-    fn write_data(&mut self, offset: u64, data: &[u8]) -> Result<(), Self::E>;
-    fn size(&self) -> u64;
-    fn usage(&self) -> BitFlags<BufferUsage>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -272,14 +253,6 @@ pub enum ImageUsage {
     CopyDst = 1 << 2,
     PipelineAttachment = 1 << 3,
     Present = 1 << 4,
-}
-
-pub trait Image2d {
-    type AllocatorType: MemAllocator;
-    type MemType: MemAllocation<AllocatorType = Self::AllocatorType>;
-    type E: Error;
-
-    fn resolution(&self) -> Resolution2d;
 }
 
 pub trait GpuFuture {}

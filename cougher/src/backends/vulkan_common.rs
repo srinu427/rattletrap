@@ -11,7 +11,7 @@ use gpu_allocator::{
 };
 
 use crate::traits::{
-    BufferUsage, ImageFormat, MemAllocation, MemAllocator, PipelineSetBindingType, Resolution2d,
+    BufferUsage, ImageFormat, MemAllocation, MemoryPool, PipelineSetBindingType, Resolution2d,
     ShaderType,
 };
 
@@ -39,7 +39,7 @@ impl VkMemAllocator {
     }
 }
 
-impl MemAllocator for VkMemAllocator {}
+impl MemoryPool for VkMemAllocator {}
 
 pub struct VkMemAllocation {
     pub(crate) allocation: ManuallyDrop<Allocation>,
