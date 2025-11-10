@@ -11,7 +11,7 @@ pub struct Renderer<T: GpuContext> {
     ctx: T,
     swapchain: T::SwapchainType,
     bg_image: T::I2dType,
-    allocator: T::AllocatorType,
+    allocator: T::MP,
     executor: T::QType,
     cpu_futures: Vec<T::FenType>,
     gpu_futures: Vec<T::SemType>,

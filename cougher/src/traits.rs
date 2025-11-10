@@ -19,16 +19,12 @@ pub trait GpuInfo {
 }
 
 pub trait GpuContext {
-    type AllocatorType: MemoryPool;
+    type MP: MemoryPool;
     type SwapchainType: Swapchain<GFutType = Self::SemType, CFutType = Self::FenType>;
-    type PSetType: PipelineSet<BType = Self::BType, I2dType = Self::I2dType>;
-    type PAttachType: GraphicsPassAttachments<I2dType = Self::I2dType>;
+    type PSetType: PipelineSet<MP = Self::MP>;
+    type PAttachType: GraphicsPassAttachments<MP = Self::MP>;
     type QType: GpuExecutor<GFutType = Self::SemType, CFutType = Self::FenType>;
-    type GPassType: GraphicsPass<
-            AllocatorType = Self::AllocatorType,
-            PSetType = Self::PSetType,
-            PAttachType = Self::PAttachType,
-        >;
+    type GPassType: GraphicsPass<MP = Self::MP, PSetType = Self::PSetType, PAttachType = Self::PAttachType>;
     type SemType: GpuFuture;
     type FenType: CpuFuture;
     type E: Error
@@ -38,7 +34,7 @@ pub trait GpuContext {
         + From<<Self::FenType as CpuFuture>::E>
         + From<<Self::QType as GpuExecutor>::E>;
 
-    fn new_allocator(&self) -> Result<Self::AllocatorType, Self::E>;
+    fn new_allocator(&self) -> Result<Self::MP, Self::E>;
     fn new_swapchain(&self, usages: BitFlags<ImageUsage>) -> Result<Self::SwapchainType, Self::E>;
     fn new_gpu_future(&self) -> Result<Self::SemType, Self::E>;
     fn new_cpu_future(&self, signaled: bool) -> Result<Self::FenType, Self::E>;
@@ -56,18 +52,23 @@ pub enum QueueType {
     Graphics,
 }
 
-pub enum GpuCommand<'a, B: Buffer, I2d: Image2d, G: GraphicsPass<BType = B, I2dType = I2d>> {
+pub enum GpuCommand<'a, MP: MemoryPool, G: GraphicsPass<MP = MP>> {
     Image2dUsageHint {
-        image: &'a I2d,
+        image: Image2dId,
+        mp: &'a MP,
         usage: ImageUsage,
     },
     CopyBufferToImage2d {
-        src: &'a B,
-        dst: &'a I2d,
+        src: BufferId,
+        src_mp: &'a MP,
+        dst: Image2dId,
+        dst_mp: &'a MP,
     },
     BlitImage2d {
-        src: &'a I2d,
-        dst: &'a I2d,
+        src: Image2dId,
+        src_mp: &'a MP,
+        dst: Image2dId,
+        dst_mp: &'a MP,
     },
     RunGraphicsPass {
         pass: &'a G,
@@ -82,7 +83,8 @@ pub enum GraphicsPassCommand<'a, PS: PipelineSet> {
 }
 
 pub trait GpuExecutor {
-    type GPass: GraphicsPass<BType = Self::BType, I2dType = Self::I2dType>;
+    type MP: MemoryPool;
+    type GPass: GraphicsPass<MP = Self::MP>;
     type GFutType: GpuFuture;
     type CFutType: CpuFuture;
     type E: Error;
@@ -92,7 +94,7 @@ pub trait GpuExecutor {
     fn update_command_list(
         &mut self,
         name: &str,
-        commands: Vec<GpuCommand<Self::BType, Self::I2dType, Self::GPass>>,
+        commands: Vec<GpuCommand<Self::MP, Self::GPass>>,
     ) -> Result<(), Self::E>;
     fn run_command_lists(
         &self,
@@ -110,16 +112,16 @@ pub enum ShaderType {
 }
 
 pub trait GraphicsPass {
-    type AllocatorType: MemoryPool;
-    type PSetType: PipelineSet<BType = Self::BType, I2dType = Self::I2dType>;
-    type PAttachType: GraphicsPassAttachments<I2dType = Self::I2dType>;
+    type MP: MemoryPool;
+    type PSetType: PipelineSet<MP = Self::MP>;
+    type PAttachType: GraphicsPassAttachments<MP = Self::MP>;
     type E: Error;
 
     fn create_sets(&self, subpass_id: usize) -> Result<Vec<Self::PSetType>, Self::E>;
     fn create_attachments(
         &self,
         name: &str,
-        allocator: &mut Self::AllocatorType,
+        allocator: &mut Self::MP,
         res: Resolution2d,
     ) -> Result<Self::PAttachType, Self::E>;
 }
@@ -133,11 +135,12 @@ pub struct SubpassInfo {
 }
 
 pub trait PipelineSet {
+    type MP: MemoryPool;
     type E: Error;
 
     fn update_bindings(
         &mut self,
-        binding_writables: Vec<PipelineSetBindingWritable<Self::BType, Self::I2dType>>,
+        binding_writables: Vec<PipelineSetBindingWritable<Self::MP>>,
     ) -> Result<(), Self::E>;
 }
 
@@ -164,7 +167,7 @@ pub trait GraphicsPassAttachments {
     type MP: MemoryPool;
 
     fn resolution(&self) -> Resolution2d;
-    fn get_attachments(&self) -> Vec<(&MP, Image2dId)>;
+    fn get_attachments(&self) -> Vec<(&Self::MP, Image2dId)>;
 }
 
 #[derive(Debug, Clone)]
@@ -189,8 +192,6 @@ new_key_type! {
 
 pub trait MemoryPool {
     type E: Error;
-    type B: Buffer;
-    type I2d: Image2d;
 
     fn new_buffer(&mut self, props: BufferProps) -> Result<BufferId, Self::E>;
     fn get_buffer_props(&self, id: BufferId) -> Option<&BufferProps>;
@@ -264,7 +265,7 @@ pub trait CpuFuture {
 }
 
 pub trait Swapchain {
-    type Image2dType: Image2d;
+    type MP: MemoryPool;
     type GFutType: GpuFuture;
     type CFutType: CpuFuture;
     type E: Error;
@@ -275,7 +276,7 @@ pub trait Swapchain {
         cfut: Option<&Self::CFutType>,
         gfut: Option<&Self::GFutType>,
     ) -> Result<u32, Self::E>;
-    fn resize_resolution(&mut self) -> Result<(), Self::E>;
-    fn images(&self) -> &[Self::Image2dType];
+    fn refresh_resolution(&mut self) -> Result<(), Self::E>;
+    fn images(&self) -> &[Image2dId];
     fn present(&self, idx: u32, wait_for: &[&Self::GFutType]) -> Result<bool, Self::E>;
 }

@@ -720,7 +720,7 @@ impl Swapchain for V12Swapchain {
             };
 
             if is_suboptimal {
-                self.resize_resolution()?;
+                self.refresh_resolution()?;
                 if idx.is_some()
                     && let Some(fence) = cfut
                 {
@@ -734,7 +734,7 @@ impl Swapchain for V12Swapchain {
         }
     }
 
-    fn resize_resolution(&mut self) -> Result<(), Self::E> {
+    fn refresh_resolution(&mut self) -> Result<(), Self::E> {
         let caps = unsafe {
             self.device
                 .loader
@@ -1268,7 +1268,7 @@ impl V12GraphicsPass {
 }
 
 impl GraphicsPass for V12GraphicsPass {
-    type AllocatorType = VkMemAllocator;
+    type MP = VkMemAllocator;
 
     type MemType = VkMemAllocation;
 
@@ -1308,7 +1308,7 @@ impl GraphicsPass for V12GraphicsPass {
     fn create_attachments(
         &self,
         name: &str,
-        allocator: &mut Self::AllocatorType,
+        allocator: &mut Self::MP,
         res: Resolution2d,
     ) -> Result<Self::PAttachType, Self::E> {
         let attachments: Vec<_> = self
@@ -1691,7 +1691,7 @@ pub struct V12Context {
 }
 
 impl GpuContext for V12Context {
-    type AllocatorType = VkMemAllocator;
+    type MP = VkMemAllocator;
 
     type AllocationType = VkMemAllocation;
 
@@ -1717,7 +1717,7 @@ impl GpuContext for V12Context {
 
     fn new_buffer(
         &self,
-        allocator: &mut Self::AllocatorType,
+        allocator: &mut Self::MP,
         gpu_local: bool,
         size: u64,
         name: &str,
@@ -1729,7 +1729,7 @@ impl GpuContext for V12Context {
 
     fn new_image_2d(
         &self,
-        allocator: &mut Self::AllocatorType,
+        allocator: &mut Self::MP,
         gpu_local: bool,
         name: &str,
         resolution: Resolution2d,
@@ -1748,7 +1748,7 @@ impl GpuContext for V12Context {
         Ok(image)
     }
 
-    fn new_allocator(&self) -> Result<Self::AllocatorType, Self::E> {
+    fn new_allocator(&self) -> Result<Self::MP, Self::E> {
         VkMemAllocator::new(
             &self.device.device,
             &self.device.loader.instance,
