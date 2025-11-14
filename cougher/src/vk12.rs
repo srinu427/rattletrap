@@ -202,6 +202,8 @@ pub enum Vk12RendererError {
     NoSuitableSurfaceFormat,
     #[error("Error creating Vulkan Swapchain: {0}")]
     SwapchainCreateError(vk::Result),
+    #[error("Error getting Vulkan Swapchain Images: {0}")]
+    SwapchainGetImagesError(vk::Result),
 }
 
 pub struct Vk12Renderer {
@@ -214,7 +216,116 @@ pub struct Vk12Renderer {
 }
 
 impl Vk12Renderer {
-    fn init_swapchain() {}
+    fn init_swapchain(
+        instance: &Vk12Instance,
+        swapchain_device: &khr::swapchain::Device,
+        gpu: &Vk12Gpu,
+        window: &winit::window::Window,
+    ) -> Result<(vk::SwapchainKHR, Vec<vk::Image>), Vk12RendererError> {
+        let (formats, caps, present_modes) = unsafe {
+            let formats: Vec<_> = instance
+                .surface_instance
+                .get_physical_device_surface_formats(gpu.physical_device, instance.surface)
+                .map_err(Vk12RendererError::GetSurfaceFormatsError)?
+                .into_iter()
+                .filter(|format| {
+                    let supported = instance
+                        .instance
+                        .get_physical_device_format_properties(gpu.physical_device, format.format)
+                        .optimal_tiling_features
+                        .contains(
+                            vk::FormatFeatureFlags::COLOR_ATTACHMENT
+                                | vk::FormatFeatureFlags::TRANSFER_DST,
+                        );
+                    supported
+                })
+                .collect();
+
+            let caps = instance
+                .surface_instance
+                .get_physical_device_surface_capabilities(gpu.physical_device, instance.surface)
+                .map_err(Vk12RendererError::GetSurfaceCapabilitiesError)?;
+
+            let present_modes = instance
+                .surface_instance
+                .get_physical_device_surface_present_modes(gpu.physical_device, instance.surface)
+                .map_err(Vk12RendererError::GetPresentModesError)?;
+            (formats, caps, present_modes)
+        };
+
+        let format = formats
+            .iter()
+            .filter(|format| format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
+            .filter(|format| {
+                format.format == vk::Format::B8G8R8A8_UNORM
+                    || format.format == vk::Format::B8G8R8A8_SRGB
+                    || format.format == vk::Format::R8G8B8A8_UNORM
+                    || format.format == vk::Format::R8G8B8A8_SRGB
+            })
+            .next()
+            .cloned()
+            .ok_or(Vk12RendererError::NoSuitableSurfaceFormat)?;
+
+        let mut extent = caps.current_extent;
+        if extent.width == u32::MAX || extent.height == u32::MAX {
+            let window_res = window.inner_size();
+            extent.width = window_res.width;
+            extent.height = window_res.height;
+        }
+
+        let present_mode = present_modes
+            .iter()
+            .filter(|&&mode| mode == vk::PresentModeKHR::MAILBOX)
+            .next()
+            .cloned()
+            .unwrap_or(vk::PresentModeKHR::FIFO);
+
+        // let present_mode = vk::PresentModeKHR::FIFO;
+
+        let swapchain_image_count = std::cmp::min(
+            caps.min_image_count + 1,
+            if caps.max_image_count == 0 {
+                std::u32::MAX
+            } else {
+                caps.max_image_count
+            },
+        );
+
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+            .surface(instance.surface)
+            .min_image_count(swapchain_image_count)
+            .image_format(format.format)
+            .image_color_space(format.color_space)
+            .image_extent(extent)
+            .image_array_layers(1)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
+            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .pre_transform(caps.current_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(present_mode)
+            .clipped(true);
+
+        let swapchain = unsafe {
+            swapchain_device
+                .create_swapchain(&swapchain_create_info, None)
+                .map_err(Vk12RendererError::SwapchainCreateError)?
+        };
+
+        let swapchain_images = unsafe {
+            match swapchain_device
+                .get_swapchain_images(swapchain)
+                .map_err(Vk12RendererError::SwapchainGetImagesError)
+            {
+                Ok(imgs) => imgs,
+                Err(e) => {
+                    swapchain_device.destroy_swapchain(swapchain, None);
+                    return Err(e);
+                }
+            }
+        };
+        Ok((swapchain, swapchain_images))
+    }
+
     pub fn new(
         instance: Vk12Instance,
         gpu: Vk12Gpu,
