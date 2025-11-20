@@ -1,4 +1,4 @@
-use cougher::UnivRenderer;
+use cougher::vk12::{self, Vk12Renderer as Renderer};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -9,7 +9,7 @@ use winit::{
 
 #[derive(Default)]
 struct App {
-    renderer: Option<UnivRenderer>,
+    renderer: Option<Renderer>,
 }
 
 impl ApplicationHandler for App {
@@ -21,8 +21,12 @@ impl ApplicationHandler for App {
                 height: 600.0,
             }))
             .unwrap();
-
-        let state = UnivRenderer::new(window).unwrap();
+        let instance = vk12::instance::Vk12Instance::new(window).unwrap();
+        let mut gpus = instance.list_supported_gpus();
+        let device = vk12::device::Vk12Device::new(instance, gpus.remove(0))
+            .map_err(|(_, e)| e)
+            .unwrap();
+        let state = Renderer::new(device).unwrap();
         self.renderer = Some(state);
 
         // window.request_redraw();

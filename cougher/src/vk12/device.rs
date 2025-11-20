@@ -1,6 +1,9 @@
 use ash::{khr, vk};
 
-use crate::vk12::instance::{Vk12Gpu, Vk12Instance, Vk12InstanceError};
+use crate::vk12::{
+    instance::{Vk12Gpu, Vk12Instance, Vk12InstanceError},
+    sync::{reset_fences, wait_for_fences},
+};
 
 pub struct SwapchainData {
     pub(crate) images: Vec<vk::Image>,
@@ -28,6 +31,12 @@ pub enum Vk12DeviceError {
     SwapchainCreateError(vk::Result),
     #[error("Error getting Vulkan Swapchain Images: {0}")]
     SwapchainGetImagesError(vk::Result),
+    #[error("Error acquiring next Vulkan Swapchain Image to present: {0}")]
+    AcquireNextImageError(vk::Result),
+    #[error("Error waiting for Vulkan Fence: {0}")]
+    FenceWaitError(vk::Result),
+    #[error("Error reseting for Vulkan Fence: {0}")]
+    FenceResetError(vk::Result),
 }
 
 pub struct Vk12Device {
@@ -236,6 +245,7 @@ impl Vk12Device {
             .pre_transform(caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(self.swapchain_data.present_mode)
+            .old_swapchain(self.swapchain_data.swapchain)
             .clipped(true);
 
         let new_swapchain = unsafe {
@@ -243,6 +253,10 @@ impl Vk12Device {
                 .create_swapchain(&swapchain_create_info, None)
                 .map_err(Vk12DeviceError::SwapchainCreateError)?
         };
+        unsafe {
+            self.swapchain_device
+                .destroy_swapchain(self.swapchain_data.swapchain, None);
+        }
         let swapchain_images = unsafe {
             match self
                 .swapchain_device
@@ -256,14 +270,52 @@ impl Vk12Device {
                 }
             }
         };
-        unsafe {
-            self.swapchain_device
-                .destroy_swapchain(self.swapchain_data.swapchain, None);
-        }
+
         self.swapchain_data.extent = extent;
         self.swapchain_data.swapchain = new_swapchain;
         self.swapchain_data.images = swapchain_images;
         Ok(())
+    }
+
+    pub fn acquire_next_ws_img(
+        &mut self,
+        fence: vk::Fence,
+    ) -> Result<(u32, bool), Vk12DeviceError> {
+        let mut refreshed = false;
+        loop {
+            let aquire_out = unsafe {
+                self.swapchain_device.acquire_next_image(
+                    self.swapchain_data.swapchain,
+                    u64::MAX,
+                    vk::Semaphore::null(),
+                    fence,
+                )
+            };
+
+            let (idx, is_suboptimal) = match aquire_out {
+                Ok((i, s)) => (Some(i), s),
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => (None, true),
+                Err(e) => return Err(Vk12DeviceError::AcquireNextImageError(e)),
+            };
+
+            if is_suboptimal {
+                self.refresh_swapchain_res()?;
+                refreshed = true;
+                if idx.is_some() {
+                    wait_for_fences(&self.device, &[fence], None)
+                        .map_err(Vk12DeviceError::FenceWaitError)?;
+                    reset_fences(&self.device, &[fence])
+                        .map_err(Vk12DeviceError::FenceResetError)?;
+                }
+                continue;
+            }
+            if let Some(img_idx) = idx {
+                wait_for_fences(&self.device, &[fence], None)
+                    .map_err(Vk12DeviceError::FenceWaitError)?;
+                reset_fences(&self.device, &[fence]).map_err(Vk12DeviceError::FenceResetError)?;
+                return Ok((img_idx, refreshed));
+            }
+        }
     }
 }
 

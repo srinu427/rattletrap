@@ -17,3 +17,15 @@ pub fn create_fence(device: &'_ ash::Device) -> Result<InitFence<'_>, vk::Result
         device,
     })
 }
+
+pub fn wait_for_fences(
+    device: &ash::Device,
+    fences: &[vk::Fence],
+    timeout: Option<u64>,
+) -> Result<(), vk::Result> {
+    unsafe { device.wait_for_fences(fences, true, timeout.unwrap_or(u64::MAX)) }
+}
+
+pub fn reset_fences(device: &ash::Device, fences: &[vk::Fence]) -> Result<(), vk::Result> {
+    unsafe { device.reset_fences(&fences) }
+}

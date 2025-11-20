@@ -19,6 +19,8 @@ pub enum ImageErrorVk {
     ImageCreateError(vk::Result),
     #[error("Error allocation memory for  Vulkan Image: {0}")]
     AllocationError(AllocationError),
+    #[error("Error binding memeory to Image: {0}")]
+    MemoryBindError(vk::Result),
 }
 
 fn aspect_flags(depth: bool, stencil: bool) -> vk::ImageAspectFlags {
@@ -90,6 +92,11 @@ pub fn new_image_2d<'a>(
             allocation_scheme: AllocationScheme::GpuAllocatorManaged,
         })
         .map_err(ImageErrorVk::AllocationError)?;
+    unsafe {
+        device
+            .bind_image_memory(image, allocation.memory(), allocation.offset())
+            .map_err(ImageErrorVk::MemoryBindError)?;
+    }
 
     let init_i2d = InitImage {
         drop: true,
