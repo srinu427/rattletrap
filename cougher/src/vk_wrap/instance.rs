@@ -4,14 +4,14 @@ use ash::{khr, vk};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 #[derive(Debug, Clone)]
-pub struct Vk12Gpu {
+pub struct Gpu {
     pub(crate) physical_device: vk::PhysicalDevice,
     pub(crate) props: vk::PhysicalDeviceProperties,
     pub(crate) mem_props: vk::PhysicalDeviceMemoryProperties,
     pub(crate) g_queue_family: (usize, vk::QueueFamilyProperties),
 }
 
-impl Vk12Gpu {
+impl Gpu {
     pub fn name(&self) -> String {
         self.props
             .device_name_as_c_str()
@@ -34,7 +34,7 @@ impl Vk12Gpu {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Vk12InstanceError {
+pub enum InstanceError {
     #[error("Error loading Vulkan: {0}")]
     EntryLoadError(#[from] ash::LoadingError),
     #[error("Error initializing Vulkan Instance: {0}")]
@@ -45,7 +45,7 @@ pub enum Vk12InstanceError {
     SurfaceInitError(vk::Result),
 }
 
-pub struct Vk12Instance {
+pub struct Instance {
     pub(crate) surface: vk::SurfaceKHR,
     pub(crate) instance: ash::Instance,
     pub(crate) surface_instance: khr::surface::Instance,
@@ -53,8 +53,8 @@ pub struct Vk12Instance {
     pub(crate) window: winit::window::Window,
 }
 
-impl Vk12Instance {
-    fn init_instance(entry: &ash::Entry) -> Result<ash::Instance, Vk12InstanceError> {
+impl Instance {
+    fn init_instance(entry: &ash::Entry) -> Result<ash::Instance, InstanceError> {
         let app_info = vk::ApplicationInfo::default()
             .api_version(vk::API_VERSION_1_2)
             .application_name(c"Cougher App")
@@ -99,7 +99,7 @@ impl Vk12Instance {
         let instance = unsafe {
             entry
                 .create_instance(&create_info, None)
-                .map_err(Vk12InstanceError::InstanceInitError)?
+                .map_err(InstanceError::InstanceInitError)?
         };
         Ok(instance)
     }
@@ -108,7 +108,7 @@ impl Vk12Instance {
         entry: &ash::Entry,
         instance: &ash::Instance,
         window: &winit::window::Window,
-    ) -> Result<vk::SurfaceKHR, Vk12InstanceError> {
+    ) -> Result<vk::SurfaceKHR, InstanceError> {
         let surface = unsafe {
             ash_window::create_surface(
                 entry,
@@ -117,12 +117,12 @@ impl Vk12Instance {
                 window.window_handle()?.as_raw(),
                 None,
             )
-            .map_err(Vk12InstanceError::SurfaceInitError)?
+            .map_err(InstanceError::SurfaceInitError)?
         };
         Ok(surface)
     }
 
-    pub fn new(window: winit::window::Window) -> Result<Self, Vk12InstanceError> {
+    pub fn new(window: winit::window::Window) -> Result<Self, InstanceError> {
         let entry = unsafe { ash::Entry::load()? };
         let instance = Self::init_instance(&entry)?;
         let surface_instance = khr::surface::Instance::new(&entry, &instance);
@@ -145,7 +145,7 @@ impl Vk12Instance {
         })
     }
 
-    pub fn list_supported_gpus(&self) -> Vec<Vk12Gpu> {
+    pub fn list_supported_gpus(&self) -> Vec<Gpu> {
         let gpus = unsafe { self.instance.enumerate_physical_devices().unwrap_or(vec![]) };
         gpus.into_iter()
             .filter_map(|g| unsafe {
@@ -163,7 +163,7 @@ impl Vk12Instance {
                             .unwrap_or(false)
                     })
                     .min_by_key(|x| x.1.queue_count)?;
-                Some(Vk12Gpu {
+                Some(Gpu {
                     physical_device: g,
                     props,
                     mem_props,
@@ -174,7 +174,7 @@ impl Vk12Instance {
     }
 }
 
-impl Drop for Vk12Instance {
+impl Drop for Instance {
     fn drop(&mut self) {
         unsafe {
             self.surface_instance.destroy_surface(self.surface, None);

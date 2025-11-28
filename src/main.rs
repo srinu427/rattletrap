@@ -1,4 +1,4 @@
-use cougher::vk12::{self, Vk12Renderer as Renderer};
+use cougher::vk_wrap::{self, Renderer};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -21,9 +21,9 @@ impl ApplicationHandler for App {
                 height: 600.0,
             }))
             .unwrap();
-        let instance = vk12::instance::Vk12Instance::new(window).unwrap();
+        let instance = vk_wrap::instance::Instance::new(window).unwrap();
         let mut gpus = instance.list_supported_gpus();
-        let device = vk12::device::Vk12Device::new(instance, gpus.remove(0))
+        let device = vk_wrap::device::Device::new(instance, gpus.remove(0))
             .map_err(|(_, e)| e)
             .unwrap();
         let state = Renderer::new(device).unwrap();
