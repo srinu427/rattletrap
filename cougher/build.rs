@@ -26,8 +26,8 @@ fn compile_shader(path: &str) {
 fn main() {
     println!("cargo::rerun-if-changed=src/vk12/shaders");
     let shader_list = [
-        "src/vk12/shaders/textured_tri_mesh.vert",
-        "src/vk12/shaders/textured_tri_mesh.frag",
+        "src/vk_wrap/shaders/textured_tri_mesh.vert",
+        "src/vk_wrap/shaders/textured_tri_mesh.frag",
     ];
 
     // Start compilation
