@@ -33,12 +33,13 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        // let state = self.renderer.as_mut().unwrap();
+        let state = self.renderer.as_mut().unwrap();
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                // state.draw().inspect_err(|e| eprintln!("{e}")).ok();
                 // state.draw().ok();
                 // Emits a new redraw requested event.
                 // state.window().request_redraw();
@@ -46,6 +47,8 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(_size) => {
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
+                state.resize().inspect_err(|e| eprintln!("{e}")).ok();
+                // state.draw().inspect_err(|e| eprintln!("{e}")).ok();
                 // state.refresh_resolution()
                 // .inspect_err(|e| println!("{e}"))
                 // .ok();
@@ -61,12 +64,12 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    unsafe {
-        // On Linux, disable Wayland to force using X11.
-        if cfg!(target_os = "linux") {
-            std::env::remove_var("WAYLAND_DISPLAY");
-        }
-    }
+    // unsafe {
+    //     // On Linux, disable Wayland to force using X11.
+    //     if cfg!(target_os = "linux") {
+    //         std::env::remove_var("WAYLAND_DISPLAY");
+    //     }
+    // }
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App::default();

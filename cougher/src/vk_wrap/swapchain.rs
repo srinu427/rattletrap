@@ -6,7 +6,7 @@ use gpu_allocator::MemoryLocation;
 use crate::vk_wrap::{
     device::Device,
     image_2d::Image2d,
-    sync::{Fence, SemStageInfo, Semaphore, SyncError},
+    sync::{Fence, SemStageInfo, SyncError},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -197,7 +197,12 @@ impl Swapchain {
                 .map_err(SwapchainError::GetSurfaceCapabilitiesError)?
         };
         let mut extent = caps.current_extent;
+        // println!("{:#?}", caps);
         if extent.width == u32::MAX || extent.height == u32::MAX {
+            // println!(
+            //     "invalid current extent: {:?}. using windows resolution",
+            //     extent
+            // );
             let window_res = self.device.instance.window.inner_size();
             extent.width = window_res.width;
             extent.height = window_res.height;
@@ -207,7 +212,7 @@ impl Swapchain {
             .min_image_count(self.images.len() as _)
             .image_format(self.surface_fmt.format)
             .image_color_space(self.surface_fmt.color_space)
-            .image_extent(self.extent)
+            .image_extent(extent)
             .image_array_layers(1)
             .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)

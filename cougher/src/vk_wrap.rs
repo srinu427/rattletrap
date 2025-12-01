@@ -211,6 +211,23 @@ impl Renderer {
         })
     }
 
+    pub fn resize(&mut self) -> Result<(), RendererError> {
+        // println!("resize event received");
+        let in_flight_fences: Vec<_> = self
+            .draw_fences
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.frame_in_flight[*i])
+            .map(|(_, f)| f)
+            .collect();
+        wait_for_fences(&self.device.device, &in_flight_fences, None)?;
+        reset_fences(&self.device.device, &in_flight_fences)?;
+        self.frame_in_flight = vec![false; self.swapchain.images.len()];
+        self.swapchain.refresh_swapchain_res()?;
+        self.swapchain_init_done = false;
+        Ok(())
+    }
+
     pub fn draw(&mut self) -> Result<(), RendererError> {
         // let start_time = std::time::Instant::now();
         let mut refreshed = false;
@@ -314,15 +331,19 @@ impl Renderer {
 
         cmd_buffer.submit(
             self.device.g_queue,
+            // &[],
             &[self.draw_sems[idx].stage_info(vk::PipelineStageFlags::ALL_COMMANDS)],
             &[],
             Some(&self.draw_fences[idx]),
         )?;
+        // self.draw_fences[idx].wait(None)?;
+        // self.draw_fences[idx].reset()?;
         self.frame_in_flight[idx] = true;
 
         self.swapchain_init_done = true;
         self.swapchain.present_image(
             image_idx,
+            // &[],
             &[self.draw_sems[idx].stage_info(vk::PipelineStageFlags::ALL_COMMANDS)],
         )?;
         // print!(
