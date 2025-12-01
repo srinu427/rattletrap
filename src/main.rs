@@ -33,18 +33,20 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let state = self.renderer.as_mut().unwrap();
+        
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                // state.draw().inspect_err(|e| eprintln!("{e}")).ok();
+                let state = self.renderer.as_mut().unwrap();
+                state.draw().inspect_err(|e| eprintln!("{e}")).ok();
                 // state.draw().ok();
                 // Emits a new redraw requested event.
                 // state.window().request_redraw();
             }
             WindowEvent::Resized(_size) => {
+                let state = self.renderer.as_mut().unwrap();
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
                 state.resize().inspect_err(|e| eprintln!("{e}")).ok();
