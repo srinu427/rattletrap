@@ -78,6 +78,7 @@ pub enum RendererCommands {
 }
 
 pub struct PerFrameData {
+    frame_in_flight: bool,
     vertex_buffer: Buffer,
     index_buffer: Buffer,
     draw_cmd_buffer: CommandBuffer,
@@ -85,15 +86,46 @@ pub struct PerFrameData {
     draw_complete_fence: Fence,
 }
 
+impl PerFrameData {
+    pub fn new(
+        device: &Arc<Device>,
+        allocator: &Arc<Mutex<Allocator>>,
+        cmd_pool: &CommandPool,
+    ) -> Result<Self, RendererError> {
+        let vertex_buffer = Buffer::new(
+            device,
+            allocator,
+            MemoryLocation::GpuOnly,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            32 * 1024 * 1024,
+        )?;
+        let index_buffer = Buffer::new(
+            device,
+            allocator,
+            MemoryLocation::GpuOnly,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            32 * 1024 * 1024,
+        )?;
+        let draw_cmd_buffer = cmd_pool.allocate_cbs(1)?.remove(0);
+        let draw_complete_semaphore = Semaphore::new(device)?;
+        let draw_complete_fence = Fence::new(device, false)?;
+        Ok(Self {
+            frame_in_flight: false,
+            vertex_buffer,
+            index_buffer,
+            draw_cmd_buffer,
+            draw_complete_semaphore,
+            draw_complete_fence,
+        })
+    }
+}
+
 pub struct Renderer {
     textures: HashMap<String, Image2d>,
     sampler: Sampler,
     mesh_pipeline: MeshPipeline,
     swapchain_init_done: bool,
-    frame_in_flight: Vec<bool>,
-    draw_fences: Vec<Fence>,
-    draw_sems: Vec<Semaphore>,
-    draw_cmd_buffers: Vec<CommandBuffer>,
+    per_frame_datas: Vec<PerFrameData>,
     image_acquire_fence: Fence,
     bg_image: Image2d,
     command_pool: CommandPool,
@@ -180,15 +212,13 @@ impl Renderer {
             .map_err(RendererError::AllocatorInitError)?,
         ));
         let image_acquire_fence = Fence::new(&device, false)?;
-        let draw_cmd_buffers = command_pool.allocate_cbs(swapchain.images.len() as _)?;
-        let draw_fences: Vec<_> = (0..swapchain.images.len())
-            .map(|_| Fence::new(&device, false))
-            .collect::<Result<_, _>>()?;
-        let draw_sems: Vec<_> = (0..swapchain.images.len())
-            .map(|_| Semaphore::new(&device))
+
+        let per_frame_datas: Vec<_> = (0..swapchain.images.len())
+            .map(|_| PerFrameData::new(&device, &allocator, &command_pool))
             .collect::<Result<_, _>>()?;
 
-        let bg_image = Self::setup_bg_image(&device, &allocator, &draw_cmd_buffers[0])?;
+        let bg_image =
+            Self::setup_bg_image(&device, &allocator, &per_frame_datas[0].draw_cmd_buffer)?;
 
         let mesh_pipeline = MeshPipeline::new(&device)?;
         let sampler = Sampler::new(&device)?;
@@ -198,10 +228,7 @@ impl Renderer {
             sampler,
             mesh_pipeline,
             swapchain_init_done: false,
-            frame_in_flight: vec![false; swapchain.images.len()],
-            draw_sems,
-            draw_fences,
-            draw_cmd_buffers,
+            per_frame_datas,
             image_acquire_fence,
             bg_image,
             command_pool,
@@ -214,15 +241,16 @@ impl Renderer {
     pub fn resize(&mut self) -> Result<(), RendererError> {
         // println!("resize event received");
         let in_flight_fences: Vec<_> = self
-            .draw_fences
+            .per_frame_datas
             .iter()
-            .enumerate()
-            .filter(|(i, _)| self.frame_in_flight[*i])
-            .map(|(_, f)| f)
+            .filter(|p| p.frame_in_flight)
+            .map(|p| &p.draw_complete_fence)
             .collect();
         wait_for_fences(&self.device.device, &in_flight_fences, None)?;
         reset_fences(&self.device.device, &in_flight_fences)?;
-        self.frame_in_flight = vec![false; self.swapchain.images.len()];
+        for p in self.per_frame_datas.iter_mut() {
+            p.frame_in_flight = false;
+        }
         self.swapchain.refresh_swapchain_res()?;
         self.swapchain_init_done = false;
         Ok(())
@@ -246,15 +274,16 @@ impl Renderer {
 
             if is_suboptimal {
                 let in_flight_fences: Vec<_> = self
-                    .draw_fences
+                    .per_frame_datas
                     .iter()
-                    .enumerate()
-                    .filter(|(i, _)| self.frame_in_flight[*i])
-                    .map(|(_, f)| f)
+                    .filter(|p| p.frame_in_flight)
+                    .map(|p| &p.draw_complete_fence)
                     .collect();
                 wait_for_fences(&self.device.device, &in_flight_fences, None)?;
                 reset_fences(&self.device.device, &in_flight_fences)?;
-                self.frame_in_flight = vec![false; self.swapchain.images.len()];
+                for p in self.per_frame_datas.iter_mut() {
+                    p.frame_in_flight = false;
+                }
                 self.swapchain.refresh_swapchain_res()?;
                 refreshed = true;
                 if idx.is_some() {
@@ -273,15 +302,15 @@ impl Renderer {
 
         self.swapchain_init_done &= !refreshed;
         let idx = image_idx as usize;
-        let cmd_buffer = &self.draw_cmd_buffers[idx];
         let swapchain_image = &self.swapchain.images[idx];
 
-        if self.frame_in_flight[idx] {
-            self.draw_fences[idx].wait(None)?;
-            self.draw_fences[idx].reset()?;
-            self.frame_in_flight[idx] = false;
+        if self.per_frame_datas[idx].frame_in_flight {
+            self.per_frame_datas[idx].draw_complete_fence.wait(None)?;
+            self.per_frame_datas[idx].draw_complete_fence.reset()?;
+            self.per_frame_datas[idx].frame_in_flight = false;
         }
 
+        let cmd_buffer = &self.per_frame_datas[idx].draw_cmd_buffer;
         cmd_buffer.begin(false)?;
 
         if !self.swapchain_init_done {
@@ -331,20 +360,20 @@ impl Renderer {
 
         cmd_buffer.submit(
             self.device.g_queue,
-            // &[],
-            &[self.draw_sems[idx].stage_info(vk::PipelineStageFlags::ALL_COMMANDS)],
+            &[self.per_frame_datas[idx]
+                .draw_complete_semaphore
+                .stage_info(vk::PipelineStageFlags::ALL_COMMANDS)],
             &[],
-            Some(&self.draw_fences[idx]),
+            Some(&self.per_frame_datas[idx].draw_complete_fence),
         )?;
-        // self.draw_fences[idx].wait(None)?;
-        // self.draw_fences[idx].reset()?;
-        self.frame_in_flight[idx] = true;
+        self.per_frame_datas[idx].frame_in_flight = true;
 
         self.swapchain_init_done = true;
         self.swapchain.present_image(
             image_idx,
-            // &[],
-            &[self.draw_sems[idx].stage_info(vk::PipelineStageFlags::ALL_COMMANDS)],
+            &[self.per_frame_datas[idx]
+                .draw_complete_semaphore
+                .stage_info(vk::PipelineStageFlags::ALL_COMMANDS)],
         )?;
         // print!(
         //     "draw time: {} ms. acquire time: {} ms\r",
