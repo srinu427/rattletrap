@@ -16,6 +16,7 @@ mod pipeline;
 mod swapchain;
 mod sync;
 
+use crate::render_objs::Mesh;
 use crate::vk_wrap::buffer::{Buffer, BufferError};
 use crate::vk_wrap::command::{
     CommandBuffer, CommandBufferError, CommandPool, CompositeInput, ImageStageLayout,
@@ -25,7 +26,7 @@ use crate::vk_wrap::device::{Device, DeviceError};
 use crate::vk_wrap::image_2d::{Image2d, ImageErrorVk, Sampler};
 use crate::vk_wrap::mesh_renderer::{MeshPipeline, MeshPipelineError};
 use crate::vk_wrap::swapchain::{Swapchain, SwapchainError};
-use crate::vk_wrap::sync::{Fence, FenceError};
+use crate::vk_wrap::sync::{Fence, Semaphore, SyncError, reset_fences, wait_for_fences};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RendererError {
@@ -34,7 +35,7 @@ pub enum RendererError {
     #[error("Error freeing Vulkan Memory Allocation: {0}")]
     AllocationFreeError(AllocationError),
     #[error("Error creating Vulkan Fence: {0}")]
-    FenceError(#[from] FenceError),
+    FenceError(#[from] SyncError),
     #[error("Error ending Vulkan Command Buffer: {0}")]
     CommandBufferError(#[from] CommandBufferError),
     #[error("Error submitting work to Vulkan Queue: {0}")]
@@ -55,12 +56,43 @@ pub enum RendererError {
     DeviceError(#[from] DeviceError),
 }
 
+pub enum RendererCommands {
+    AddMesh {
+        name: String,
+        mesh: Mesh,
+    },
+    RemoveMesh(String),
+    RemoveUnusedMeshes,
+    AddTexture(String),
+    RemoveTexture(String),
+    RemoveUnusedTextures,
+    DrawAddMeshTexture {
+        mesh: String,
+        texture: String,
+        cast_shadows: bool,
+    },
+    DrawRemoveMeshTexture {
+        mesh: String,
+        texture: String,
+    },
+}
+
+pub struct PerFrameData {
+    vertex_buffer: Buffer,
+    index_buffer: Buffer,
+    draw_cmd_buffer: CommandBuffer,
+    draw_complete_semaphore: Semaphore,
+    draw_complete_fence: Fence,
+}
+
 pub struct Renderer {
     textures: HashMap<String, Image2d>,
     sampler: Sampler,
     mesh_pipeline: MeshPipeline,
     swapchain_init_done: bool,
+    frame_in_flight: Vec<bool>,
     draw_fences: Vec<Fence>,
+    draw_sems: Vec<Semaphore>,
     draw_cmd_buffers: Vec<CommandBuffer>,
     image_acquire_fence: Fence,
     bg_image: Image2d,
@@ -115,7 +147,7 @@ impl Renderer {
 
         cmd_buffer.end()?;
 
-        let fence = Fence::new(device)?;
+        let fence = Fence::new(device, false)?;
 
         unsafe {
             device
@@ -147,10 +179,13 @@ impl Renderer {
             })
             .map_err(RendererError::AllocatorInitError)?,
         ));
-        let image_acquire_fence = Fence::new(&device)?;
+        let image_acquire_fence = Fence::new(&device, false)?;
         let draw_cmd_buffers = command_pool.allocate_cbs(swapchain.images.len() as _)?;
         let draw_fences: Vec<_> = (0..swapchain.images.len())
-            .map(|_| Fence::new(&device))
+            .map(|_| Fence::new(&device, false))
+            .collect::<Result<_, _>>()?;
+        let draw_sems: Vec<_> = (0..swapchain.images.len())
+            .map(|_| Semaphore::new(&device))
             .collect::<Result<_, _>>()?;
 
         let bg_image = Self::setup_bg_image(&device, &allocator, &draw_cmd_buffers[0])?;
@@ -163,6 +198,8 @@ impl Renderer {
             sampler,
             mesh_pipeline,
             swapchain_init_done: false,
+            frame_in_flight: vec![false; swapchain.images.len()],
+            draw_sems,
             draw_fences,
             draw_cmd_buffers,
             image_acquire_fence,
@@ -175,12 +212,58 @@ impl Renderer {
     }
 
     pub fn draw(&mut self) -> Result<(), RendererError> {
-        let (image_idx, refreshed) = self.swapchain.acquire_next_img(&self.image_acquire_fence)?;
+        // let start_time = std::time::Instant::now();
+        let mut refreshed = false;
+        let (image_idx, refreshed) = loop {
+            let aquire_out = self.swapchain.acquire_next_img(&self.image_acquire_fence);
+
+            let (idx, is_suboptimal) = match aquire_out {
+                Ok((i, s)) => (Some(i), s),
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => (None, true),
+                Err(e) => {
+                    return Err(RendererError::SwapchainError(
+                        SwapchainError::AcquireNextImageError(e),
+                    ));
+                }
+            };
+
+            if is_suboptimal {
+                let in_flight_fences: Vec<_> = self
+                    .draw_fences
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| self.frame_in_flight[*i])
+                    .map(|(_, f)| f)
+                    .collect();
+                wait_for_fences(&self.device.device, &in_flight_fences, None)?;
+                reset_fences(&self.device.device, &in_flight_fences)?;
+                self.frame_in_flight = vec![false; self.swapchain.images.len()];
+                self.swapchain.refresh_swapchain_res()?;
+                refreshed = true;
+                if idx.is_some() {
+                    self.image_acquire_fence.wait(None)?;
+                    self.image_acquire_fence.reset()?;
+                }
+                continue;
+            }
+            if let Some(img_idx) = idx {
+                self.image_acquire_fence.wait(None)?;
+                self.image_acquire_fence.reset()?;
+                break (img_idx, refreshed);
+            }
+        };
+        // let aquire_time = start_time.elapsed().as_millis();
 
         self.swapchain_init_done &= !refreshed;
         let idx = image_idx as usize;
         let cmd_buffer = &self.draw_cmd_buffers[idx];
         let swapchain_image = &self.swapchain.images[idx];
+
+        if self.frame_in_flight[idx] {
+            self.draw_fences[idx].wait(None)?;
+            self.draw_fences[idx].reset()?;
+            self.frame_in_flight[idx] = false;
+        }
 
         cmd_buffer.begin(false)?;
 
@@ -229,30 +312,24 @@ impl Renderer {
 
         cmd_buffer.end()?;
 
-        unsafe {
-            self.device
-                .device
-                .queue_submit(
-                    self.device.g_queue,
-                    &[vk::SubmitInfo::default().command_buffers(&[cmd_buffer.cb])],
-                    self.draw_fences[idx].fence,
-                )
-                .map_err(RendererError::QueueSubmitError)?;
-        }
-        self.draw_fences[idx].wait(None)?;
-        self.draw_fences[idx].reset()?;
+        cmd_buffer.submit(
+            self.device.g_queue,
+            &[self.draw_sems[idx].stage_info(vk::PipelineStageFlags::ALL_COMMANDS)],
+            &[],
+            Some(&self.draw_fences[idx]),
+        )?;
+        self.frame_in_flight[idx] = true;
+
         self.swapchain_init_done = true;
-        unsafe {
-            self.device
-                .swapchain_device
-                .queue_present(
-                    self.device.g_queue,
-                    &vk::PresentInfoKHR::default()
-                        .swapchains(&[self.swapchain.swapchain])
-                        .image_indices(&[image_idx]),
-                )
-                .map_err(RendererError::PresentError)?;
-        }
+        self.swapchain.present_image(
+            image_idx,
+            &[self.draw_sems[idx].stage_info(vk::PipelineStageFlags::ALL_COMMANDS)],
+        )?;
+        // print!(
+        //     "draw time: {} ms. acquire time: {} ms\r",
+        //     start_time.elapsed().as_millis(),
+        //     aquire_time
+        // );
         Ok(())
     }
 }

@@ -2,7 +2,12 @@ use std::sync::Arc;
 
 use ash::vk;
 
-use crate::vk_wrap::{buffer::Buffer, device::Device, image_2d::Image2d};
+use crate::vk_wrap::{
+    buffer::Buffer,
+    device::Device,
+    image_2d::Image2d,
+    sync::{Fence, SemStageInfo},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CommandBufferError {
@@ -14,10 +19,13 @@ pub enum CommandBufferError {
     BeginError(vk::Result),
     #[error("Error ending Vulkan Command Buffer recording: {0}")]
     EndError(vk::Result),
+    #[error("Error submitting Vulkan Command Buffer: {0}")]
+    SubmitError(vk::Result),
 }
 
 pub struct CommandPool {
     pub(crate) cp: vk::CommandPool,
+    pub(crate) qf: u32,
     pub(crate) device: Arc<Device>,
 }
 
@@ -36,6 +44,7 @@ impl CommandPool {
         };
         Ok(Self {
             cp,
+            qf: queue_family,
             device: device.clone(),
         })
     }
@@ -191,6 +200,35 @@ impl CommandBuffer {
                     .dst_queue_family_index(queue_fam)],
             );
         }
+    }
+
+    pub fn submit(
+        &self,
+        queue: vk::Queue,
+        emit_sems: &[SemStageInfo],
+        wait_sems: &[SemStageInfo],
+        fence: Option<&Fence>,
+    ) -> Result<(), CommandBufferError> {
+        let fence_vk = fence.map(|f| f.fence).unwrap_or(vk::Fence::null());
+        let emit_sems_vk: Vec<_> = emit_sems.iter().map(|e| e.sem.sem).collect();
+        // let emit_stages_vk: Vec<_> = emit_sems.iter().map(|e| e.stage).collect();
+        let wait_sems_vk: Vec<_> = wait_sems.iter().map(|e| e.sem.sem).collect();
+        let wait_stages_vk: Vec<_> = wait_sems.iter().map(|e| e.stage).collect();
+        unsafe {
+            self.device
+                .device
+                .queue_submit(
+                    queue,
+                    &[vk::SubmitInfo::default()
+                        .command_buffers(&[self.cb])
+                        .signal_semaphores(&emit_sems_vk)
+                        .wait_semaphores(&wait_sems_vk)
+                        .wait_dst_stage_mask(&wait_stages_vk)],
+                    fence_vk,
+                )
+                .map_err(CommandBufferError::SubmitError)?;
+        }
+        Ok(())
     }
 }
 

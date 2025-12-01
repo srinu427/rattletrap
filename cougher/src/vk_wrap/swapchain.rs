@@ -6,7 +6,7 @@ use gpu_allocator::MemoryLocation;
 use crate::vk_wrap::{
     device::Device,
     image_2d::Image2d,
-    sync::{Fence, FenceError},
+    sync::{Fence, SemStageInfo, Semaphore, SyncError},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -25,8 +25,10 @@ pub enum SwapchainError {
     SwapchainGetImagesError(vk::Result),
     #[error("error acquiring next Vulkan Swapchain Image: {0}")]
     AcquireNextImageError(vk::Result),
+    #[error("error presenting Vulkan Swapchain Image: {0}")]
+    PresentError(vk::Result),
     #[error("Fence related error: {0}")]
-    FenceError(#[from] FenceError),
+    FenceError(#[from] SyncError),
 }
 
 pub struct Swapchain {
@@ -263,39 +265,36 @@ impl Swapchain {
         Ok(())
     }
 
-    pub fn acquire_next_img(&mut self, fence: &Fence) -> Result<(u32, bool), SwapchainError> {
-        let mut refreshed = false;
-        loop {
-            let aquire_out = unsafe {
-                self.device.swapchain_device.acquire_next_image(
-                    self.swapchain,
-                    u64::MAX,
-                    vk::Semaphore::null(),
-                    fence.fence,
-                )
-            };
-
-            let (idx, is_suboptimal) = match aquire_out {
-                Ok((i, s)) => (Some(i), s),
-                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => (None, true),
-                Err(e) => return Err(SwapchainError::AcquireNextImageError(e)),
-            };
-
-            if is_suboptimal {
-                self.refresh_swapchain_res()?;
-                refreshed = true;
-                if idx.is_some() {
-                    fence.wait(None)?;
-                    fence.reset()?;
-                }
-                continue;
-            }
-            if let Some(img_idx) = idx {
-                fence.wait(None)?;
-                fence.reset()?;
-                return Ok((img_idx, refreshed));
-            }
+    pub fn acquire_next_img(&mut self, fence: &Fence) -> Result<(u32, bool), vk::Result> {
+        unsafe {
+            self.device.swapchain_device.acquire_next_image(
+                self.swapchain,
+                u64::MAX,
+                vk::Semaphore::null(),
+                fence.fence,
+            )
         }
+    }
+
+    pub fn present_image(
+        &self,
+        idx: u32,
+        wait_sems: &[SemStageInfo],
+    ) -> Result<(), SwapchainError> {
+        let wait_sems_vk: Vec<_> = wait_sems.iter().map(|s| s.sem.sem).collect();
+        unsafe {
+            self.device
+                .swapchain_device
+                .queue_present(
+                    self.device.g_queue,
+                    &vk::PresentInfoKHR::default()
+                        .swapchains(&[self.swapchain])
+                        .image_indices(&[idx])
+                        .wait_semaphores(&wait_sems_vk),
+                )
+                .map_err(SwapchainError::PresentError)?;
+        }
+        Ok(())
     }
 }
 
