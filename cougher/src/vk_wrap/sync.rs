@@ -104,15 +104,12 @@ impl Drop for Fence {
     }
 }
 
-pub fn wait_for_fences(
-    device: &ash::Device,
-    fences: &[&Fence],
-    timeout: Option<u64>,
-) -> Result<(), SyncError> {
+pub fn wait_for_fences(fences: &[&Fence], timeout: Option<u64>) -> Result<(), SyncError> {
     if fences.is_empty() {
         return Ok(());
     }
     let fences_vk: Vec<_> = fences.iter().map(|f| f.fence).collect();
+    let device = &fences[0].device.device;
     unsafe {
         device
             .wait_for_fences(&fences_vk, true, timeout.unwrap_or(u64::MAX))
@@ -120,11 +117,12 @@ pub fn wait_for_fences(
     }
 }
 
-pub fn reset_fences(device: &ash::Device, fences: &[&Fence]) -> Result<(), SyncError> {
+pub fn reset_fences(fences: &[&Fence]) -> Result<(), SyncError> {
     if fences.is_empty() {
         return Ok(());
     }
     let fences_vk: Vec<_> = fences.iter().map(|f| f.fence).collect();
+    let device = &fences[0].device.device;
     unsafe {
         device
             .reset_fences(&fences_vk)

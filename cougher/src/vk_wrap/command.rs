@@ -275,4 +275,15 @@ impl ImageStageLayout {
             },
         }
     }
+
+    pub fn infer_usage(&self) -> vk::ImageUsageFlags {
+        match self {
+            ImageStageLayout::Undefined => vk::ImageUsageFlags::empty(),
+            ImageStageLayout::Present => vk::ImageUsageFlags::empty(),
+            ImageStageLayout::Transfer(transfer_stage_layout) => match transfer_stage_layout {
+                TransferStageLayout::TransferSrc => vk::ImageUsageFlags::TRANSFER_SRC,
+                TransferStageLayout::TransferDst => vk::ImageUsageFlags::TRANSFER_DST,
+            },
+        }
+    }
 }

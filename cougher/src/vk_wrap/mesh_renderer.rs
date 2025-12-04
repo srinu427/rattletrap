@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ash::vk;
 
 use crate::{
-    render_objs::{Mesh, MeshPbrTexture},
+    render_objs::{Mesh, MeshTexture},
     vk_wrap::{
         device::Device,
         pipeline::{
@@ -22,7 +22,7 @@ const FRAG_SHADER_CODE: &[u8] =
 
 pub struct MeshPipelineDrawable<'a> {
     mesh: &'a Mesh,
-    texture: &'a MeshPbrTexture,
+    texture: &'a MeshTexture,
 }
 
 #[derive(Debug, thiserror::Error)]

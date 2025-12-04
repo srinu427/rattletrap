@@ -16,7 +16,7 @@ mod pipeline;
 mod swapchain;
 mod sync;
 
-use crate::render_objs::Mesh;
+use crate::render_objs::{Mesh, MeshTexture};
 use crate::vk_wrap::buffer::{Buffer, BufferError};
 use crate::vk_wrap::command::{
     CommandBuffer, CommandBufferError, CommandPool, CompositeInput, ImageStageLayout,
@@ -78,6 +78,7 @@ pub enum RendererCommands {
 }
 
 pub struct PerFrameData {
+    need_mesh_data_rebuild: bool,
     frame_in_flight: bool,
     vertex_buffer: Buffer,
     index_buffer: Buffer,
@@ -110,6 +111,7 @@ impl PerFrameData {
         let draw_complete_semaphore = Semaphore::new(device)?;
         let draw_complete_fence = Fence::new(device, false)?;
         Ok(Self {
+            need_mesh_data_rebuild: true,
             frame_in_flight: false,
             vertex_buffer,
             index_buffer,
@@ -121,7 +123,9 @@ impl PerFrameData {
 }
 
 pub struct Renderer {
-    textures: HashMap<String, Image2d>,
+    mesh_draw_list: HashMap<String, (String, String)>,
+    mesh_textures: HashMap<String, MeshTexture>,
+    meshes: HashMap<String, Mesh>,
     sampler: Sampler,
     mesh_pipeline: MeshPipeline,
     swapchain_init_done: bool,
@@ -136,64 +140,75 @@ pub struct Renderer {
 
 impl Renderer {
     fn setup_bg_image(
-        device: &Arc<Device>,
         allocator: &Arc<Mutex<Allocator>>,
         cmd_buffer: &CommandBuffer,
     ) -> Result<Image2d, RendererError> {
-        let bg_image_data = image::open("./default.png")?;
-        let bg_image_res = vk::Extent2D::default()
-            .width(bg_image_data.width())
-            .height(bg_image_data.height());
-        let bg_image = Image2d::new(
+        let fence = Fence::new(&cmd_buffer.device, false)?;
+        let bg_image = Self::load_image_to_gpu(
+            allocator,
+            cmd_buffer,
+            &fence,
+            "./default.png",
+            ImageStageLayout::Transfer(TransferStageLayout::TransferSrc),
+        )?;
+
+        Ok(bg_image)
+    }
+
+    fn load_image_to_gpu(
+        allocator: &Arc<Mutex<Allocator>>,
+        cmd_buffer: &CommandBuffer,
+        fence: &Fence,
+        path: &str,
+        final_layout: ImageStageLayout,
+    ) -> Result<Image2d, RendererError> {
+        let image_data = image::open(path)?;
+        let image_res = vk::Extent2D::default()
+            .width(image_data.width())
+            .height(image_data.height());
+        let device = &cmd_buffer.device;
+        let usage = vk::ImageUsageFlags::TRANSFER_DST | final_layout.infer_usage();
+        let image = Image2d::new(
             &device,
             &allocator,
             MemoryLocation::GpuOnly,
-            bg_image_res,
+            image_res,
             vk::Format::R8G8B8A8_UNORM,
-            vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC,
+            usage,
         )?;
-        let bg_stage_buffer = Buffer::new_c2g_with_data(
+        let stage_buffer = Buffer::new_c2g_with_data(
             device,
             allocator,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            bg_image_data.as_bytes(),
+            image_data.as_bytes(),
         )?;
 
         cmd_buffer.begin(true)?;
 
         cmd_buffer.image_2d_layout_transition(
-            &bg_image,
+            &image,
             ImageStageLayout::Undefined,
             ImageStageLayout::Transfer(TransferStageLayout::TransferDst),
             device.g_queue_fam,
         );
 
-        cmd_buffer.copy_buf_to_img_2d(&bg_stage_buffer, &bg_image);
+        cmd_buffer.copy_buf_to_img_2d(&stage_buffer, &image);
 
         cmd_buffer.image_2d_layout_transition(
-            &bg_image,
+            &image,
             ImageStageLayout::Transfer(TransferStageLayout::TransferDst),
-            ImageStageLayout::Transfer(TransferStageLayout::TransferSrc),
+            final_layout,
             device.g_queue_fam,
         );
 
         cmd_buffer.end()?;
 
-        let fence = Fence::new(device, false)?;
+        cmd_buffer.submit(device.g_queue, &[], &[], Some(fence))?;
 
-        unsafe {
-            device
-                .device
-                .queue_submit(
-                    device.g_queue,
-                    &[vk::SubmitInfo::default().command_buffers(&[cmd_buffer.cb])],
-                    fence.fence,
-                )
-                .map_err(RendererError::QueueSubmitError)?;
-        }
         fence.wait(None)?;
+        fence.reset()?;
 
-        Ok(bg_image)
+        Ok(image)
     }
 
     pub fn new(device: Device) -> Result<Self, RendererError> {
@@ -217,14 +232,15 @@ impl Renderer {
             .map(|_| PerFrameData::new(&device, &allocator, &command_pool))
             .collect::<Result<_, _>>()?;
 
-        let bg_image =
-            Self::setup_bg_image(&device, &allocator, &per_frame_datas[0].draw_cmd_buffer)?;
+        let bg_image = Self::setup_bg_image(&allocator, &per_frame_datas[0].draw_cmd_buffer)?;
 
         let mesh_pipeline = MeshPipeline::new(&device)?;
         let sampler = Sampler::new(&device)?;
 
         Ok(Self {
-            textures: HashMap::new(),
+            mesh_draw_list: HashMap::new(),
+            mesh_textures: HashMap::new(),
+            meshes: HashMap::new(),
             sampler,
             mesh_pipeline,
             swapchain_init_done: false,
@@ -239,15 +255,14 @@ impl Renderer {
     }
 
     pub fn resize(&mut self) -> Result<(), RendererError> {
-        // println!("resize event received");
         let in_flight_fences: Vec<_> = self
             .per_frame_datas
             .iter()
             .filter(|p| p.frame_in_flight)
             .map(|p| &p.draw_complete_fence)
             .collect();
-        wait_for_fences(&self.device.device, &in_flight_fences, None)?;
-        reset_fences(&self.device.device, &in_flight_fences)?;
+        wait_for_fences(&in_flight_fences, None)?;
+        reset_fences(&in_flight_fences)?;
         for p in self.per_frame_datas.iter_mut() {
             p.frame_in_flight = false;
         }
@@ -256,8 +271,8 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn draw(&mut self) -> Result<(), RendererError> {
-        // let start_time = std::time::Instant::now();
+    pub fn draw(&mut self) -> Result<u128, RendererError> {
+        let start_time = std::time::Instant::now();
         let mut refreshed = false;
         let (image_idx, refreshed) = loop {
             let aquire_out = self.swapchain.acquire_next_img(&self.image_acquire_fence);
@@ -279,8 +294,8 @@ impl Renderer {
                     .filter(|p| p.frame_in_flight)
                     .map(|p| &p.draw_complete_fence)
                     .collect();
-                wait_for_fences(&self.device.device, &in_flight_fences, None)?;
-                reset_fences(&self.device.device, &in_flight_fences)?;
+                wait_for_fences(&in_flight_fences, None)?;
+                reset_fences(&in_flight_fences)?;
                 for p in self.per_frame_datas.iter_mut() {
                     p.frame_in_flight = false;
                 }
@@ -380,7 +395,7 @@ impl Renderer {
         //     start_time.elapsed().as_millis(),
         //     aquire_time
         // );
-        Ok(())
+        Ok(start_time.elapsed().as_millis())
     }
 }
 
