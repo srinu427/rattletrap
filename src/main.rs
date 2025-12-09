@@ -1,4 +1,6 @@
-use cougher::vk_wrap::{self, Renderer};
+mod renderer;
+use std::sync::Arc;
+
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -6,6 +8,8 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowId},
 };
+
+use crate::renderer::Renderer;
 
 #[derive(Default)]
 struct App {
@@ -20,36 +24,31 @@ impl ApplicationHandler for App {
                 width: 800.0,
                 height: 600.0,
             }))
+            .map(Arc::new)
             .unwrap();
-        let instance = vk_wrap::instance::Instance::new(window).unwrap();
-        let mut gpus = instance.list_supported_gpus();
-        let device = vk_wrap::device::Device::new(instance, gpus.remove(0))
-            .map_err(|(_, e)| e)
-            .unwrap();
-        let state = Renderer::new(device).unwrap();
+        let state = Renderer::new(window).unwrap();
         self.renderer = Some(state);
 
         // window.request_redraw();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
                 let state = self.renderer.as_mut().unwrap();
-                state.draw().inspect_err(|e| eprintln!("{e}")).ok();
+                state.render().inspect_err(|e| eprintln!("{e}")).ok();
                 // state.draw().ok();
                 // Emits a new redraw requested event.
                 // state.window().request_redraw();
             }
-            WindowEvent::Resized(_size) => {
+            WindowEvent::Resized(size) => {
                 let state = self.renderer.as_mut().unwrap();
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
-                state.resize().inspect_err(|e| eprintln!("{e}")).ok();
+                state.resize(size);
                 // state.draw().inspect_err(|e| eprintln!("{e}")).ok();
                 // state.refresh_resolution()
                 // .inspect_err(|e| println!("{e}"))
@@ -61,7 +60,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         let state = self.renderer.as_mut().unwrap();
-        state.draw().inspect_err(|e| eprintln!("{e}")).ok();
+        state.render().inspect_err(|e| eprintln!("{e}")).ok();
     }
 }
 
