@@ -48,8 +48,8 @@ impl ApplicationHandler for App {
                 let state = self.renderer.as_mut().unwrap();
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
-                state.resize(size);
-                // state.draw().inspect_err(|e| eprintln!("{e}")).ok();
+                state.resize(size, true).unwrap();
+                // state.render().inspect_err(|e| eprintln!("{e}")).ok();
                 // state.refresh_resolution()
                 // .inspect_err(|e| println!("{e}"))
                 // .ok();
@@ -65,12 +65,6 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    // unsafe {
-    //     // On Linux, disable Wayland to force using X11.
-    //     if cfg!(target_os = "linux") {
-    //         std::env::remove_var("WAYLAND_DISPLAY");
-    //     }
-    // }
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App::default();

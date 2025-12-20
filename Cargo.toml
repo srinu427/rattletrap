@@ -7,8 +7,11 @@ edition = "2024"
 thiserror = "2.0.16"
 winit = { version = "0.30.12", features = ["android-native-activity"] }
 physics = { path = "physics" }
+rhi = { path = "rhi" }
 wgpu = "27.0.1"
 futures-lite = "2.6.1"
 anyhow = "1.0.100"
 image = "0.25.9"
 bytemuck = "1.24.0"
+include_bytes_aligned = "0.2.0"
+glam = { version = "0.30.9", features = ["bytemuck"] }
