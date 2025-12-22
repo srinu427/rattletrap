@@ -1,14 +1,19 @@
 use std::sync::Arc;
 
+use hashbrown::HashMap;
 use image::EncodableLayout;
 use include_bytes_aligned::include_bytes_aligned;
 use rhi::enumflags2::BitFlags;
 use winit::window::Window;
 
-use crate::renderer::{camera::Cam3d, mesh::Vertex};
+use crate::renderer::{
+    camera::Cam3d,
+    mesh::{Mesh, Vertex},
+};
 
 mod camera;
-mod mesh;
+mod level;
+pub mod mesh;
 
 static VERT_SPV: &[u8] = include_bytes_aligned!(4, "shaders/triangle.vert.spv");
 static FRAG_SPV: &[u8] = include_bytes_aligned!(4, "shaders/triangle.frag.spv");
@@ -28,23 +33,151 @@ static TRIANGLE_VERTS: &[Vertex] = &[
 ];
 static TRIANGLE_IDXS: &[u16] = &[0, 1, 2];
 
+#[derive(Debug, Clone)]
+pub struct MeshDrawParams {
+    name: String,
+    vb_offset: usize,
+    ib_offset: usize,
+    len: usize,
+}
+
+pub struct PerFrameData {
+    index: usize,
+    meshes: HashMap<String, Arc<Mesh>>,
+    mesh_offsets: HashMap<String, MeshDrawParams>,
+    vb_up_to_date: u32,
+    swapchain_image_initialized: u32,
+    cmd_buffer: rhi::CommandBuffer,
+    draw_sem: rhi::Semaphore,
+    draw_sem_num: u64,
+    present_sem: rhi::Semaphore,
+    vertex_buffer: rhi::Buffer,
+    vertex_stage_buffer: rhi::Buffer,
+    index_buffer: rhi::Buffer,
+    index_stage_buffer: rhi::Buffer,
+    camera_buffer: rhi::Buffer,
+    camera_stage_buffer: rhi::Buffer,
+    camera_dset: rhi::DSet,
+}
+
+impl PerFrameData {
+    pub fn new(
+        device: &rhi::Device,
+        pipeline: &mut rhi::RenderPipeline,
+        index: usize,
+    ) -> anyhow::Result<Self> {
+        let cmd_buffer = device.graphics_queue().create_command_buffer()?;
+        let draw_sem = device.create_semaphore(false)?;
+        let present_sem = device.create_semaphore(true)?;
+        let vertex_buffer = device.create_buffer(
+            32 * 1024 * 1024,
+            rhi::BufferFlags::Vertex | rhi::BufferFlags::CopyDst,
+            rhi::MemLocation::Gpu,
+        )?;
+        let vertex_stage_buffer = device.create_buffer(
+            32 * 1024 * 1024,
+            rhi::BufferFlags::CopySrc.into(),
+            rhi::MemLocation::CpuToGpu,
+        )?;
+        let index_buffer = device.create_buffer(
+            1 * 1024 * 1024,
+            rhi::BufferFlags::Index | rhi::BufferFlags::CopyDst,
+            rhi::MemLocation::Gpu,
+        )?;
+        let index_stage_buffer = device.create_buffer(
+            1 * 1024 * 1024,
+            rhi::BufferFlags::CopySrc.into(),
+            rhi::MemLocation::CpuToGpu,
+        )?;
+        let camera_buffer = device.create_buffer(
+            core::mem::size_of::<Cam3d>() as _,
+            rhi::BufferFlags::Uniform | rhi::BufferFlags::CopyDst,
+            rhi::MemLocation::Gpu,
+        )?;
+        let camera_stage_buffer = device.create_buffer(
+            core::mem::size_of::<Cam3d>() as _,
+            rhi::BufferFlags::CopySrc.into(),
+            rhi::MemLocation::CpuToGpu,
+        )?;
+        let mut camera_dset = pipeline.new_set(0)?;
+        camera_dset.write(vec![rhi::DBindingData::UBuffer(vec![&camera_buffer])]);
+        Ok(Self {
+            index,
+            meshes: HashMap::new(),
+            mesh_offsets: HashMap::new(),
+            vb_up_to_date: 0,
+            swapchain_image_initialized: 0,
+            cmd_buffer,
+            draw_sem,
+            draw_sem_num: 0,
+            present_sem,
+            vertex_buffer,
+            vertex_stage_buffer,
+            index_buffer,
+            index_stage_buffer,
+            camera_buffer,
+            camera_stage_buffer,
+            camera_dset,
+        })
+    }
+
+    pub fn add_meshes(&mut self, meshes: &Vec<Arc<Mesh>>) {
+        for mesh in meshes {
+            self.meshes.insert(mesh.name.clone(), mesh.clone());
+        }
+        self.vb_up_to_date = 0;
+    }
+
+    pub fn update_vb(&mut self, encoder: &mut rhi::CommandEncoder) -> anyhow::Result<()> {
+        if self.vb_up_to_date > 0 {
+            return Ok(());
+        }
+        let mut all_verts = vec![];
+        let mut all_inds = vec![];
+        self.mesh_offsets.clear();
+        for (name, mesh_info) in &self.meshes {
+            let vb_offset = all_verts.len();
+            let ib_offset = all_inds.len();
+            let ind_len = mesh_info.idxs.len();
+            all_verts.extend(mesh_info.verts.clone());
+            all_inds.extend(mesh_info.idxs.clone());
+            self.mesh_offsets.insert(
+                name.clone(),
+                MeshDrawParams {
+                    name: name.clone(),
+                    vb_offset,
+                    ib_offset,
+                    len: ind_len,
+                },
+            );
+        }
+        let vert_bytes = bytemuck::cast_slice(&all_verts);
+        let ind_bytes = bytemuck::cast_slice(&all_inds);
+        self.vertex_stage_buffer.write_data(vert_bytes)?;
+        self.index_stage_buffer.write_data(ind_bytes)?;
+        encoder.copy_buffer_to_buffer(
+            &self.vertex_stage_buffer,
+            &self.vertex_buffer,
+            Some(vert_bytes.len() as _),
+        );
+        encoder.copy_buffer_to_buffer(
+            &self.index_stage_buffer,
+            &self.index_buffer,
+            Some(ind_bytes.len() as _),
+        );
+        self.vb_up_to_date = 1;
+        Ok(())
+    }
+}
+
 pub struct Renderer {
+    render_outputs: Vec<rhi::RenderOutput>,
+    pfds: Vec<PerFrameData>,
     window: Arc<Window>,
     swapchain: rhi::Swapchain,
-    swapchain_image_initialized: Vec<bool>,
-    cmd_buffers: Vec<rhi::CommandBuffer>,
-    draw_sems: Vec<rhi::Semaphore>,
-    draw_sem_nums: Vec<u64>,
-    present_sems: Vec<rhi::Semaphore>,
     bg_image: rhi::Image,
     pipeline: rhi::RenderPipeline,
     camera: Cam3d,
-    render_outputs: Vec<rhi::RenderOutput>,
-    vertex_buffers: Vec<rhi::Buffer>,
-    index_buffers: Vec<rhi::Buffer>,
-    camera_buffers: Vec<rhi::Buffer>,
-    camera_stage_buffers: Vec<rhi::Buffer>,
-    camera_dsets: Vec<rhi::DSet>,
     device: rhi::Device,
 }
 
@@ -52,17 +185,6 @@ impl Renderer {
     pub fn new(window: Arc<Window>) -> anyhow::Result<Self> {
         let device = rhi::Device::new(&window)?;
         let swapchain = device.create_swapchain()?;
-        let swapchain_image_initialized = vec![false; swapchain.images().len()];
-        let draw_sems: Vec<_> = (0..swapchain.images().len())
-            .map(|_| device.create_semaphore(false))
-            .collect::<Result<_, _>>()?;
-        let draw_sem_nums = vec![0; swapchain.images().len()];
-        let present_sems: Vec<_> = (0..swapchain.images().len())
-            .map(|_| device.create_semaphore(true))
-            .collect::<Result<_, _>>()?;
-        let cmd_buffers: Vec<_> = (0..swapchain.images().len())
-            .map(|_| device.graphics_queue().create_command_buffer())
-            .collect::<Result<_, _>>()?;
         let bg_image = Self::load_bg_image(&device, "./default.png")?;
         let vert_shader = device.load_shader(VERT_SPV)?;
         let frag_shader = device.load_shader(FRAG_SPV)?;
@@ -86,11 +208,6 @@ impl Renderer {
             vec![vec![rhi::DBindingType::UBuffer(1)]],
             0,
         )?;
-        let render_outputs = swapchain
-            .views()
-            .iter()
-            .map(|iv| pipeline.new_output(vec![iv]))
-            .collect::<Result<_, _>>()?;
         let mut camera = Cam3d {
             eye: glam::vec3(1.0, 0.0, 5.0),
             fov: 120.0,
@@ -101,67 +218,23 @@ impl Renderer {
             proj_view: glam::Mat4::IDENTITY,
         };
         camera.update_proj_view();
-        let vertex_buffers = (0..swapchain.images().len())
-            .map(|_| {
-                Self::gpu_buffer_w_data(
-                    &device,
-                    bytemuck::cast_slice(TRIANGLE_VERTS),
-                    rhi::BufferFlags::Vertex.into(),
-                )
-            })
-            .collect::<Result<_, _>>()?;
-        let index_buffers = (0..swapchain.images().len())
-            .map(|_| {
-                Self::gpu_buffer_w_data(
-                    &device,
-                    bytemuck::cast_slice(TRIANGLE_IDXS),
-                    rhi::BufferFlags::Index.into(),
-                )
-            })
-            .collect::<Result<_, _>>()?;
-        let camera_buffers: Vec<_> = (0..swapchain.images().len())
-            .map(|_| {
-                Self::gpu_buffer_w_data(
-                    &device,
-                    bytemuck::bytes_of(&camera),
-                    rhi::BufferFlags::Uniform.into(),
-                )
-            })
-            .collect::<Result<_, _>>()?;
-        let camera_stage_buffers: Vec<_> = (0..swapchain.images().len())
-            .map(|_| {
-                device.create_buffer(
-                    core::mem::size_of::<Cam3d>() as _,
-                    rhi::BufferFlags::CopySrc.into(),
-                    rhi::MemLocation::CpuToGpu,
-                )
-            })
-            .collect::<Result<_, _>>()?;
-        let mut camera_dsets: Vec<_> = (0..swapchain.images().len())
-            .map(|_| pipeline.new_set(0))
+
+        let pfds = (0..swapchain.images().len())
+            .map(|i| PerFrameData::new(&device, &mut pipeline, i))
             .collect::<Result<_, _>>()?;
 
-        for i in 0..swapchain.images().len() {
-            camera_dsets[i].write(vec![rhi::DBindingData::UBuffer(vec![&camera_buffers[i]])]);
-        }
+        let render_outputs = (0..swapchain.images().len())
+            .map(|i| pipeline.new_output(vec![&swapchain.views()[i]]))
+            .collect::<Result<_, _>>()?;
 
         Ok(Self {
+            render_outputs,
+            pfds,
             window,
             device,
             swapchain,
-            swapchain_image_initialized,
-            draw_sems,
-            draw_sem_nums,
-            cmd_buffers,
-            present_sems,
             pipeline,
             camera,
-            render_outputs,
-            vertex_buffers,
-            index_buffers,
-            camera_buffers,
-            camera_stage_buffers,
-            camera_dsets,
             bg_image,
         })
     }
@@ -219,7 +292,7 @@ impl Renderer {
         let buffer = device.create_buffer(data.len() as _, usage, rhi::MemLocation::Gpu)?;
         let cmd_buffer = device.graphics_queue().create_command_buffer()?;
         let mut encoder = cmd_buffer.encoder()?;
-        encoder.copy_buffer_to_buffer(&stage_buffer, &buffer);
+        encoder.copy_buffer_to_buffer(&stage_buffer, &buffer, None);
         encoder.finalize()?;
         let sem = device.create_semaphore(false)?;
         cmd_buffer.submit(vec![], vec![sem.submit_info(1)])?;
@@ -234,28 +307,34 @@ impl Renderer {
         redraw: bool,
     ) -> anyhow::Result<()> {
         for idx in 0..self.swapchain.images().len() {
-            self.draw_sems[idx]
-                .wait_for(self.draw_sem_nums[idx], None)
+            self.pfds[idx]
+                .draw_sem
+                .wait_for(self.pfds[idx].draw_sem_num, None)
                 .inspect_err(|e| eprintln!("error waiting for running draws: {e}"))
                 .ok();
         }
         self.render_outputs.clear();
         if let Err(e) = self.swapchain.resize(new_size.width, new_size.height) {
             eprintln!("resizing swapchain failed: {e}");
-        } else {
-            self.swapchain_image_initialized = vec![false; self.swapchain.images().len()];
         }
-        self.render_outputs = self
-            .swapchain
-            .views()
-            .iter()
-            .map(|iv| self.pipeline.new_output(vec![iv]))
+        self.render_outputs = (0..self.swapchain.images().len())
+            .map(|i| self.pipeline.new_output(vec![&self.swapchain.views()[i]]))
             .collect::<Result<_, _>>()?;
+        for pfd in &mut self.pfds {
+            pfd.swapchain_image_initialized = 0;
+        }
         if redraw {
             self.render()?;
         }
         self.window.request_redraw();
         Ok(())
+    }
+
+    pub fn add_meshes(&mut self, meshes: Vec<Mesh>) {
+        let meshes: Vec<_> = meshes.into_iter().map(Arc::new).collect();
+        for pfd in &mut self.pfds {
+            pfd.add_meshes(&meshes);
+        }
     }
 
     pub fn render(&mut self) -> anyhow::Result<()> {
@@ -266,25 +345,41 @@ impl Renderer {
             (img_idx, _) = self.swapchain.acquire_image()?;
         }
         let idx = img_idx as usize;
-        self.draw_sems[idx].wait_for(self.draw_sem_nums[idx], None)?;
+        self.pfds[idx]
+            .draw_sem
+            .wait_for(self.pfds[idx].draw_sem_num, None)?;
+        if self.pfds[idx].swapchain_image_initialized == 1 {
+            self.pfds[idx].swapchain_image_initialized = 2;
+        }
+        if self.pfds[idx].vb_up_to_date == 1 {
+            self.pfds[idx].vb_up_to_date = 2;
+        }
         let aspect_ratio = self.swapchain.images()[0].width() as f32
             / self.swapchain.images()[0].height().max(1) as f32;
         self.camera.aspect = aspect_ratio;
         self.camera.update_proj_view();
-        self.camera_stage_buffers[idx].write_data(bytemuck::bytes_of(&self.camera))?;
-        let mut encoder = self.cmd_buffers[idx].encoder()?;
-        encoder.copy_buffer_to_buffer(&self.camera_stage_buffers[idx], &self.camera_buffers[idx]);
-        if self.swapchain_image_initialized[idx] {
-            encoder.set_last_image_access(
-                &self.swapchain.images()[idx],
-                rhi::ImageAccess::Present,
-                0..1,
-                0..1,
-            );
-        } else {
+        self.pfds[idx]
+            .camera_stage_buffer
+            .write_data(bytemuck::bytes_of(&self.camera))?;
+        let mut encoder = self.pfds[idx].cmd_buffer.encoder()?;
+        encoder.copy_buffer_to_buffer(
+            &self.pfds[idx].camera_stage_buffer,
+            &self.pfds[idx].camera_buffer,
+            None,
+        );
+        self.pfds[idx].update_vb(&mut encoder)?;
+        if self.pfds[idx].swapchain_image_initialized == 0 {
             encoder.set_last_image_access(
                 &self.swapchain.images()[idx],
                 rhi::ImageAccess::Undefined,
+                0..1,
+                0..1,
+            );
+            self.pfds[idx].swapchain_image_initialized = 1;
+        } else {
+            encoder.set_last_image_access(
+                &self.swapchain.images()[idx],
+                rhi::ImageAccess::Present,
                 0..1,
                 0..1,
             );
@@ -296,10 +391,13 @@ impl Renderer {
             &self.render_outputs[idx],
             vec![rhi::ClearValue::Colour([1.0; 4])],
         );
-        render_pass.bind_vbs(vec![&self.vertex_buffers[idx]]);
-        render_pass.bind_ib(&self.index_buffers[idx], rhi::IndexType::U16);
-        render_pass.bind_dsets(vec![&self.camera_dsets[idx]]);
-        render_pass.draw_indexed(TRIANGLE_IDXS.len() as _);
+        render_pass.bind_vbs(vec![&self.pfds[idx].vertex_buffer]);
+        render_pass.bind_ib(&self.pfds[idx].index_buffer, rhi::IndexType::U16);
+        render_pass.bind_dsets(vec![&self.pfds[idx].camera_dset]);
+        for draw_info in self.pfds[idx].mesh_offsets.values() {
+            render_pass.draw_indexed(draw_info.vb_offset, draw_info.ib_offset, draw_info.len);
+        }
+
         let mut encoder = render_pass.end();
         encoder.set_last_image_access(
             &self.swapchain.images()[idx],
@@ -308,18 +406,20 @@ impl Renderer {
             0..1,
         );
         encoder.finalize()?;
-        self.draw_sem_nums[idx] += 1;
-        self.cmd_buffers[idx].submit(
+        self.pfds[idx].draw_sem_num += 1;
+        self.pfds[idx].cmd_buffer.submit(
             vec![],
             vec![
-                self.draw_sems[idx].submit_info(self.draw_sem_nums[idx]),
-                self.present_sems[idx].submit_info(1),
+                self.pfds[idx]
+                    .draw_sem
+                    .submit_info(self.pfds[idx].draw_sem_num),
+                self.pfds[idx].present_sem.submit_info(1),
             ],
         )?;
 
         self.window.pre_present_notify();
         self.swapchain
-            .present_image(img_idx, &self.present_sems[idx])?;
+            .present_image(img_idx, &self.pfds[idx].present_sem)?;
         Ok(())
     }
 }
@@ -327,8 +427,9 @@ impl Renderer {
 impl Drop for Renderer {
     fn drop(&mut self) {
         for idx in 0..self.swapchain.images().len() {
-            self.draw_sems[idx]
-                .wait_for(self.draw_sem_nums[idx], None)
+            self.pfds[idx]
+                .draw_sem
+                .wait_for(self.pfds[idx].draw_sem_num, None)
                 .inspect_err(|e| eprintln!("error waiting for running draws: {e}"))
                 .ok();
         }

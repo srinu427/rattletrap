@@ -861,11 +861,13 @@ impl Buffer {
     }
 
     pub fn write_data(&mut self, data: &[u8]) -> Result<(), RhiError> {
-        self.memory
+        let mapped_mem = self
+            .memory
             .inner
             .mapped_slice_mut()
-            .ok_or(RhiError::MemReadOnly)?
-            .copy_from_slice(data);
+            .ok_or(RhiError::MemReadOnly)?;
+        let write_len = mapped_mem.len().min(data.len());
+        mapped_mem[..write_len].copy_from_slice(&data[..write_len]);
         Ok(())
     }
 }
@@ -1407,13 +1409,14 @@ impl CommandEncoder {
         }
     }
 
-    pub fn copy_buffer_to_buffer(&mut self, src: &Buffer, dst: &Buffer) {
+    pub fn copy_buffer_to_buffer(&mut self, src: &Buffer, dst: &Buffer, size: Option<u64>) {
+        let size = size.unwrap_or(src.size.min(dst.size));
         unsafe {
             self.cmd_pool.device.device.cmd_copy_buffer(
                 self.cmd_buffer,
                 src.inner,
                 dst.inner,
-                &[vk::BufferCopy::default().size(src.size.min(dst.size))],
+                &[vk::BufferCopy::default().size(size)],
             );
         }
     }
@@ -1710,14 +1713,14 @@ impl RenderCommandEncoder {
         }
     }
 
-    pub fn draw_indexed(&mut self, count: u32) {
+    pub fn draw_indexed(&mut self, vb_offset: usize, ib_offset: usize, ib_len: usize) {
         unsafe {
             self.encoder.cmd_pool.device.device.cmd_draw_indexed(
                 self.encoder.cmd_buffer,
-                count,
+                ib_len as _,
                 1,
-                0,
-                0,
+                ib_offset as _,
+                vb_offset as _,
                 0,
             );
         }

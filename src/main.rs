@@ -9,7 +9,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::renderer::Renderer;
+use crate::renderer::{Renderer, mesh::Mesh};
 
 #[derive(Default)]
 struct App {
@@ -26,7 +26,21 @@ impl ApplicationHandler for App {
             }))
             .map(Arc::new)
             .unwrap();
-        let state = Renderer::new(window).unwrap();
+        let mut state = Renderer::new(window).unwrap();
+        state.add_meshes(vec![
+            Mesh::rect_cuv(
+                "rectangle",
+                glam::vec3(0.0, 0.0, 0.0),
+                glam::vec3(0.2, 0.0, 0.0),
+                glam::vec3(0.0, 0.1, 0.0),
+            ),
+            Mesh::rect_cuv(
+                "rectangle2",
+                glam::vec3(0.3, 0.0, 0.0),
+                glam::vec3(0.2, 0.0, 0.0),
+                glam::vec3(0.0, 0.2, 0.0),
+            ),
+        ]);
         self.renderer = Some(state);
 
         // window.request_redraw();
