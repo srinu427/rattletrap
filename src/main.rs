@@ -6,10 +6,11 @@ use winit::{
     dpi::LogicalSize,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::KeyCode,
     window::{Window, WindowId},
 };
 
-use crate::renderer::{Renderer, mesh::Mesh};
+use crate::renderer::{Renderer, level};
 
 #[derive(Default)]
 struct App {
@@ -27,20 +28,8 @@ impl ApplicationHandler for App {
             .map(Arc::new)
             .unwrap();
         let mut state = Renderer::new(window).unwrap();
-        state.add_meshes(vec![
-            Mesh::rect_cuv(
-                "rectangle",
-                glam::vec3(0.0, 0.0, 0.0),
-                glam::vec3(0.2, 0.0, 0.0),
-                glam::vec3(0.0, 0.1, 0.0),
-            ),
-            Mesh::rect_cuv(
-                "rectangle2",
-                glam::vec3(0.3, 0.0, 0.0),
-                glam::vec3(0.2, 0.0, 0.0),
-                glam::vec3(0.0, 0.2, 0.0),
-            ),
-        ]);
+        let meshes = level::parse_lvl("data/levels/1.lvl").unwrap();
+        state.add_meshes(meshes);
         self.renderer = Some(state);
 
         // window.request_redraw();
@@ -67,6 +56,23 @@ impl ApplicationHandler for App {
                 // state.refresh_resolution()
                 // .inspect_err(|e| println!("{e}"))
                 // .ok();
+            }
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event,
+                is_synthetic: _,
+            } => {
+                match event.physical_key {
+                    winit::keyboard::PhysicalKey::Code(key_code) => if key_code == KeyCode::KeyR {},
+                    winit::keyboard::PhysicalKey::Unidentified(_native_key_code) => todo!(),
+                }
+                if event.state.is_pressed() {
+                    println!("refreshing geo");
+                    let state = self.renderer.as_mut().unwrap();
+                    state.clear_meshes();
+                    let meshes = level::parse_lvl("data/levels/1.lvl").unwrap();
+                    state.add_meshes(meshes);
+                }
             }
             _ => (),
         }

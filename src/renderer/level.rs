@@ -1,4 +1,4 @@
-use std::{fs, path::Path, sync::LazyLock};
+use std::{fs, sync::LazyLock};
 
 use regex::Regex;
 
@@ -11,11 +11,23 @@ static VEC3_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(VEC3_STR).unwrap()
 // static GEO_RECT_CUV_RE: LazyLock<Regex> =
 //     LazyLock::new(|| Regex::new("GEO RECT rectangle CUV (0 0 0) (0.2 0 0) (0 0.2 0)").unwrap());
 
-pub fn parse_lvl(path: &Path) -> anyhow::Result<Vec<Mesh>> {
+fn parse_as_float(s: &str) -> Option<f32> {
+    let out = match s.parse::<f32>() {
+        Ok(fp) => fp,
+        Err(_) => {
+            eprintln!("parsinig {s} as f32 failed, trying i32");
+            s.parse::<i32>().ok()? as _
+        }
+    };
+    Some(out)
+}
+
+pub fn parse_lvl(path: &str) -> anyhow::Result<Vec<Mesh>> {
     let mut meshes = vec![];
     let file_data = fs::read_to_string(path)?;
     for line in file_data.lines() {
         if let Some((_, geo_line)) = line.split_once("GEO ") {
+            println!("geo_line: {geo_line}");
             if let Some((_, rect_line)) = geo_line.split_once("RECT ") {
                 let rect_line = rect_line.trim();
                 let Some((rect_name, rect_info_line)) = rect_line.split_once(" ") else {
@@ -31,9 +43,9 @@ pub fn parse_lvl(path: &Path) -> anyhow::Result<Vec<Mesh>> {
                     let vecs: Vec<_> = VEC3_RE
                         .captures_iter(inp_str)
                         .filter_map(|caps| {
-                            let x = caps.get(0)?.as_str().parse().ok()?;
-                            let y = caps.get(1)?.as_str().parse().ok()?;
-                            let z = caps.get(1)?.as_str().parse().ok()?;
+                            let x = caps.get(1).map(|s| parse_as_float(s.as_str())).flatten()?;
+                            let y = caps.get(2).map(|s| parse_as_float(s.as_str())).flatten()?;
+                            let z = caps.get(3).map(|s| parse_as_float(s.as_str())).flatten()?;
                             Some(glam::vec3(x, y, z))
                         })
                         .collect();
@@ -41,7 +53,11 @@ pub fn parse_lvl(path: &Path) -> anyhow::Result<Vec<Mesh>> {
                         let mesh = Mesh::rect_cuv(rect_name, vecs[0], vecs[1], vecs[2]);
                         meshes.push(mesh);
                     }
+                } else {
+                    println!("invalid rect input type");
                 }
+            } else {
+                println!("invalid geo type");
             }
         }
     }

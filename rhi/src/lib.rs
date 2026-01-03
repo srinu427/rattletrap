@@ -582,6 +582,8 @@ impl Swapchain {
                 .destroy_swapchain(self.inner, None);
         }
         self.inner = swapchain;
+        self.width = width;
+        self.height = height;
         Ok(())
     }
 
@@ -1133,6 +1135,8 @@ impl Image {
                 image: self.clone(),
             }
             .into(),
+            layer_range,
+            mip_level_range,
         })
     }
 }
@@ -1187,6 +1191,8 @@ impl Drop for ImageViewDropper {
 pub struct ImageView {
     dropper: Arc<ImageViewDropper>,
     _dimension: ViewDimension,
+    layer_range: Range<u32>,
+    mip_level_range: Range<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1206,12 +1212,19 @@ pub enum ImageAccess {
 }
 
 impl ImageAccess {
-    fn stage(&self) -> vk::PipelineStageFlags {
+    fn stage(&self, format: Format) -> vk::PipelineStageFlags {
+        let (depth, _stencil) = format.is_depth_sencil();
         match self {
             ImageAccess::Undefined => vk::PipelineStageFlags::ALL_COMMANDS,
             ImageAccess::Transfer(_) => vk::PipelineStageFlags::TRANSFER,
             ImageAccess::Shader(_) => vk::PipelineStageFlags::FRAGMENT_SHADER,
-            ImageAccess::Attachment(_) => vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ImageAccess::Attachment(_) => {
+                if depth {
+                    vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                } else {
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                }
+            }
             ImageAccess::Present => vk::PipelineStageFlags::ALL_COMMANDS,
         }
     }
@@ -1231,7 +1244,7 @@ impl ImageAccess {
             ImageAccess::Shader(_) => vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             ImageAccess::Attachment(_) => {
                 if depth {
-                    vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
+                    vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                 } else {
                     vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
                 }
@@ -1383,8 +1396,8 @@ impl CommandEncoder {
             unsafe {
                 self.cmd_pool.device.device.cmd_pipeline_barrier(
                     self.cmd_buffer,
-                    last_access.stage(),
-                    access.stage(),
+                    last_access.stage(image.format),
+                    access.stage(image.format),
                     vk::DependencyFlags::BY_REGION,
                     &[],
                     &[],
@@ -1409,15 +1422,26 @@ impl CommandEncoder {
         }
     }
 
+    pub fn set_last_image_access_view(&mut self, view: &ImageView, access: ImageAccess) {
+        self.set_last_image_access(
+            &view.dropper.image,
+            access,
+            view.layer_range.clone(),
+            view.mip_level_range.clone(),
+        );
+    }
+
     pub fn copy_buffer_to_buffer(&mut self, src: &Buffer, dst: &Buffer, size: Option<u64>) {
         let size = size.unwrap_or(src.size.min(dst.size));
-        unsafe {
-            self.cmd_pool.device.device.cmd_copy_buffer(
-                self.cmd_buffer,
-                src.inner,
-                dst.inner,
-                &[vk::BufferCopy::default().size(size)],
-            );
+        if size > 0 {
+            unsafe {
+                self.cmd_pool.device.device.cmd_copy_buffer(
+                    self.cmd_buffer,
+                    src.inner,
+                    dst.inner,
+                    &[vk::BufferCopy::default().size(size)],
+                );
+            }
         }
     }
 
@@ -2150,6 +2174,7 @@ pub struct FragmentStageInfo<'a> {
     pub shader: &'a Shader,
     pub entrypoint: &'a str,
     pub outputs: Vec<FragmentOutputInfo>,
+    pub depth: Option<FragmentOutputInfo>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2235,7 +2260,7 @@ impl RenderPipeline {
             .map(|d| DAlloc::new(&device, d))
             .collect::<Result<_, _>>()?;
         let attachment_access = ImageAccess::Attachment(RWAccess::ReadWrite);
-        let rp_attachments: Vec<_> = fs_info
+        let mut rp_attachments: Vec<_> = fs_info
             .outputs
             .iter()
             .map(|a| {
@@ -2248,6 +2273,17 @@ impl RenderPipeline {
                     .samples(vk::SampleCountFlags::TYPE_1)
             })
             .collect();
+        if let Some(d) = &fs_info.depth {
+            rp_attachments.push(
+                vk::AttachmentDescription::default()
+                    .initial_layout(attachment_access.layout(d.format))
+                    .final_layout(attachment_access.layout(d.format))
+                    .format(d.format.vk())
+                    .load_op(d.load_op())
+                    .store_op(d.store_op())
+                    .samples(vk::SampleCountFlags::TYPE_1),
+            )
+        }
         let attachment_refs: Vec<_> = fs_info
             .outputs
             .iter()
@@ -2258,9 +2294,15 @@ impl RenderPipeline {
                     .layout(attachment_access.layout(a.format))
             })
             .collect();
-        let subpass_desc = vk::SubpassDescription::default()
+        let mut depth_ref = vk::AttachmentReference::default();
+        let mut subpass_desc = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&attachment_refs);
+        if let Some(d) = &fs_info.depth {
+            depth_ref.attachment = attachment_refs.len() as _;
+            depth_ref.layout = attachment_access.layout(d.format);
+            subpass_desc = subpass_desc.depth_stencil_attachment(&depth_ref)
+        }
         let rp_create_info = vk::RenderPassCreateInfo::default()
             .attachments(&rp_attachments)
             .subpasses(core::slice::from_ref(&subpass_desc));
@@ -2328,7 +2370,7 @@ impl RenderPipeline {
         let msaa_state = vk::PipelineMultisampleStateCreateInfo::default()
             .sample_shading_enable(false)
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let attach_blend_state: Vec<_> = (0..rp_attachments.len())
+        let attach_blend_state: Vec<_> = (0..fs_info.outputs.len())
             .map(|_| {
                 vk::PipelineColorBlendAttachmentState::default()
                     .blend_enable(false)
@@ -2338,7 +2380,8 @@ impl RenderPipeline {
         let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
             .attachments(&attach_blend_state);
-        let p_create_info = vk::GraphicsPipelineCreateInfo::default()
+        let mut depth_state = vk::PipelineDepthStencilStateCreateInfo::default();
+        let mut p_create_info = vk::GraphicsPipelineCreateInfo::default()
             .render_pass(render_pass)
             .dynamic_state(&dyn_info)
             .viewport_state(&vp_state)
@@ -2349,6 +2392,13 @@ impl RenderPipeline {
             .rasterization_state(&raster_state)
             .multisample_state(&msaa_state)
             .color_blend_state(&color_blending);
+        if let Some(_) = &fs_info.depth {
+            depth_state = depth_state
+                .depth_test_enable(true)
+                .depth_write_enable(true)
+                .depth_compare_op(vk::CompareOp::LESS);
+            p_create_info = p_create_info.depth_stencil_state(&depth_state);
+        }
 
         let pipeline = unsafe {
             device
