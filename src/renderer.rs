@@ -160,11 +160,14 @@ impl PerFrameData {
 }
 
 pub struct Renderer {
+    tex_dset: rhi::DSet,
     render_outputs: Vec<rhi::RenderOutput>,
     render_depths: Vec<rhi::ImageView>,
     pfds: Vec<PerFrameData>,
     window: Arc<Window>,
     swapchain: rhi::Swapchain,
+    sampler: rhi::Sampler,
+    bg_image_view: rhi::ImageView,
     bg_image: rhi::Image,
     pipeline: rhi::RenderPipeline,
     camera: Cam3d,
@@ -176,6 +179,8 @@ impl Renderer {
         let device = rhi::Device::new(&window)?;
         let swapchain = device.create_swapchain()?;
         let bg_image = Self::load_bg_image(&device, "./default.png")?;
+        let bg_image_view = bg_image.create_view(rhi::ViewDimension::D2, 0..1, 0..1)?;
+        let sampler = device.create_sampler()?;
         let vert_shader = device.load_shader(VERT_SPV)?;
         let frag_shader = device.load_shader(FRAG_SPV)?;
         let mut pipeline = device.create_render_pipeline(
@@ -190,7 +195,7 @@ impl Renderer {
                 entrypoint: "main",
                 outputs: vec![rhi::FragmentOutputInfo {
                     format: swapchain.images()[0].format(),
-                    clear: false,
+                    clear: true,
                     store: true,
                 }],
                 depth: Some(rhi::FragmentOutputInfo {
@@ -200,13 +205,21 @@ impl Renderer {
                 }),
             },
             rhi::RasterMode::Fill(1.0),
-            vec![vec![rhi::DBindingType::UBuffer(1)]],
+            vec![
+                vec![rhi::DBindingType::UBuffer(1)],
+                vec![rhi::DBindingType::Sampler2d(1)],
+            ],
             0,
         )?;
+        let mut tex_dset = pipeline.new_set(1)?;
+        tex_dset.write(vec![rhi::DBindingData::Sampler2d(vec![(
+            &bg_image_view,
+            &sampler,
+        )])]);
         let mut camera = Cam3d {
-            eye: glam::vec3(1.0, 0.0, 5.0),
+            eye: glam::vec3(5.0, 5.0, 5.0),
             fov: 120.0,
-            dir: glam::vec3(0.0, 0.0, -1.0),
+            dir: glam::vec3(-1.0, -1.0, -1.0),
             aspect: 1.0,
             up: glam::vec3(0.0, 1.0, 0.0),
             padding: 0,
@@ -236,8 +249,8 @@ impl Renderer {
         let render_outputs = (0..swapchain.images().len())
             .map(|i| pipeline.new_output(vec![&swapchain.views()[i], &render_depths[i]]))
             .collect::<Result<_, _>>()?;
-
         Ok(Self {
+            tex_dset,
             render_outputs,
             render_depths,
             pfds,
@@ -246,6 +259,8 @@ impl Renderer {
             swapchain,
             pipeline,
             camera,
+            sampler,
+            bg_image_view,
             bg_image,
         })
     }
@@ -267,7 +282,7 @@ impl Renderer {
             image_data.height(),
             1,
             1,
-            rhi::ImageUsage::CopyDst | rhi::ImageUsage::CopySrc,
+            rhi::ImageUsage::CopyDst | rhi::ImageUsage::CopySrc | rhi::ImageUsage::Sampled,
             rhi::MemLocation::Gpu,
         )?;
         let cmd_buffer = device.graphics_queue().create_command_buffer()?;
@@ -276,7 +291,7 @@ impl Renderer {
         encoder.copy_buffer_to_image(&stage_buffer, &image, 0..1, 0);
         encoder.set_last_image_access(
             &image,
-            rhi::ImageAccess::Transfer(rhi::RWAccess::Read),
+            rhi::ImageAccess::Shader(rhi::RWAccess::Read),
             0..1,
             0..1,
         );
@@ -394,19 +409,18 @@ impl Renderer {
                 rhi::ImageAccess::Present,
             );
         }
-        encoder.blit_image_2d_stretch(&self.bg_image, &self.swapchain.images()[idx], 0, 0);
 
         let mut render_pass = encoder.start_render_pipeline(
             &self.pipeline,
             &self.render_outputs[idx],
             vec![
-                rhi::ClearValue::Colour([1.0; 4]),
+                rhi::ClearValue::Colour([0.0; 4]),
                 rhi::ClearValue::Depth(1.0, 0),
             ],
         );
         render_pass.bind_vbs(vec![&self.pfds[idx].vertex_buffer]);
         render_pass.bind_ib(&self.pfds[idx].index_buffer, rhi::IndexType::U16);
-        render_pass.bind_dsets(vec![&self.pfds[idx].camera_dset]);
+        render_pass.bind_dsets(vec![&self.pfds[idx].camera_dset, &self.tex_dset]);
         for draw_info in self.pfds[idx].mesh_offsets.values() {
             render_pass.draw_indexed(draw_info.vb_offset, draw_info.ib_offset, draw_info.len);
         }

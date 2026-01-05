@@ -1154,17 +1154,17 @@ impl ViewDimension {
         let is_array = layer_range.len() > 1;
         if is_array {
             match self {
-                ViewDimension::D1 => vk::ImageViewType::TYPE_1D,
-                ViewDimension::D2 => vk::ImageViewType::TYPE_2D,
-                ViewDimension::D3 => vk::ImageViewType::TYPE_3D,
-                ViewDimension::Cube => vk::ImageViewType::CUBE,
-            }
-        } else {
-            match self {
                 ViewDimension::D1 => vk::ImageViewType::TYPE_1D_ARRAY,
                 ViewDimension::D2 => vk::ImageViewType::TYPE_2D_ARRAY,
                 ViewDimension::D3 => vk::ImageViewType::TYPE_3D,
                 ViewDimension::Cube => vk::ImageViewType::CUBE_ARRAY,
+            }
+        } else {
+            match self {
+                ViewDimension::D1 => vk::ImageViewType::TYPE_1D,
+                ViewDimension::D2 => vk::ImageViewType::TYPE_2D,
+                ViewDimension::D3 => vk::ImageViewType::TYPE_3D,
+                ViewDimension::Cube => vk::ImageViewType::CUBE,
             }
         }
     }
