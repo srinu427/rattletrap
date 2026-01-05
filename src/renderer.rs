@@ -159,6 +159,8 @@ impl PerFrameData {
     }
 }
 
+pub struct TextureSet {}
+
 pub struct Renderer {
     tex_dset: rhi::DSet,
     render_outputs: Vec<rhi::RenderOutput>,
