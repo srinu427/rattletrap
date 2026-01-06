@@ -179,6 +179,7 @@ impl DeviceDropper {
             .timeline_semaphore(true)
             .descriptor_indexing(true)
             .runtime_descriptor_array(true)
+            .shader_sampled_image_array_non_uniform_indexing(true)
             .descriptor_binding_sampled_image_update_after_bind(true)
             .descriptor_binding_partially_bound(true)
             .descriptor_binding_variable_descriptor_count(true);
@@ -1737,6 +1738,18 @@ impl RenderCommandEncoder {
         }
     }
 
+    pub fn set_pc(&mut self, pc_data: &[u8]) {
+        unsafe {
+            self.encoder.cmd_pool.device.device.cmd_push_constants(
+                self.encoder.cmd_buffer,
+                self.layout,
+                vk::ShaderStageFlags::ALL,
+                0,
+                pc_data,
+            );
+        }
+    }
+
     pub fn draw_indexed(&mut self, vb_offset: usize, ib_offset: usize, ib_len: usize) {
         unsafe {
             self.encoder.cmd_pool.device.device.cmd_draw_indexed(
@@ -2077,7 +2090,7 @@ pub struct DSet {
 }
 
 impl DSet {
-    pub fn write(&mut self, data: Vec<DBindingData>) {
+    pub fn write_full(&mut self, data: Vec<DBindingData>) {
         let (b_infos, i_infos): (Vec<_>, Vec<_>) = data.iter().map(|b| b.vk_infos()).unzip();
         let writes: Vec<_> = data
             .iter()
@@ -2099,6 +2112,29 @@ impl DSet {
             .collect();
         unsafe {
             self.pool.device.device.update_descriptor_sets(&writes, &[]);
+        }
+    }
+
+    pub fn write_binding_full(&mut self, binding: u32, data: DBindingData) {
+        let (b_info, i_info) = data.vk_infos();
+
+        let mut write = vk::WriteDescriptorSet::default()
+            .dst_set(self.inner)
+            .dst_binding(binding)
+            .descriptor_type(data.vk_type())
+            .descriptor_count(data.count());
+        if !b_info.is_empty() {
+            write = write.buffer_info(&b_info);
+        }
+        if !i_info.is_empty() {
+            write = write.image_info(&i_info);
+        }
+
+        unsafe {
+            self.pool
+                .device
+                .device
+                .update_descriptor_sets(core::slice::from_ref(&write), &[]);
         }
     }
 }
@@ -2313,7 +2349,10 @@ impl RenderPipeline {
                 .map_err(RhiError::CreateRenderPassError)?
         };
         let set_layouts: Vec<_> = dallocs.iter().map(|d| d.dsl).collect();
-        let pc_info = vk::PushConstantRange::default().offset(0).size(pc_size);
+        let pc_info = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::ALL)
+            .offset(0)
+            .size(pc_size);
         let mut pl_create_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
         if pc_size > 0 {
             pl_create_info = pl_create_info.push_constant_ranges(core::slice::from_ref(&pc_info));

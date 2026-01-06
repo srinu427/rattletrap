@@ -48,8 +48,24 @@ pub fn parse_geo(tokens: &str) -> anyhow::Result<Mesh> {
     }
 }
 
-pub fn parse_lvl(path: &str) -> anyhow::Result<Vec<Mesh>> {
+pub fn parse_mdt(tokens: &str) -> anyhow::Result<(String, String)> {
+    let (mesh_name, tokens) = tokens
+        .split_once(char::is_whitespace)
+        .context("can't find mesh name")?;
+    println!("{tokens}");
+    let texture_name = tokens
+        .split_once(char::is_whitespace)
+        .map(|x| x.0)
+        .unwrap_or(tokens);
+    if texture_name == "" {
+        return Err(anyhow::Error::msg("can't find tex name"));
+    }
+    Ok((mesh_name.to_string(), texture_name.to_string()))
+}
+
+pub fn parse_lvl(path: &str) -> anyhow::Result<(Vec<Mesh>, Vec<(String, String)>)> {
     let mut meshes = vec![];
+    let mut mesh_draw_targets = vec![];
     let file_data = fs::read_to_string(path)?;
     for line in file_data.lines() {
         let Some((inp_type, tokens)) = line.split_once(char::is_whitespace) else {
@@ -60,10 +76,14 @@ pub fn parse_lvl(path: &str) -> anyhow::Result<Vec<Mesh>> {
                 Ok(mesh) => meshes.push(mesh),
                 Err(e) => eprintln!("{e}. skipping geo"),
             },
+            "MDT" => match parse_mdt(tokens) {
+                Ok(mdt) => mesh_draw_targets.push(mdt),
+                Err(e) => eprintln!("{e}. skipping mdt"),
+            },
             _ => {
                 eprintln!("unknown input type '{inp_type}'")
             }
         }
     }
-    Ok(meshes)
+    Ok((meshes, mesh_draw_targets))
 }

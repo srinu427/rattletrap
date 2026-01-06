@@ -39,8 +39,14 @@ impl App {
         {
             println!("refreshing geo");
             state.clear_meshes();
-            let meshes = level::parse_lvl("data/levels/1.lvl").unwrap();
+            let (meshes, mesh_draw_targets) = level::parse_lvl("data/levels/1.lvl").unwrap();
+            let textures = mesh_draw_targets.iter().map(|mdt| mdt.1.as_str()).collect();
+            state.add_materials(textures);
             state.add_meshes(meshes);
+            state.clear_mesh_draws();
+            for (mname, tname) in mesh_draw_targets {
+                state.add_mesh_draw_info(mname, tname);
+            }
         }
         state.render().inspect_err(|e| eprintln!("{e}")).ok();
         self.inputs.advance_frame();
@@ -58,8 +64,13 @@ impl ApplicationHandler for App {
             .map(Arc::new)
             .unwrap();
         let mut state = Renderer::new(window).unwrap();
-        let meshes = level::parse_lvl("data/levels/1.lvl").unwrap();
+        let (meshes, mesh_draw_targets) = level::parse_lvl("data/levels/1.lvl").unwrap();
+        let textures = mesh_draw_targets.iter().map(|mdt| mdt.1.as_str()).collect();
+        state.add_materials(textures);
         state.add_meshes(meshes);
+        for (mname, tname) in mesh_draw_targets {
+            state.add_mesh_draw_info(mname, tname);
+        }
         self.renderer = Some(state);
 
         // window.request_redraw();

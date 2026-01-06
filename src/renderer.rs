@@ -1,17 +1,18 @@
 use std::sync::Arc;
 
 use hashbrown::HashMap;
-use image::EncodableLayout;
 use include_bytes_aligned::include_bytes_aligned;
 use winit::window::Window;
 
 use crate::renderer::{
     camera::Cam3d,
+    material::{Material, MaterialSet},
     mesh::{Mesh, Vertex},
 };
 
 mod camera;
 pub mod level;
+pub mod material;
 pub mod mesh;
 
 static VERT_SPV: &[u8] = include_bytes_aligned!(4, "shaders/triangle.vert.spv");
@@ -84,7 +85,7 @@ impl PerFrameData {
             rhi::MemLocation::CpuToGpu,
         )?;
         let mut camera_dset = pipeline.new_set(0)?;
-        camera_dset.write(vec![rhi::DBindingData::UBuffer(vec![&camera_buffer])]);
+        camera_dset.write_full(vec![rhi::DBindingData::UBuffer(vec![&camera_buffer])]);
         Ok(Self {
             index,
             meshes: HashMap::new(),
@@ -159,18 +160,15 @@ impl PerFrameData {
     }
 }
 
-pub struct TextureSet {}
-
 pub struct Renderer {
-    tex_dset: rhi::DSet,
+    draws: Vec<(String, String)>,
+    material_set: MaterialSet,
     render_outputs: Vec<rhi::RenderOutput>,
     render_depths: Vec<rhi::ImageView>,
     pfds: Vec<PerFrameData>,
     window: Arc<Window>,
     swapchain: rhi::Swapchain,
-    sampler: rhi::Sampler,
-    bg_image_view: rhi::ImageView,
-    bg_image: rhi::Image,
+    sampler: Arc<rhi::Sampler>,
     pipeline: rhi::RenderPipeline,
     camera: Cam3d,
     device: rhi::Device,
@@ -180,9 +178,7 @@ impl Renderer {
     pub fn new(window: Arc<Window>) -> anyhow::Result<Self> {
         let device = rhi::Device::new(&window)?;
         let swapchain = device.create_swapchain()?;
-        let bg_image = Self::load_bg_image(&device, "./default.png")?;
-        let bg_image_view = bg_image.create_view(rhi::ViewDimension::D2, 0..1, 0..1)?;
-        let sampler = device.create_sampler()?;
+        let sampler = Arc::new(device.create_sampler()?);
         let vert_shader = device.load_shader(VERT_SPV)?;
         let frag_shader = device.load_shader(FRAG_SPV)?;
         let mut pipeline = device.create_render_pipeline(
@@ -209,15 +205,13 @@ impl Renderer {
             rhi::RasterMode::Fill(1.0),
             vec![
                 vec![rhi::DBindingType::UBuffer(1)],
-                vec![rhi::DBindingType::Sampler2d(1)],
+                vec![rhi::DBindingType::Sampler2d(100)],
             ],
-            0,
+            4,
         )?;
-        let mut tex_dset = pipeline.new_set(1)?;
-        tex_dset.write(vec![rhi::DBindingData::Sampler2d(vec![(
-            &bg_image_view,
-            &sampler,
-        )])]);
+        let tex_dset = pipeline.new_set(1)?;
+        let mut material_set = MaterialSet::new(tex_dset, 0)?;
+        material_set.add(Material::new(&device, "./data/textures/default", &sampler)?);
         let mut camera = Cam3d {
             eye: glam::vec3(5.0, 5.0, 5.0),
             fov: 120.0,
@@ -252,7 +246,8 @@ impl Renderer {
             .map(|i| pipeline.new_output(vec![&swapchain.views()[i], &render_depths[i]]))
             .collect::<Result<_, _>>()?;
         Ok(Self {
-            tex_dset,
+            draws: vec![],
+            material_set,
             render_outputs,
             render_depths,
             pfds,
@@ -262,47 +257,7 @@ impl Renderer {
             pipeline,
             camera,
             sampler,
-            bg_image_view,
-            bg_image,
         })
-    }
-
-    fn load_bg_image(device: &rhi::Device, path: &str) -> anyhow::Result<rhi::Image> {
-        let image_data = image::open(path)?;
-        let image_data_rgba = image_data.to_rgba8();
-        let image_data_bytes = image_data_rgba.as_bytes();
-        let mut stage_buffer = device.create_buffer(
-            image_data_bytes.len() as _,
-            rhi::BufferFlags::CopySrc.into(),
-            rhi::MemLocation::CpuToGpu,
-        )?;
-        stage_buffer.write_data(&image_data_bytes)?;
-        let image = device.create_image(
-            rhi::Dimension::D2,
-            rhi::Format::Rgba8Srgb,
-            image_data.width(),
-            image_data.height(),
-            1,
-            1,
-            rhi::ImageUsage::CopyDst | rhi::ImageUsage::CopySrc | rhi::ImageUsage::Sampled,
-            rhi::MemLocation::Gpu,
-        )?;
-        let cmd_buffer = device.graphics_queue().create_command_buffer()?;
-        let mut encoder = cmd_buffer.encoder()?;
-        encoder.set_last_image_access(&image, rhi::ImageAccess::Undefined, 0..1, 0..1);
-        encoder.copy_buffer_to_image(&stage_buffer, &image, 0..1, 0);
-        encoder.set_last_image_access(
-            &image,
-            rhi::ImageAccess::Shader(rhi::RWAccess::Read),
-            0..1,
-            0..1,
-        );
-        encoder.finalize()?;
-        let semaphore = device.create_semaphore(false)?;
-        cmd_buffer.submit(vec![], vec![semaphore.submit_info(1)])?;
-        semaphore.wait_for(1, None)?;
-        drop(stage_buffer);
-        Ok(image)
     }
 
     pub fn resize(
@@ -366,6 +321,22 @@ impl Renderer {
         }
     }
 
+    pub fn add_materials(&mut self, mat_names: Vec<&str>) -> anyhow::Result<()> {
+        for mat_name in mat_names {
+            let mat = Material::new(&self.device, mat_name, &self.sampler)?;
+            self.material_set.add(mat);
+        }
+        Ok(())
+    }
+
+    pub fn add_mesh_draw_info(&mut self, mesh: String, texture: String) {
+        self.draws.push((mesh, texture));
+    }
+
+    pub fn clear_mesh_draws(&mut self) {
+        self.draws.clear();
+    }
+
     pub fn render(&mut self) -> anyhow::Result<()> {
         let (mut img_idx, is_unoptimal) = self.swapchain.acquire_image()?;
         if is_unoptimal {
@@ -422,9 +393,16 @@ impl Renderer {
         );
         render_pass.bind_vbs(vec![&self.pfds[idx].vertex_buffer]);
         render_pass.bind_ib(&self.pfds[idx].index_buffer, rhi::IndexType::U16);
-        render_pass.bind_dsets(vec![&self.pfds[idx].camera_dset, &self.tex_dset]);
-        for draw_info in self.pfds[idx].mesh_offsets.values() {
-            render_pass.draw_indexed(draw_info.vb_offset, draw_info.ib_offset, draw_info.len);
+        render_pass.bind_dsets(vec![&self.pfds[idx].camera_dset, &self.material_set.dset]);
+        for draw_info in &self.draws {
+            let Some(material_id) = self.material_set.get_id(&draw_info.1) else {
+                continue;
+            };
+            let Some(mesh_info) = self.pfds[idx].mesh_offsets.get(&draw_info.0) else {
+                continue;
+            };
+            render_pass.set_pc(&(material_id as u32).to_le_bytes());
+            render_pass.draw_indexed(mesh_info.vb_offset, mesh_info.ib_offset, mesh_info.len);
         }
 
         let mut encoder = render_pass.end();

@@ -1,2 +1,4 @@
 GEO RECT rectangle CUV (0 0 2) (1 0 0) (0 1 0)
+MDT rectangle data/textures/default
 GEO RECT rectangle2 CUV (3 0 0) (2 0 0) (0 2 0)
+MDT rectangle2 data/textures/alt
