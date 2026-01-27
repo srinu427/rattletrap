@@ -106,18 +106,21 @@ impl MaterialSet {
         }
     }
 
-    pub fn remove(&mut self, name: &String) {
+    pub fn remove(&mut self, name: &String) -> Option<(usize, usize)> {
         let Some(tex_id) = self.tex_name_id.remove(name) else {
-            return;
+            return None;
         };
         if tex_id == self.textures.len() - 1 {
             self.textures.pop();
+            self.update_dset();
+            None
         } else {
             self.textures.swap_remove(tex_id);
+            self.update_dset();
             if let Some(moved) = self.textures.get(tex_id) {
                 self.tex_name_id.insert(moved.name.clone(), tex_id);
             }
+            Some((self.textures.len(), tex_id))
         }
-        self.update_dset();
     }
 }

@@ -4,109 +4,20 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use ash::{LoadingError, ext, khr, vk};
+use anyhow::{Context, Result as AResult};
+use ash::{ext, khr, vk};
 pub use enumflags2;
 use enumflags2::{BitFlags, bitflags};
 use getset::{CopyGetters, Getters};
 use gpu_allocator::{
-    AllocationError, MemoryLocation,
+    MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
 };
 use hashbrown::HashMap;
 use log::{info, warn};
-use winit::{raw_window_handle::HandleError, window::Window};
+use winit::window::Window;
 
 mod init_helpers;
-
-#[derive(Debug, thiserror::Error)]
-pub enum RhiError {
-    #[error("vulkan loading failed: {0}")]
-    VkLoadError(#[from] LoadingError),
-    #[error("create instance failed: {0}")]
-    CreateInstanceError(vk::Result),
-    #[error("getting window handle failed: {0}")]
-    WindowHandleError(#[from] HandleError),
-    #[error("create surface failed: {0}")]
-    CreateSurfaceError(vk::Result),
-    #[error("get gpus failed: {0}")]
-    GetGpusError(vk::Result),
-    #[error("no supported gpus found")]
-    NoSupportedGpus,
-    #[error("create vulkan device failed: {0}")]
-    CreateDeviceError(vk::Result),
-    #[error("create command pool failed: {0}")]
-    CreateCommandPoolError(vk::Result),
-    #[error("create command buffer failed: {0}")]
-    CreateCommandBufferError(vk::Result),
-    #[error("begin command buffer failed: {0}")]
-    BeginCommandBufferError(vk::Result),
-    #[error("end command buffer failed: {0}")]
-    EndCommandBufferError(vk::Result),
-    #[error("create fence failed: {0}")]
-    CreateFenceError(vk::Result),
-    #[error("create semaphore failed: {0}")]
-    CreateSemaphoreError(vk::Result),
-    #[error("Unsupported Semaphore type for the operation")]
-    UnsupportedSemaphoreType,
-    #[error("getting surface formats failed: {0}")]
-    GetSurfaceFormatsError(vk::Result),
-    #[error("no supported surface formats")]
-    NoSupportedSurfaceFormat,
-    #[error("getting surface capabilities failed: {0}")]
-    GetSurfaceCapsError(vk::Result),
-    #[error("getting surface present modes failed: {0}")]
-    GetSurfacePresentModesError(vk::Result),
-    #[error("create swapchain failed: {0}")]
-    CreateSwapchainError(vk::Result),
-    #[error("getting swapchain images failed: {0}")]
-    GetSwapchainImagesError(vk::Result),
-    #[error("acquiring swapchain image failed: {0}")]
-    AcquireSwapchainImageError(vk::Result),
-    #[error("presenting swapchain image failed: {0}")]
-    PresentSwapchainImageError(vk::Result),
-    #[error("memory allocation failed: {0}")]
-    MemAllocError(#[from] AllocationError),
-    #[error("memory is not CPU write-able")]
-    MemReadOnly,
-    #[error("create buffer failed: {0}")]
-    CreateBufferError(vk::Result),
-    #[error("buffer memory binding failed: {0}")]
-    BufferBindMemError(vk::Result),
-    #[error("create image failed: {0}")]
-    CreateImageError(vk::Result),
-    #[error("create image view failed: {0}")]
-    CreateImageViewError(vk::Result),
-    #[error("image memory binding failed: {0}")]
-    ImageBindMemError(vk::Result),
-    #[error("create sampler failed: {0}")]
-    CreateSamplerError(vk::Result),
-    #[error("cycle of tasks found in queue work")]
-    CycleInWorkGraph,
-    #[error("submitting command buffer to queue failed: {0}")]
-    SubmitCommandBufferError(vk::Result),
-    #[error("waiting for semaphore on host failed: {0}")]
-    WaitSemaphoreError(vk::Result),
-    #[error("waiting for fence on host failed: {0}")]
-    WaitFenceError(vk::Result),
-    #[error("resetting fence failed: {0}")]
-    ResetFenceError(vk::Result),
-    #[error("creating descriptor set layout failed: {0}")]
-    CreateDslError(vk::Result),
-    #[error("creating descriptor pool failed: {0}")]
-    CreateDPoolError(vk::Result),
-    #[error("creating descriptor set failed: {0}")]
-    CreateDSetError(vk::Result),
-    #[error("creating renderpass failed: {0}")]
-    CreateRenderPassError(vk::Result),
-    #[error("creating pipeline layout failed: {0}")]
-    CreatePipelineLayoutError(vk::Result),
-    #[error("creating shader module failed: {0}")]
-    CreateShaderModuleError(vk::Result),
-    #[error("creating pipeline failed: {0}")]
-    CreatePipelineError(vk::Result),
-    #[error("creating framebuffer failed: {0}")]
-    CreateFramebufferError(vk::Result),
-}
 
 fn get_device_extensions() -> Vec<*const i8> {
     vec![
@@ -131,7 +42,7 @@ struct DeviceDropper {
 }
 
 impl DeviceDropper {
-    pub fn new(window: &Arc<Window>) -> Result<Self, RhiError> {
+    pub fn new(window: &Arc<Window>) -> AResult<Self> {
         let entry = unsafe { ash::Entry::load()? };
         let instance = init_helpers::create_instance(&entry)?;
         let surface = init_helpers::create_surface(&entry, &instance, &window)?;
@@ -139,7 +50,7 @@ impl DeviceDropper {
         let gpus = unsafe {
             instance
                 .enumerate_physical_devices()
-                .map_err(RhiError::GetGpusError)?
+                .context("getting gpu list failed")?
         };
         let mut gpu_dets = vec![];
         for gpu in gpus.into_iter() {
@@ -159,7 +70,7 @@ impl DeviceDropper {
             }
         }
         if gpu_dets.is_empty() {
-            return Err(RhiError::NoSupportedGpus);
+            return Err(anyhow::Error::msg("No Supported GPUs"));
         }
         let mut selected_gpu_idx = 0;
         for (idx, (gpu, _)) in gpu_dets.iter().enumerate() {
@@ -192,7 +103,7 @@ impl DeviceDropper {
         let device = unsafe {
             instance
                 .create_device(gpu, &device_create_info, None)
-                .map_err(RhiError::CreateDeviceError)?
+                .context("Create VK Device failed")?
         };
         Ok(Self {
             swapchain_device: khr::swapchain::Device::new(&instance, &device),
@@ -207,27 +118,27 @@ impl DeviceDropper {
         })
     }
 
-    fn get_surface_formats(&self) -> Result<Vec<vk::SurfaceFormatKHR>, RhiError> {
+    fn get_surface_formats(&self) -> AResult<Vec<vk::SurfaceFormatKHR>> {
         unsafe {
             self.surface_instance
                 .get_physical_device_surface_formats(self.gpu, self.surface)
-                .map_err(RhiError::GetSurfaceFormatsError)
+                .context("Get Surface Formats failed")
         }
     }
 
-    fn get_surface_caps(&self) -> Result<vk::SurfaceCapabilitiesKHR, RhiError> {
+    fn get_surface_caps(&self) -> AResult<vk::SurfaceCapabilitiesKHR> {
         unsafe {
             self.surface_instance
                 .get_physical_device_surface_capabilities(self.gpu, self.surface)
-                .map_err(RhiError::GetSurfaceCapsError)
+                .context("Get Surface Caps failed")
         }
     }
 
-    fn get_surface_present_modes(&self) -> Result<Vec<vk::PresentModeKHR>, RhiError> {
+    fn get_surface_present_modes(&self) -> AResult<Vec<vk::PresentModeKHR>> {
         unsafe {
             self.surface_instance
                 .get_physical_device_surface_present_modes(self.gpu, self.surface)
-                .map_err(RhiError::GetSurfacePresentModesError)
+                .context("Get Surface Present Modes failed")
         }
     }
 }
@@ -250,7 +161,7 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn new(window: &Arc<Window>) -> Result<Self, RhiError> {
+    pub fn new(window: &Arc<Window>) -> AResult<Self> {
         let device = Arc::new(DeviceDropper::new(window)?);
         let allocator = Arc::new(Mutex::new(Allocator::new(&AllocatorCreateDesc {
             instance: device.instance.clone(),
@@ -272,7 +183,7 @@ impl Device {
         &self.g_queue
     }
 
-    pub fn create_swapchain(&self) -> Result<Swapchain, RhiError> {
+    pub fn create_swapchain(&self) -> AResult<Swapchain> {
         Swapchain::new(self)
     }
 
@@ -281,7 +192,7 @@ impl Device {
         size: u64,
         usage: BitFlags<BufferFlags>,
         location: MemLocation,
-    ) -> Result<Buffer, RhiError> {
+    ) -> AResult<Buffer> {
         Buffer::new(&self.inner, &self.allocator, size, usage, location)
     }
 
@@ -295,7 +206,7 @@ impl Device {
         mip_levels: u32,
         usage: BitFlags<ImageUsage>,
         location: MemLocation,
-    ) -> Result<Image, RhiError> {
+    ) -> AResult<Image> {
         Image::new(
             &self.inner,
             &self.allocator,
@@ -310,15 +221,15 @@ impl Device {
         )
     }
 
-    pub fn create_sampler(&self) -> Result<Sampler, RhiError> {
+    pub fn create_sampler(&self) -> AResult<Sampler> {
         Sampler::new(&self.inner)
     }
 
-    pub fn create_semaphore(&self, binary: bool) -> Result<Semaphore, RhiError> {
+    pub fn create_semaphore(&self, binary: bool) -> AResult<Semaphore> {
         Semaphore::new(&self.inner, binary)
     }
 
-    pub fn load_shader(&self, code: &[u8]) -> Result<Shader, RhiError> {
+    pub fn load_shader(&self, code: &[u8]) -> AResult<Shader> {
         let shader = unsafe {
             self.inner
                 .device
@@ -326,7 +237,7 @@ impl Device {
                     &vk::ShaderModuleCreateInfo::default().code(code.align_to().1),
                     None,
                 )
-                .map_err(RhiError::CreateShaderModuleError)?
+                .context("Create Shader Module failed")?
         };
         Ok(Shader {
             inner: shader,
@@ -341,7 +252,7 @@ impl Device {
         raster_info: RasterMode,
         descriptors: Vec<Vec<DBindingType>>,
         pc_size: u32,
-    ) -> Result<RenderPipeline, RhiError> {
+    ) -> AResult<RenderPipeline> {
         RenderPipeline::new(
             &self.inner,
             vs_info,
@@ -364,7 +275,7 @@ const COLOR_SPACES: [vk::ColorSpaceKHR; 2] = [
 
 fn choose_surface_format(
     surface_formats: &Vec<vk::SurfaceFormatKHR>,
-) -> Result<(vk::SurfaceFormatKHR, Format), RhiError> {
+) -> AResult<(vk::SurfaceFormatKHR, Format)> {
     let surface_formats: Vec<_> = surface_formats
         .into_iter()
         .filter(|s| COLOR_SPACES.contains(&s.color_space))
@@ -395,7 +306,7 @@ fn choose_surface_format(
                         None
                     })
                 })
-                .ok_or(RhiError::NoSupportedSurfaceFormat)?;
+                .context("No Supported Surface Format")?;
             info!(
                 "HDR not supported. Using colour space {:?} and format {:?}",
                 sf.0.color_space, sf.1
@@ -425,7 +336,7 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    fn new(device: &Device) -> Result<Swapchain, RhiError> {
+    fn new(device: &Device) -> AResult<Swapchain> {
         let surface_formats = device.inner.get_surface_formats()?;
         let surface_caps = device.inner.get_surface_caps()?;
         let surface_present_modes = device.inner.get_surface_present_modes()?;
@@ -471,14 +382,14 @@ impl Swapchain {
                 .inner
                 .swapchain_device
                 .create_swapchain(&swapchain_create_info, None)
-                .map_err(RhiError::CreateSwapchainError)?
+                .context("Create Swapchain failed")?
         };
         let images: Vec<_> = unsafe {
             device
                 .inner
                 .swapchain_device
                 .get_swapchain_images(swapchain)
-                .map_err(RhiError::GetSwapchainImagesError)?
+                .context("Get Swapchain Images failed")?
                 .into_iter()
                 .map(|img| Image {
                     inner: Arc::new(ImageDropper {
@@ -504,7 +415,7 @@ impl Swapchain {
                 .inner
                 .device
                 .create_fence(&vk::FenceCreateInfo::default(), None)
-                .map_err(RhiError::CreateFenceError)?
+                .context("Create Fence")?
         };
         Ok(Self {
             inner: swapchain,
@@ -520,7 +431,7 @@ impl Swapchain {
         })
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), RhiError> {
+    pub fn resize(&mut self, width: u32, height: u32) -> AResult<()> {
         let current_transform = self
             .device
             .get_surface_caps()
@@ -547,13 +458,13 @@ impl Swapchain {
             self.device
                 .swapchain_device
                 .create_swapchain(&swapchain_create_info, None)
-                .map_err(RhiError::CreateSwapchainError)?
+                .context("Create Swapchain failed")?
         };
         let images: Vec<_> = unsafe {
             self.device
                 .swapchain_device
                 .get_swapchain_images(swapchain)
-                .map_err(RhiError::GetSwapchainImagesError)?
+                .context("Get Swapchin Images failed")?
                 .into_iter()
                 .map(|img| Image {
                     inner: Arc::new(ImageDropper {
@@ -588,28 +499,28 @@ impl Swapchain {
         Ok(())
     }
 
-    pub fn acquire_image(&self) -> Result<(u32, bool), RhiError> {
+    pub fn acquire_image(&self) -> AResult<(u32, bool)> {
         unsafe {
             let (idx, outdated) = self
                 .device
                 .swapchain_device
                 .acquire_next_image(self.inner, u64::MAX, vk::Semaphore::null(), self.fence)
-                .map_err(RhiError::AcquireSwapchainImageError)?;
+                .context("Aquire Swapchain Image failed")?;
             self.device
                 .device
                 .wait_for_fences(&[self.fence], true, u64::MAX)
-                .map_err(RhiError::WaitFenceError)?;
+                .context("Wait Fence failed")?;
             self.device
                 .device
                 .reset_fences(&[self.fence])
-                .map_err(RhiError::ResetFenceError)?;
+                .context("Reset Fence failed")?;
             Ok((idx, outdated))
         }
     }
 
-    pub fn present_image(&self, idx: u32, semaphore: &Semaphore) -> Result<bool, RhiError> {
+    pub fn present_image(&self, idx: u32, semaphore: &Semaphore) -> AResult<bool> {
         if !semaphore.is_binary {
-            return Err(RhiError::UnsupportedSemaphoreType);
+            return Err(anyhow::Error::msg("Unsupported Semaphore Type"));
         }
         unsafe {
             self.device
@@ -621,7 +532,7 @@ impl Swapchain {
                         .image_indices(&[idx])
                         .wait_semaphores(&[semaphore.inner]),
                 )
-                .map_err(RhiError::PresentSwapchainImageError)
+                .context("Present Swaphain Image failed")
         }
     }
 }
@@ -658,7 +569,7 @@ pub struct Queue {
 }
 
 impl Queue {
-    fn new(device: &Arc<DeviceDropper>) -> Result<Self, RhiError> {
+    fn new(device: &Arc<DeviceDropper>) -> AResult<Self> {
         let queue = unsafe { device.device.get_device_queue(device.gfx_qf_idx, 0) };
         let cmd_pool = unsafe {
             device
@@ -669,7 +580,7 @@ impl Queue {
                         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
                     None,
                 )
-                .map_err(RhiError::CreateCommandPoolError)?
+                .context("Create Command Pool failed")?
         };
         let cmd_pool = Arc::new(CommandPoolDropper {
             inner: cmd_pool,
@@ -683,7 +594,7 @@ impl Queue {
         })
     }
 
-    pub fn create_command_buffer(&self) -> Result<CommandBuffer, RhiError> {
+    pub fn create_command_buffer(&self) -> AResult<CommandBuffer> {
         let cmd_buffer = unsafe {
             self.device
                 .device
@@ -693,7 +604,7 @@ impl Queue {
                         .level(vk::CommandBufferLevel::PRIMARY)
                         .command_buffer_count(1),
                 )
-                .map_err(RhiError::CreateCommandBufferError)?[0]
+                .context("Create Command Buffer failed")?[0]
         };
         Ok(CommandBuffer {
             inner: cmd_buffer,
@@ -746,7 +657,7 @@ impl Memory {
         requirements: vk::MemoryRequirements,
         location: MemLocation,
         linear: bool,
-    ) -> Result<Self, RhiError> {
+    ) -> AResult<Self> {
         let mut altr_guard = match altr.lock() {
             Ok(a) => a,
             Err(e) => {
@@ -830,7 +741,7 @@ impl Buffer {
         size: u64,
         usage: BitFlags<BufferFlags>,
         location: MemLocation,
-    ) -> Result<Self, RhiError> {
+    ) -> AResult<Self> {
         let usage = BufferFlags::to_vk(usage);
         let buffer = unsafe {
             device
@@ -839,7 +750,7 @@ impl Buffer {
                     &vk::BufferCreateInfo::default().usage(usage).size(size),
                     None,
                 )
-                .map_err(RhiError::CreateBufferError)?
+                .context("Create Buffer failed")?
         };
         let mem_req = unsafe { device.device.get_buffer_memory_requirements(buffer) };
         let memory = Memory::new(
@@ -853,7 +764,7 @@ impl Buffer {
             device
                 .device
                 .bind_buffer_memory(buffer, memory.inner.memory(), memory.inner.offset())
-                .map_err(RhiError::BufferBindMemError)?;
+                .context("Buffer Bind Memory failed")?;
         }
         Ok(Self {
             inner: buffer,
@@ -863,12 +774,12 @@ impl Buffer {
         })
     }
 
-    pub fn write_data(&mut self, data: &[u8]) -> Result<(), RhiError> {
+    pub fn write_data(&mut self, data: &[u8]) -> AResult<()> {
         let mapped_mem = self
             .memory
             .inner
             .mapped_slice_mut()
-            .ok_or(RhiError::MemReadOnly)?;
+            .context("Memory is read only")?;
         let write_len = mapped_mem.len().min(data.len());
         mapped_mem[..write_len].copy_from_slice(&data[..write_len]);
         Ok(())
@@ -1031,7 +942,7 @@ impl Image {
         mip_levels: u32,
         usage: BitFlags<ImageUsage>,
         location: MemLocation,
-    ) -> Result<Self, RhiError> {
+    ) -> AResult<Self> {
         let (extent, layers) = if dimension == Dimension::D3 {
             let extent = vk::Extent3D {
                 width,
@@ -1060,7 +971,7 @@ impl Image {
             device
                 .device
                 .create_image(&create_info, None)
-                .map_err(RhiError::CreateImageError)?
+                .context("Create Image failed")?
         };
         let mem_req = unsafe { device.device.get_image_memory_requirements(image) };
         let memory = Memory::new(
@@ -1074,7 +985,7 @@ impl Image {
             device
                 .device
                 .bind_image_memory(image, memory.inner.memory(), memory.inner.offset())
-                .map_err(RhiError::ImageBindMemError)?;
+                .context("Image Bind Memory failed")?;
         }
         Ok(Self {
             inner: Arc::new(ImageDropper {
@@ -1096,7 +1007,7 @@ impl Image {
         view_dim: ViewDimension,
         layer_range: Range<u32>,
         mip_level_range: Range<u32>,
-    ) -> Result<ImageView, RhiError> {
+    ) -> AResult<ImageView> {
         let layer_range = if let Dimension::D3 = self.dimension {
             Range { start: 0, end: 1 }
         } else {
@@ -1127,7 +1038,7 @@ impl Image {
                 .device
                 .device
                 .create_image_view(&create_info, None)
-                .map_err(RhiError::CreateImageViewError)?
+                .context("Create Image View failed")?
         };
         Ok(ImageView {
             _dimension: view_dim,
@@ -1304,12 +1215,12 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    fn new(device: &Arc<DeviceDropper>) -> Result<Sampler, RhiError> {
+    fn new(device: &Arc<DeviceDropper>) -> AResult<Sampler> {
         let sampler = unsafe {
             device
                 .device
                 .create_sampler(&vk::SamplerCreateInfo::default(), None)
-                .map_err(RhiError::CreateSamplerError)?
+                .context("Create Sampler failed")?
         };
 
         Ok(Self {
@@ -1333,13 +1244,13 @@ pub struct CommandBuffer {
 }
 
 impl CommandBuffer {
-    pub fn encoder(&self) -> Result<CommandEncoder, RhiError> {
+    pub fn encoder(&self) -> AResult<CommandEncoder> {
         unsafe {
             self.command_pool
                 .device
                 .device
                 .begin_command_buffer(self.inner, &vk::CommandBufferBeginInfo::default())
-                .map_err(RhiError::BeginCommandBufferError)?;
+                .context("Begin Command Buffer failed")?;
         }
         Ok(CommandEncoder {
             last_image_access: HashMap::new(),
@@ -1348,11 +1259,7 @@ impl CommandBuffer {
         })
     }
 
-    pub fn submit(
-        &self,
-        wait: Vec<SemSubmitInfo>,
-        emit: Vec<SemSubmitInfo>,
-    ) -> Result<(), RhiError> {
+    pub fn submit(&self, wait: Vec<SemSubmitInfo>, emit: Vec<SemSubmitInfo>) -> AResult<()> {
         let wait_values: Vec<_> = wait.iter().map(|s| s.num).collect();
         let emit_values: Vec<_> = emit.iter().map(|s| s.num).collect();
         let wait_sems: Vec<_> = wait.iter().map(|s| s.sem).collect();
@@ -1373,7 +1280,7 @@ impl CommandBuffer {
                         .push_next(&mut tl_sem_info)],
                     vk::Fence::null(),
                 )
-                .map_err(RhiError::SubmitCommandBufferError)?;
+                .context("Submit Command Buffer failed")?;
         }
         Ok(())
     }
@@ -1660,13 +1567,13 @@ impl CommandEncoder {
         }
     }
 
-    pub fn finalize(self) -> Result<(), RhiError> {
+    pub fn finalize(self) -> AResult<()> {
         unsafe {
             self.cmd_pool
                 .device
                 .device
                 .end_command_buffer(self.cmd_buffer)
-                .map_err(RhiError::EndCommandBufferError)?;
+                .context("End Command Buffer failed")?;
         }
         Ok(())
     }
@@ -1798,7 +1705,7 @@ pub struct Semaphore {
 }
 
 impl Semaphore {
-    fn new(device: &Arc<DeviceDropper>, binary: bool) -> Result<Self, RhiError> {
+    fn new(device: &Arc<DeviceDropper>, binary: bool) -> AResult<Self> {
         let mut sem_type_info = if binary {
             vk::SemaphoreTypeCreateInfo::default()
                 .initial_value(0)
@@ -1815,7 +1722,7 @@ impl Semaphore {
                     &vk::SemaphoreCreateInfo::default().push_next(&mut sem_type_info),
                     None,
                 )
-                .map_err(RhiError::CreateSemaphoreError)?
+                .context("Create Semaphore failed")?
         };
         Ok(Self {
             inner: semaphore,
@@ -1831,7 +1738,7 @@ impl Semaphore {
         }
     }
 
-    pub fn wait_for(&self, num: u64, timeout: Option<u64>) -> Result<(), RhiError> {
+    pub fn wait_for(&self, num: u64, timeout: Option<u64>) -> AResult<()> {
         let timeout = timeout.unwrap_or(u64::MAX);
         unsafe {
             self.device
@@ -1842,7 +1749,7 @@ impl Semaphore {
                         .values(&[num]),
                     timeout,
                 )
-                .map_err(RhiError::WaitSemaphoreError)?;
+                .context("Wait Semaphore failed")?;
         }
         Ok(())
     }
@@ -1901,7 +1808,7 @@ struct DAlloc {
 }
 
 impl DAlloc {
-    fn new(device: &Arc<DeviceDropper>, bindings: &[DBindingType]) -> Result<Self, RhiError> {
+    fn new(device: &Arc<DeviceDropper>, bindings: &[DBindingType]) -> AResult<Self> {
         let binding_vk: Vec<_> = bindings
             .iter()
             .enumerate()
@@ -1920,7 +1827,7 @@ impl DAlloc {
             device
                 .device
                 .create_descriptor_set_layout(&dsl_create_info, None)
-                .map_err(RhiError::CreateDslError)?
+                .context("Create DSL failed")?
         };
         let pool_sizes: Vec<_> = bindings
             .iter()
@@ -1938,7 +1845,7 @@ impl DAlloc {
             device
                 .device
                 .create_descriptor_pool(&pool_create_info, None)
-                .map_err(RhiError::CreateDPoolError)?
+                .context("Create DPool failed")?
         };
         let pool = DPoolDropper {
             pool,
@@ -1951,7 +1858,7 @@ impl DAlloc {
         })
     }
 
-    fn new_set(&mut self) -> Result<DSet, RhiError> {
+    fn new_set(&mut self) -> AResult<DSet> {
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.pool.pool)
             .set_layouts(core::slice::from_ref(&self.dsl));
@@ -1983,7 +1890,7 @@ impl DAlloc {
                             .device
                             .device
                             .create_descriptor_pool(&pool_create_info, None)
-                            .map_err(RhiError::CreateDPoolError)?;
+                            .context("Create DPool failed")?;
                         let pool = DPoolDropper {
                             pool,
                             device: self.pool.device.clone(),
@@ -1994,11 +1901,11 @@ impl DAlloc {
                             .device
                             .device
                             .allocate_descriptor_sets(&alloc_info)
-                            .map_err(RhiError::CreateDSetError)?
+                            .context("Create DSet failed")?
                             .remove(0);
                         dset
                     }
-                    _ => return Err(RhiError::CreateDSetError(e)),
+                    _ => return Err(anyhow::Error::new(e).context("Create DSet failed")),
                 },
             }
         };
@@ -2290,7 +2197,7 @@ impl RenderPipeline {
         raster_info: RasterMode,
         descriptors: Vec<Vec<DBindingType>>,
         pc_size: u32,
-    ) -> Result<Self, RhiError> {
+    ) -> AResult<Self> {
         let dallocs: Vec<_> = descriptors
             .iter()
             .map(|d| DAlloc::new(&device, d))
@@ -2346,7 +2253,7 @@ impl RenderPipeline {
             device
                 .device
                 .create_render_pass(&rp_create_info, None)
-                .map_err(RhiError::CreateRenderPassError)?
+                .context("Create Render Pass failed")?
         };
         let set_layouts: Vec<_> = dallocs.iter().map(|d| d.dsl).collect();
         let pc_info = vk::PushConstantRange::default()
@@ -2361,7 +2268,7 @@ impl RenderPipeline {
             device
                 .device
                 .create_pipeline_layout(&pl_create_info, None)
-                .map_err(RhiError::CreatePipelineLayoutError)?
+                .context("Create Pipeline Layout failed")?
         };
         let dyn_states = vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dyn_info = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dyn_states);
@@ -2443,7 +2350,7 @@ impl RenderPipeline {
             device
                 .device
                 .create_graphics_pipelines(vk::PipelineCache::null(), &[p_create_info], None)
-                .map_err(|(_, e)| RhiError::CreatePipelineError(e))?
+                .map_err(|(_, e)| anyhow::Error::new(e).context("Create Pipeline failed"))?
                 .remove(0)
         };
         Ok(Self {
@@ -2456,11 +2363,11 @@ impl RenderPipeline {
         })
     }
 
-    pub fn new_set(&mut self, idx: usize) -> Result<DSet, RhiError> {
+    pub fn new_set(&mut self, idx: usize) -> AResult<DSet> {
         self.dallocs[idx].new_set()
     }
 
-    pub fn new_output(&mut self, images: Vec<&ImageView>) -> Result<RenderOutput, RhiError> {
+    pub fn new_output(&mut self, images: Vec<&ImageView>) -> AResult<RenderOutput> {
         let image_views_vk: Vec<_> = images.iter().map(|iv| iv.dropper.inner).collect();
         let fb_create_info = vk::FramebufferCreateInfo::default()
             .render_pass(self.render_pass)
@@ -2472,7 +2379,7 @@ impl RenderPipeline {
             self.device
                 .device
                 .create_framebuffer(&fb_create_info, None)
-                .map_err(RhiError::CreateFramebufferError)?
+                .context("Create Framebuffer failed")?
         };
         Ok(RenderOutput {
             inner: framebuffer,

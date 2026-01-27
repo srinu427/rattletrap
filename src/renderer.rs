@@ -10,7 +10,8 @@ use crate::renderer::{
     mesh::{Mesh, Vertex},
 };
 
-mod camera;
+mod asset_manager;
+pub mod camera;
 pub mod level;
 pub mod material;
 pub mod mesh;
@@ -19,7 +20,7 @@ static VERT_SPV: &[u8] = include_bytes_aligned!(4, "shaders/triangle.vert.spv");
 static FRAG_SPV: &[u8] = include_bytes_aligned!(4, "shaders/triangle.frag.spv");
 
 #[derive(Debug, Clone)]
-pub struct MeshDrawParams {
+pub struct MeshOffsets {
     name: String,
     vb_offset: usize,
     ib_offset: usize,
@@ -29,7 +30,7 @@ pub struct MeshDrawParams {
 pub struct PerFrameData {
     index: usize,
     meshes: HashMap<String, Arc<Mesh>>,
-    mesh_offsets: HashMap<String, MeshDrawParams>,
+    mesh_offsets: HashMap<String, MeshOffsets>,
     vb_up_to_date: u32,
     swapchain_image_initialized: u32,
     cmd_buffer: rhi::CommandBuffer,
@@ -133,7 +134,7 @@ impl PerFrameData {
             all_inds.extend(mesh_info.idxs.clone());
             self.mesh_offsets.insert(
                 name.clone(),
-                MeshDrawParams {
+                MeshOffsets {
                     name: name.clone(),
                     vb_offset,
                     ib_offset,
@@ -160,8 +161,13 @@ impl PerFrameData {
     }
 }
 
+pub struct TexMeshDraw {
+    mesh_name: String,
+    tex_id: usize,
+}
+
 pub struct Renderer {
-    draws: Vec<(String, String)>,
+    draws: Vec<TexMeshDraw>,
     material_set: MaterialSet,
     render_outputs: Vec<rhi::RenderOutput>,
     render_depths: Vec<rhi::ImageView>,
@@ -185,7 +191,13 @@ impl Renderer {
             rhi::VertexStageInfo {
                 shader: &vert_shader,
                 entrypoint: "main",
-                attribs: vec![rhi::VertexAttribute::Vec4, rhi::VertexAttribute::Vec4],
+                attribs: vec![
+                    rhi::VertexAttribute::Vec4,
+                    rhi::VertexAttribute::Vec4,
+                    rhi::VertexAttribute::Vec4,
+                    rhi::VertexAttribute::Vec4,
+                    rhi::VertexAttribute::Vec4,
+                ],
                 stride: core::mem::size_of::<Vertex>(),
             },
             rhi::FragmentStageInfo {
@@ -212,15 +224,13 @@ impl Renderer {
         let tex_dset = pipeline.new_set(1)?;
         let mut material_set = MaterialSet::new(tex_dset, 0)?;
         material_set.add(Material::new(&device, "./data/textures/default", &sampler)?);
-        let mut camera = Cam3d {
-            eye: glam::vec3(5.0, 5.0, 5.0),
-            fov: 120.0,
-            dir: glam::vec3(-1.0, -1.0, -1.0),
-            aspect: 1.0,
-            up: glam::vec3(0.0, 1.0, 0.0),
-            padding: 0,
-            proj_view: glam::Mat4::IDENTITY,
-        };
+        let mut camera = Cam3d::new(
+            glam::vec3(5.0, 5.0, 5.0),
+            glam::vec3(-1.0, -1.0, -1.0),
+            glam::vec3(0.0, 1.0, 0.0),
+            120.0,
+            1.0,
+        );
         camera.update_proj_view();
 
         let pfds = (0..swapchain.images().len())
@@ -258,6 +268,10 @@ impl Renderer {
             camera,
             sampler,
         })
+    }
+
+    pub fn camera_mut(&mut self) -> &mut Cam3d {
+        &mut self.camera
     }
 
     pub fn resize(
@@ -330,7 +344,14 @@ impl Renderer {
     }
 
     pub fn add_mesh_draw_info(&mut self, mesh: String, texture: String) {
-        self.draws.push((mesh, texture));
+        let Some(tex_id) = self.material_set.get_id(&texture) else {
+            eprintln!("texture {texture} is not loaded");
+            return;
+        };
+        self.draws.push(TexMeshDraw {
+            mesh_name: mesh,
+            tex_id: tex_id,
+        });
     }
 
     pub fn clear_mesh_draws(&mut self) {
@@ -356,7 +377,7 @@ impl Renderer {
         }
         let aspect_ratio = self.swapchain.images()[0].width() as f32
             / self.swapchain.images()[0].height().max(1) as f32;
-        self.camera.aspect = aspect_ratio;
+        self.camera.set_aspect(aspect_ratio);
         self.camera.update_proj_view();
         self.pfds[idx]
             .camera_stage_buffer
@@ -395,13 +416,10 @@ impl Renderer {
         render_pass.bind_ib(&self.pfds[idx].index_buffer, rhi::IndexType::U16);
         render_pass.bind_dsets(vec![&self.pfds[idx].camera_dset, &self.material_set.dset]);
         for draw_info in &self.draws {
-            let Some(material_id) = self.material_set.get_id(&draw_info.1) else {
+            let Some(mesh_info) = self.pfds[idx].mesh_offsets.get(&draw_info.mesh_name) else {
                 continue;
             };
-            let Some(mesh_info) = self.pfds[idx].mesh_offsets.get(&draw_info.0) else {
-                continue;
-            };
-            render_pass.set_pc(&(material_id as u32).to_le_bytes());
+            render_pass.set_pc(&(draw_info.tex_id as u32).to_le_bytes());
             render_pass.draw_indexed(mesh_info.vb_offset, mesh_info.ib_offset, mesh_info.len);
         }
 

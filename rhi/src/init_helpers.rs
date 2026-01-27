@@ -1,12 +1,11 @@
 use std::ffi::CString;
 
+use anyhow::{Context, Result as AResult};
 use ash::{ext, khr, vk};
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
 };
-
-use crate::RhiError;
 
 fn get_instance_layers() -> Vec<*const i8> {
     vec![
@@ -36,7 +35,7 @@ fn get_instance_extensions() -> Vec<*const i8> {
     ]
 }
 
-pub fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, RhiError> {
+pub fn create_instance(entry: &ash::Entry) -> AResult<ash::Instance> {
     let layers = get_instance_layers();
     let extensions = get_instance_extensions();
     let app_info = vk::ApplicationInfo::default()
@@ -59,7 +58,7 @@ pub fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, RhiError> {
     let instance = unsafe {
         entry
             .create_instance(&create_info, None)
-            .map_err(RhiError::CreateInstanceError)?
+            .context("Create Instance failed")?
     };
     Ok(instance)
 }
@@ -68,22 +67,22 @@ pub fn create_surface(
     entry: &ash::Entry,
     instance: &ash::Instance,
     window: &Window,
-) -> Result<vk::SurfaceKHR, RhiError> {
+) -> AResult<vk::SurfaceKHR> {
     let surface = unsafe {
         ash_window::create_surface(
             &entry,
             &instance,
             window
                 .display_handle()
-                .map_err(RhiError::WindowHandleError)?
+                .context("Get Display Handle failed")?
                 .as_raw(),
             window
                 .window_handle()
-                .map_err(RhiError::WindowHandleError)?
+                .context("Get Window Handle failed")?
                 .as_raw(),
             None,
         )
-        .map_err(RhiError::CreateSurfaceError)?
+        .context("Create Surface failed")?
     };
     Ok(surface)
 }

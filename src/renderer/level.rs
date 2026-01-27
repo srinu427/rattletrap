@@ -5,7 +5,7 @@ use regex::Regex;
 
 use crate::renderer::mesh::Mesh;
 
-static VEC3_STR: &str = "\\(([0-9.]+) +([0-9.]+) +([0-9.]+)\\)";
+static VEC3_STR: &str = "\\(([0-9.-]+) +([0-9.-]+) +([0-9.-]+)\\)";
 
 static VEC3_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(VEC3_STR).unwrap());
 
@@ -16,6 +16,33 @@ fn split_vec3(s: &str) -> Option<(glam::Vec3, &str)> {
     let z: f32 = cap.get(3).map(|s| s.as_str().parse().ok()).flatten()?;
     let rem = &s[cap.get_match().end()..];
     Some((glam::vec3(x, y, z), rem))
+}
+
+pub fn parse_cube(tokens: &str) -> anyhow::Result<Mesh> {
+    let (name, tokens) = tokens
+        .split_once(char::is_whitespace)
+        .context("no name given to cube")?;
+    let (c_inp_type, tokens) = tokens
+        .split_once(char::is_whitespace)
+        .context("no cube input type specified")?;
+    match c_inp_type {
+        "CUVH" => {
+            let (c, tokens) = split_vec3(tokens).context("cube center position vec3 expected")?;
+            let (u, tokens) = split_vec3(tokens).context("cube u direction vec3 expected")?;
+            let (v, tokens) = split_vec3(tokens).context("cube v direction vec3 expected")?;
+            let (mut h, tokens) = tokens
+                .split_once(char::is_whitespace)
+                .context("cube height expected")?;
+            if h == "" {
+                h = tokens;
+            }
+            let h: f32 = h.parse().context("expected f32 height")?;
+            Ok(Mesh::cube_cuvh(name, c, u, v, h))
+        }
+        _ => Err(anyhow::Error::msg(format!(
+            "unknown cube input type: {c_inp_type}"
+        ))),
+    }
 }
 
 pub fn parse_rect(tokens: &str) -> anyhow::Result<Mesh> {
@@ -44,6 +71,7 @@ pub fn parse_geo(tokens: &str) -> anyhow::Result<Mesh> {
         .context("can't find geo type token")?;
     match geo_type {
         "RECT" => parse_rect(tokens),
+        "CUBE" => parse_cube(tokens),
         _ => Err(anyhow::Error::msg(format!("unknown geo type: {geo_type}"))),
     }
 }

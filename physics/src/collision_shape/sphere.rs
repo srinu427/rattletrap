@@ -9,10 +9,6 @@ impl Sphere {
         Self { center, radius }
     }
 
-    pub fn dist_from_point(&self, point: glam::Vec3) -> f32 {
-        (point - self.center).length() - self.radius
-    }
-
     pub fn apply_translation(&self, trans: glam::Vec3) -> Sphere {
         Sphere {
             center: self.center + trans,
