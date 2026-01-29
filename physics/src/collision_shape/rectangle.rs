@@ -3,7 +3,7 @@ use glam::Vec4Swizzles;
 #[derive(Debug, Clone)]
 pub struct Rectangle {
     pub(crate) c: glam::Vec4,
-    pub(crate) n: glam::Vec4,
+    pub(crate) pl: glam::Vec4,
     pub(crate) u: glam::Vec4,
     pub(crate) v: glam::Vec4,
     pub(crate) points: [glam::Vec4; 4],
@@ -37,7 +37,7 @@ impl Rectangle {
 
         Self {
             c: glam::Vec4::from((c, 1.0)),
-            n: glam::Vec4::from((n, 1.0)),
+            pl: glam::Vec4::from((n, n.dot(c))),
             u: glam::Vec4::from((u, 1.0)),
             v: glam::Vec4::from((v, 1.0)),
             points,
@@ -50,7 +50,8 @@ impl Rectangle {
             glam::Mat4::from_translation(trans) * rot * glam::Mat4::from_translation(-self.c.xyz());
         let mut out = self.clone();
         out.c = out_transform * out.c;
-        out.n = out_transform * out.n;
+        out.pl = out_transform * glam::Vec4::from((out.pl.xyz(), 0.0));
+        out.pl.w = out.pl.xyz().dot(out.c.xyz());
         out.u = out_transform * out.u;
         out.v = out_transform * out.v;
         for point in &mut out.points {
