@@ -159,3 +159,22 @@ fn ppoly_ppoly_sep(r1: &PlanarPolygon, r2: &PlanarPolygon) -> Option<SepPlane> {
     }
     None
 }
+
+fn coll_shape_sep(a: &CollisionShape, b: &CollisionShape) -> Option<SepPlane> {
+    match a {
+        CollisionShape::Sphere(s1) => match b {
+            CollisionShape::Sphere(s2) => sp_sp_sep(s1, s2),
+            CollisionShape::PlanarPolygon(pp2) => sp_ppoly_sep(s1, pp2),
+        },
+        CollisionShape::PlanarPolygon(pp1) => match b {
+            CollisionShape::Sphere(s2) => {
+                let mut s_plane = sp_ppoly_sep(s2, pp1);
+                if let Some(sp) = s_plane.as_mut() {
+                    sp.rel_to_first = !sp.rel_to_first;
+                }
+                s_plane
+            }
+            CollisionShape::PlanarPolygon(pp2) => ppoly_ppoly_sep(pp1, pp2),
+        },
+    }
+}
