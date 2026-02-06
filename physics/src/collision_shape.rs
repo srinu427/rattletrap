@@ -1,9 +1,8 @@
-use crate::collision_shape::{rectangle::Rectangle, sphere::Sphere};
+use crate::collision_shape::{planar_polygon::PlanarPolygon, sphere::Sphere};
 
 pub mod capsule;
-pub mod rectangle;
+pub mod planar_polygon;
 pub mod sphere;
-pub mod triangle;
 
 #[derive(Debug, Clone)]
 pub struct Orientation {
@@ -14,15 +13,15 @@ pub struct Orientation {
 #[derive(Debug, Clone)]
 pub enum CollisionShape {
     Sphere(Sphere),
-    Rect(Rectangle),
+    PlanarPolygon(PlanarPolygon),
 }
 
 impl CollisionShape {
     pub fn with_orientation(&self, orientation: &Orientation) -> Self {
         match self {
             Self::Sphere(sphere) => Self::Sphere(sphere.apply_translation(orientation.trans)),
-            Self::Rect(rect) => {
-                Self::Rect(rect.with_orientation(orientation.trans, orientation.rot))
+            Self::PlanarPolygon(rect) => {
+                Self::PlanarPolygon(rect.with_orientation(orientation.trans, orientation.rot))
             }
         }
     }
