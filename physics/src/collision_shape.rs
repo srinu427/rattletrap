@@ -6,8 +6,8 @@ pub mod sphere;
 
 #[derive(Debug, Clone)]
 pub struct Orientation {
-    trans: glam::Vec3,
-    rot: glam::Mat4,
+    pub trans: glam::Vec3,
+    pub rot: glam::Mat4,
 }
 
 #[derive(Debug, Clone)]

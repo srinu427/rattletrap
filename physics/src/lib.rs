@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use glam::Vec4Swizzles;
 use hashbrown::HashMap;
 
@@ -214,13 +216,39 @@ fn coll_shape_sep(a: &CollisionShape, b: &CollisionShape) -> Option<Separation> 
     }
 }
 
+fn validate_sep_plane(pl: glam::Vec4, points: &[glam::Vec4]) -> (f32, Vec<usize>) {
+    let mut min_dist = 0.0;
+    let mut min_dist_points = vec![];
+    for (i, p) in points.iter().enumerate() {
+        let dist = p.dot(pl);
+        if min_dist > dist {
+            min_dist = dist;
+            min_dist_points = vec![i];
+        } else if min_dist == dist {
+            min_dist_points.push(i);
+        }
+    }
+    (min_dist, min_dist_points)
+}
+
+#[derive(Clone)]
 pub struct RigidBody {
     pub mass: f32,
-    pub shape: CollisionShape,
+    pub shape: Arc<CollisionShape>,
     pub orient: Orientation,
+    pub kinematics: Kinematics,
     pub can_rotate: bool,
     pub has_gravity: bool,
     pub dont_interact_mask: u32,
+}
+
+impl RigidBody {
+    pub fn make_fut(&self) -> Self {
+        let mut out = self.clone();
+        out.orient.trans += out.kinematics.velocity + 0.5 * out.kinematics.acceleration;
+        out.kinematics.velocity += out.kinematics.acceleration;
+        out
+    }
 }
 
 pub struct PhysicsManager {
@@ -243,12 +271,51 @@ impl PhysicsManager {
     }
 
     pub fn forward_ms(&mut self) {
+        let mut fut_objs: Vec<_> = self.objects.iter().map(|ro| ro.make_fut()).collect();
         for i in 0..self.objects.len() {
             let mut sliding_surface: Vec<glam::Vec4> = vec![];
             // Validate separation planes and detect sliding surfaces
             for j in (i + 1)..self.objects.len() {
                 if (self.objects[i].dont_interact_mask & self.objects[j].dont_interact_mask) != 0 {
                     continue;
+                }
+                let sep_plane = self.separations[i][j - i].clone();
+                match sep_plane {
+                    Separation::Face { of_first, face_idx } => {
+                        let (ref_obj, sec_obj) = if of_first {
+                            (&fut_objs[i], &fut_objs[j])
+                        } else {
+                            (&fut_objs[j], &fut_objs[i])
+                        };
+                        let shape_orient = ref_obj.shape.with_orientation(&ref_obj.orient);
+                        match &shape_orient {
+                            CollisionShape::Sphere(_) => unreachable!(),
+                            CollisionShape::PlanarPolygon(planar_polygon) => {
+                                let plane = planar_polygon.pl;
+                                let (min_d, min_d_points) = match shape_orient {
+                                    CollisionShape::Sphere(sphere) => validate_sep_plane(
+                                        plane,
+                                        &[glam::Vec4::from((sphere.center, 1.0))],
+                                    ),
+                                    CollisionShape::PlanarPolygon(planar_polygon) => {
+                                        validate_sep_plane(plane, &planar_polygon.points)
+                                    }
+                                };
+                                if min_d > 0.01 {}
+                            }
+                        }
+                    }
+                    Separation::EdgeCross { idx1, idx2 } => todo!(),
+                    Separation::EdgeTangent {
+                        of_first,
+                        edge_idx,
+                        normal,
+                    } => todo!(),
+                    Separation::PointTangent {
+                        of_first,
+                        point_idx,
+                        normal,
+                    } => todo!(),
                 }
             }
         }
