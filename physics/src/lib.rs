@@ -4,10 +4,11 @@ use glam::Vec4Swizzles;
 use hashbrown::HashMap;
 
 use crate::collision_shape::{
-    CollisionShape, Orientation, planar_polygon::PlanarPolygon, sphere::Sphere,
+    CollisionShape, Orientation, convex_mesh::ConvexMesh, sphere::Sphere,
 };
 
 pub mod collision_shape;
+mod utils;
 
 #[derive(Debug, Clone)]
 pub struct Kinematics {
@@ -73,6 +74,17 @@ impl Separation {
     }
 }
 
+pub struct ContactState {
+    sep: Separation,
+    min_d: f32,
+}
+
+impl ContactState {
+    pub fn new(a: &CollisionShape, b: &CollisionShape) -> Self {
+        todo!()
+    }
+}
+
 fn sp_sp_sep(s1: &Sphere, s2: &Sphere) -> Option<Separation> {
     let d = s2.center - s1.center;
     let r = s1.radius + s2.radius;
@@ -87,7 +99,7 @@ fn sp_sp_sep(s1: &Sphere, s2: &Sphere) -> Option<Separation> {
     None
 }
 
-fn sp_ppoly_sep(s: &Sphere, pp: &PlanarPolygon) -> Option<Separation> {
+fn sp_ppoly_sep(s: &Sphere, pp: &ConvexMesh) -> Option<Separation> {
     let pl_c_dist = pp.pl.dot(glam::Vec4::from((s.center, 1.0)));
     if pl_c_dist > s.radius {
         return Some(Separation::Face {
@@ -136,45 +148,65 @@ fn points_on_pos(pl: glam::Vec4, points: &[glam::Vec4]) -> bool {
     true
 }
 
-fn points_on_which_side(pl: glam::Vec4, points: &[glam::Vec4]) -> Option<bool> {
-    let mut test_is_pos: Option<bool> = None;
+fn points_min_dist(pl: glam::Vec4, points: &[glam::Vec4]) -> f32 {
+    let mut min_dist = f32::INFINITY;
     for p in points {
         let f_p_dist = p.dot(pl);
-        if f_p_dist != 0.0 {
-            let is_pos = f_p_dist > 0.0;
-            match test_is_pos {
-                Some(tip) => {
-                    if tip ^ is_pos {
-                        return Some(tip);
-                    }
-                }
-                None => {
-                    test_is_pos = Some(is_pos);
-                }
-            };
-        };
+        if f_p_dist < min_dist {
+            min_dist = f_p_dist;
+        }
     }
-    if test_is_pos.is_none() {
-        Some(true)
-    } else {
-        None
-    }
+    min_dist
 }
 
-fn ppoly_ppoly_sep(r1: &PlanarPolygon, r2: &PlanarPolygon) -> Option<Separation> {
-    // Check Planes
-    if points_on_which_side(r1.pl, &r2.points).is_some() {
-        return Some(Separation::Face {
-            of_first: true,
-            face_idx: 0,
-        });
+fn points_min_max_dist(pl: glam::Vec4, points: &[glam::Vec4]) -> (f32, f32) {
+    let mut min_dist = f32::INFINITY;
+    let mut max_dist = f32::NEG_INFINITY;
+    for p in points {
+        let f_p_dist = p.dot(pl);
+        if f_p_dist > max_dist {
+            max_dist = f_p_dist;
+        }
+        if f_p_dist < min_dist {
+            min_dist = f_p_dist;
+        }
     }
-    if points_on_which_side(r2.pl, &r1.points).is_some() {
-        return Some(Separation::Face {
+    (min_dist, max_dist)
+}
+
+fn ppoly_ppoly_sep(r1: &ConvexMesh, r2: &ConvexMesh) -> ContactState {
+    let mut out = ContactState {
+        sep: Separation::Face {
             of_first: false,
             face_idx: 0,
-        });
+        },
+        min_d: f32::NEG_INFINITY,
+    };
+
+    // Check Planes
+    let min_d = points_min_dist(r1.pl, &r2.points);
+    if out.min_d < min_d {
+        out.min_d = min_d;
+        out.sep = Separation::Face {
+            of_first: true,
+            face_idx: 0,
+        };
+        if min_d >= 0.0 {
+            return out;
+        }
     }
+    let min_d = points_min_dist(r2.pl, &r1.points);
+    if out.min_d < min_d {
+        out.min_d = min_d;
+        out.sep = Separation::Face {
+            of_first: false,
+            face_idx: 0,
+        };
+        if min_d >= 0.0 {
+            return out;
+        }
+    }
+
     // Edge Crosses
     for &(i1, j1) in &r1.edges {
         let e1 = r1.points[j1] - r1.points[i1];
@@ -186,10 +218,35 @@ fn ppoly_ppoly_sep(r1: &PlanarPolygon, r2: &PlanarPolygon) -> Option<Separation>
             }
             let pl = glam::Vec4::from((n, -n.dot(r1.points[i1].xyz())));
             // Check if it separates
-            let Some(side_1) = points_on_which_side(pl, &r1.points) else {
+            let (min_d1, max_d1) = points_min_max_dist(pl, &r1.points);
+            let (min_d2, max_d2) = points_min_max_dist(pl, &r2.points);
+            if min_d1 < 0.0 && max_d1 > 0.0 {
+                continue;
+            }
+            if min_d2 < 0.0 && max_d2 > 0.0 {
+                continue;
+            }
+            if max_d1 < 0.0 {}
+            let side_1 = if min_d >= 0.0 && max_d >= 0.0 {
+                true
+            } else if min_d < 0.0 && max_d < 0.0 {
+                false
+            } else {
                 continue;
             };
-            let Some(side_2) = points_on_which_side(pl, &r2.points) else {
+
+            if side_1 {}
+            let side_2 = if min_d >= 0.0 && max_d >= 0.0 {
+                true
+            } else if min_d < 0.0 && max_d < 0.0 {
+                false
+            } else {
+                continue;
+            };
+            let Some(side_1) = points_min_max_dist(pl, &r1.points) else {
+                continue;
+            };
+            let Some(side_2) = points_min_max_dist(pl, &r2.points) else {
                 continue;
             };
             if side_1 ^ side_2 {
@@ -271,7 +328,7 @@ impl PhysicsManager {
     }
 
     pub fn forward_ms(&mut self) {
-        let mut fut_objs: Vec<_> = self.objects.iter().map(|ro| ro.make_fut()).collect();
+        let mut touching_objs = vec![vec![]; self.objects.len()];
         for i in 0..self.objects.len() {
             let mut sliding_surface: Vec<glam::Vec4> = vec![];
             // Validate separation planes and detect sliding surfaces

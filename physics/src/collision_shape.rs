@@ -1,7 +1,7 @@
-use crate::collision_shape::{planar_polygon::PlanarPolygon, sphere::Sphere};
+use crate::collision_shape::{convex_mesh::ConvexMesh, sphere::Sphere};
 
 pub mod capsule;
-pub mod planar_polygon;
+pub mod convex_mesh;
 pub mod sphere;
 
 #[derive(Debug, Clone)]
@@ -13,7 +13,7 @@ pub struct Orientation {
 #[derive(Debug, Clone)]
 pub enum CollisionShape {
     Sphere(Sphere),
-    PlanarPolygon(PlanarPolygon),
+    PlanarPolygon(ConvexMesh),
 }
 
 impl CollisionShape {

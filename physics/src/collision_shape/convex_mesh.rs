@@ -1,14 +1,15 @@
 use glam::Vec4Swizzles;
 
 #[derive(Debug, Clone)]
-pub struct PlanarPolygon {
-    pub(crate) pl: glam::Vec4,
+pub struct ConvexMesh {
     pub(crate) points: Vec<glam::Vec4>,
     pub(crate) edges: Vec<(usize, usize)>,
-    pub(crate) edge_planes: Vec<glam::Vec4>,
+    pub(crate) face_points: Vec<Vec<usize>>,
+    pub(crate) faces: Vec<glam::Vec4>,
+    pub(crate) face_bounds: Vec<Vec<glam::Vec4>>,
 }
 
-impl PlanarPolygon {
+impl ConvexMesh {
     fn calc_eps(n: glam::Vec3, points: &[glam::Vec4], edges: &[(usize, usize)]) -> Vec<glam::Vec4> {
         let mut edge_planes = Vec::with_capacity(points.len());
         for &(i, j) in edges {
