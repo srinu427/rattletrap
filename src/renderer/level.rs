@@ -1,7 +1,4 @@
-use std::{
-    fs,
-    sync::{Arc, LazyLock},
-};
+use std::{fs, sync::Arc};
 
 use physics::{
     Kinematics, RigidBody,

@@ -40,10 +40,15 @@ pub struct RigidBody {
 }
 
 impl RigidBody {
+    pub fn refresh_orient_shape(&mut self) {
+        self.orient_shape = self.shape.with_orientation(&self.orient);
+    }
+
     pub fn make_fut(&self) -> Self {
         let mut out = self.clone();
         out.orient.trans += out.kinematics.velocity + 0.5 * out.kinematics.acceleration;
         out.kinematics.velocity += out.kinematics.acceleration;
+        out.refresh_orient_shape();
         out
     }
 }
@@ -63,7 +68,13 @@ impl PhysicsManager {
         }
     }
 
-    pub fn add_obj(&mut self, name: &str, obj: RigidBody) -> anyhow::Result<()> {
+    pub fn clear(&mut self) {
+        self.objects.clear();
+        self.object_ids.clear();
+        self.contacts.clear();
+    }
+
+    pub fn add_obj(&mut self, name: &str, obj: RigidBody) {
         self.objects.push(obj);
         let last_obj_id = self.objects.len() - 1;
         self.object_ids.insert(name.to_string(), last_obj_id);
@@ -80,7 +91,11 @@ impl PhysicsManager {
             let inv_state = self.contacts[last_obj_id][i].obj_swapped();
             self.contacts[i].push(inv_state);
         }
-        Ok(())
+    }
+
+    pub fn get_obj_transform(&self, name: &str) -> Option<glam::Mat4> {
+        let obj_id = self.object_ids.get(name)?;
+        Some(self.objects[*obj_id].orient.to_transform())
     }
 
     pub fn objs_slide(&self, i: usize, j: usize) -> bool {
@@ -165,7 +180,7 @@ impl PhysicsManager {
         }
     }
 
-    pub fn updated_contact_state(
+    pub fn update_contact_state(
         state: &mut ContactState,
         a: &RigidBody,
         a_old: &RigidBody,
@@ -190,31 +205,38 @@ impl PhysicsManager {
         }
     }
 
-    pub fn resolve_penetration_along(&mut self, a: usize, b: usize, dir: glam::Vec3) {
-        let (min_a, max_a) = self.objects[a]
-            .orient_shape
-            .plane_min_max_dist(dir_vec4(dir));
-        let (min_b, max_b) = self.objects[b]
-            .orient_shape
-            .plane_min_max_dist(dir_vec4(dir));
+    pub fn resolve_penetration_along(
+        a: &RigidBody,
+        b: &RigidBody,
+        dir: glam::Vec3,
+    ) -> (Orientation, Orientation) {
+        let (min_a, max_a) = a.orient_shape.plane_min_max_dist(dir_vec4(dir));
+        let (min_b, max_b) = b.orient_shape.plane_min_max_dist(dir_vec4(dir));
         let pen_depth_a = max_b - min_a;
         let pen_depth_b = max_a - min_b;
+        let mut a_orient = a.orient.clone();
+        let b_orient = b.orient.clone();
         if pen_depth_a < pen_depth_b {
-            self.objects[a].orient.trans += dir * pen_depth_a;
-            self.objects[a].orient_shape = self.objects[a]
-                .shape
-                .with_orientation(&self.objects[a].orient);
+            a_orient.trans += dir * pen_depth_a;
         } else {
-            self.objects[a].orient.trans -= dir * pen_depth_a;
-            self.objects[a].orient_shape = self.objects[a]
-                .shape
-                .with_orientation(&self.objects[a].orient);
+            a_orient.trans -= dir * pen_depth_a;
         }
+        (a_orient, b_orient)
     }
 
-    pub fn resolve_penetrations(&mut self, obj_id: usize, pen_objs: Vec<usize>) {
+    pub fn resolve_penetrations(&mut self, obj_id: usize) {
         let mut bound_directions = Vec::with_capacity(3);
-        for pen_id in pen_objs {
+        loop {
+            let mut pen_id = None;
+            for i in 0..self.objects.len() {
+                if i != obj_id && self.contacts[obj_id][i].min_dist < 0.0 {
+                    pen_id = Some(i);
+                    break;
+                }
+            }
+            let Some(pen_id) = pen_id else {
+                break;
+            };
             let mut pen_dir = self.contacts[obj_id][pen_id].pl.xyz();
             for b in &bound_directions {
                 remove_component(&mut pen_dir, *b);
@@ -224,7 +246,39 @@ impl PhysicsManager {
                 return;
             }
             let pen_dir = pen_dir.normalize();
-            self.resolve_penetration_along(obj_id, pen_id, pen_dir);
+            let (obj_new_orient, pen_new_orient) = Self::resolve_penetration_along(
+                &self.objects[obj_id],
+                &self.objects[pen_id],
+                pen_dir,
+            );
+            let mut new_obj = self.objects[obj_id].clone();
+            new_obj.orient = obj_new_orient;
+            new_obj.refresh_orient_shape();
+            let mut new_pen_obj = self.objects[pen_id].clone();
+            new_pen_obj.orient = pen_new_orient;
+            new_pen_obj.refresh_orient_shape();
+            for i in 0..self.objects.len() {
+                if i != obj_id {
+                    Self::update_contact_state(
+                        &mut self.contacts[obj_id][i],
+                        &new_obj,
+                        &self.objects[obj_id],
+                        &self.objects[i],
+                        &self.objects[i],
+                    );
+                    self.contacts[i][obj_id] = self.contacts[obj_id][i].obj_swapped();
+                }
+                if i != pen_id {
+                    Self::update_contact_state(
+                        &mut self.contacts[pen_id][i],
+                        &new_pen_obj,
+                        &self.objects[pen_id],
+                        &self.objects[i],
+                        &self.objects[i],
+                    );
+                    self.contacts[i][pen_id] = self.contacts[pen_id][i].obj_swapped();
+                }
+            }
             bound_directions.push(pen_dir);
         }
     }
@@ -232,7 +286,7 @@ impl PhysicsManager {
     pub fn forward_ms(&mut self) {
         for obj in &mut self.objects {
             if obj.has_gravity {
-                obj.kinematics.acceleration += 10.0 * 1000.0 * 1000.0 * glam::Vec3::NEG_Y;
+                obj.kinematics.acceleration = 0.0000001 * glam::Vec3::NEG_Y;
             }
         }
         let obj_count = self.objects.len();
@@ -265,21 +319,12 @@ impl PhysicsManager {
                 }
             }
         }
-        let new_objs: Vec<_> = self
-            .objects
-            .iter()
-            .map(|o| {
-                let mut new_obj = o.clone();
-                new_obj.orient.trans += o.kinematics.velocity + (0.5 * o.kinematics.acceleration);
-                new_obj.kinematics.velocity += o.kinematics.acceleration;
-                new_obj
-            })
-            .collect();
+        let new_objs: Vec<_> = self.objects.iter().map(|o| o.make_fut()).collect();
 
         // Update contact states
         for i in 0..obj_count {
             for j in i + 1..obj_count {
-                Self::updated_contact_state(
+                Self::update_contact_state(
                     &mut self.contacts[i][j],
                     &new_objs[i],
                     &self.objects[i],
@@ -290,5 +335,8 @@ impl PhysicsManager {
             }
         }
         self.objects = new_objs;
+        for i in 0..obj_count {
+            self.resolve_penetrations(i);
+        }
     }
 }

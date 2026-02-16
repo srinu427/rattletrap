@@ -231,8 +231,7 @@ impl Renderer {
             core::mem::size_of::<MeshPC>() as _,
         )?;
         let tex_dset = pipeline.new_set(1)?;
-        let mut material_set = MaterialSet::new(tex_dset, 0)?;
-        // material_set.add(Material::new(&device, "./data/textures/default", &sampler)?);
+        let material_set = MaterialSet::new(tex_dset, 0)?;
         let mut camera = Cam3d::new(
             glam::vec3(5.0, 5.0, 5.0),
             glam::vec3(-1.0, -1.0, -1.0),
@@ -277,6 +276,14 @@ impl Renderer {
             camera,
             sampler,
         })
+    }
+
+    pub fn update_mesh_transform(&mut self, name: &str, transform: glam::Mat4) {
+        for pfd in &mut self.pfds {
+            if let Some(m_info) = pfd.meshes.get_mut(name) {
+                m_info.1 = transform;
+            }
+        }
     }
 
     pub fn camera_mut(&mut self) -> &mut Cam3d {

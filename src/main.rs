@@ -44,6 +44,10 @@ impl App {
         for d_info in &level.draws {
             state.add_mesh_draw_info(d_info.geo_name.clone(), d_info.material.clone());
         }
+        self.physics_manager.clear();
+        for geo in &level.geometry {
+            self.physics_manager.add_obj(&geo.name, geo.to_rigid_body());
+        }
     }
 }
 
@@ -56,7 +60,19 @@ impl App {
             println!("refreshing geo");
             self.load_level();
         }
+        self.physics_manager.forward_ms();
         let state = self.renderer.as_mut().unwrap();
+        for (name, id) in &self.physics_manager.object_ids {
+            // if name == "cube" {
+            //     let pos = self.physics_manager.objects[*id].orient.trans;
+            //     println!("pos: {pos:?}");
+            // }
+            state.update_mesh_transform(
+                name,
+                self.physics_manager.objects[*id].orient.to_transform(),
+            );
+        }
+
         state.render().inspect_err(|e| eprintln!("{e}")).ok();
         self.inputs.advance_frame();
     }
