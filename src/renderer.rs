@@ -29,7 +29,7 @@ pub struct MeshOffsets {
 
 pub struct PerFrameData {
     index: usize,
-    meshes: HashMap<String, Arc<Mesh>>,
+    meshes: HashMap<String, (Arc<Mesh>, glam::Mat4)>,
     mesh_offsets: HashMap<String, MeshOffsets>,
     vb_up_to_date: u32,
     swapchain_image_initialized: u32,
@@ -109,7 +109,8 @@ impl PerFrameData {
 
     pub fn add_meshes(&mut self, meshes: &Vec<Arc<Mesh>>) {
         for mesh in meshes {
-            self.meshes.insert(mesh.name.clone(), mesh.clone());
+            self.meshes
+                .insert(mesh.name.clone(), (mesh.clone(), glam::Mat4::IDENTITY));
         }
         self.vb_up_to_date = 0;
     }
@@ -126,7 +127,7 @@ impl PerFrameData {
         let mut all_verts = vec![];
         let mut all_inds = vec![];
         self.mesh_offsets.clear();
-        for (name, mesh_info) in &self.meshes {
+        for (name, (mesh_info, _transform)) in &self.meshes {
             let vb_offset = all_verts.len();
             let ib_offset = all_inds.len();
             let ind_len = mesh_info.idxs.len();
@@ -164,6 +165,14 @@ impl PerFrameData {
 pub struct TexMeshDraw {
     mesh_name: String,
     tex_id: usize,
+}
+
+#[derive(Debug, Clone, Copy, bytemuck::NoUninit)]
+#[repr(C)]
+pub struct MeshPC {
+    obj_t: glam::Mat4,
+    tex_id: u32,
+    padding: [u32; 3],
 }
 
 pub struct Renderer {
@@ -219,11 +228,11 @@ impl Renderer {
                 vec![rhi::DBindingType::UBuffer(1)],
                 vec![rhi::DBindingType::Sampler2d(100)],
             ],
-            4,
+            core::mem::size_of::<MeshPC>() as _,
         )?;
         let tex_dset = pipeline.new_set(1)?;
         let mut material_set = MaterialSet::new(tex_dset, 0)?;
-        material_set.add(Material::new(&device, "./data/textures/default", &sampler)?);
+        // material_set.add(Material::new(&device, "./data/textures/default", &sampler)?);
         let mut camera = Cam3d::new(
             glam::vec3(5.0, 5.0, 5.0),
             glam::vec3(-1.0, -1.0, -1.0),
@@ -419,7 +428,15 @@ impl Renderer {
             let Some(mesh_info) = self.pfds[idx].mesh_offsets.get(&draw_info.mesh_name) else {
                 continue;
             };
-            render_pass.set_pc(&(draw_info.tex_id as u32).to_le_bytes());
+            let Some((_, transform)) = self.pfds[idx].meshes.get(&draw_info.mesh_name) else {
+                continue;
+            };
+            let pc = MeshPC {
+                obj_t: *transform,
+                tex_id: draw_info.tex_id as u32,
+                padding: [0; 3],
+            };
+            render_pass.set_pc(bytemuck::bytes_of(&pc));
             render_pass.draw_indexed(mesh_info.vb_offset, mesh_info.ib_offset, mesh_info.len);
         }
 

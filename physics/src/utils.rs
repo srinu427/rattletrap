@@ -95,6 +95,13 @@ pub fn points_min_max_dist(pl: glam::Vec4, points: &[glam::Vec4]) -> (f32, f32) 
     (min_dist, max_dist)
 }
 
+pub fn project_on_line(a: glam::Vec3, b: glam::Vec3, p: glam::Vec3) -> (f32, glam::Vec3) {
+    let ap = p - a;
+    let ab = b - a;
+    let t = ap.dot(ab);
+    (t, a + (ab * t))
+}
+
 pub fn remove_component(v: &mut glam::Vec3, d: glam::Vec3) {
     *v = *v - (d.dot(*v) * d);
 }

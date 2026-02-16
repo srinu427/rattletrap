@@ -18,7 +18,18 @@ struct Camera {
   mat4 proj_view;
 };
 
+struct ObjInfo {
+  mat4 transform;
+};
+
+layout( push_constant ) uniform constants
+{
+	mat4 obj_transform;
+	uint tex_id;
+} pc;
+
 layout(std140, set = 0, binding = 0) uniform readonly ssbo1 { Camera camera;};
+// layout(std140, set = 1, binding = 0) readonly buffer ssbo2 { ObjInfo obj_infos[]; } obj_buffer;
 
 void main()
 {
@@ -26,5 +37,5 @@ void main()
   outN = inN;
   outT = inT;
   outBT = inBT;
-	gl_Position = camera.proj_view * inPos;
+	gl_Position = pc.obj_transform * camera.proj_view * inPos;
 }

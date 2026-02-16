@@ -2,6 +2,7 @@ mod inputs;
 mod renderer;
 use std::sync::Arc;
 
+use physics::PhysicsManager;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -19,6 +20,7 @@ use crate::{
 struct App {
     renderer: Option<Renderer>,
     inputs: Inputs,
+    physics_manager: PhysicsManager,
 }
 
 impl App {
@@ -26,6 +28,7 @@ impl App {
         Self {
             renderer: None,
             inputs: Inputs::new(),
+            physics_manager: PhysicsManager::new(),
         }
     }
 }

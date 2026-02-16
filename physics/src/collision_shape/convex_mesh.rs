@@ -13,16 +13,16 @@ pub struct ConvexMesh {
 
 impl ConvexMesh {
     fn calc_fbs(n: glam::Vec3, points: &[glam::Vec4], face_points: &[usize]) -> Vec<glam::Vec4> {
-        let mut edge_planes = Vec::with_capacity(points.len());
+        let mut face_bounds = Vec::with_capacity(points.len());
         for i in 0..face_points.len() {
             let j = (i + 1) % face_points.len();
             let a = points[i];
             let b = points[j];
             let edge = b - a;
             let edge_n = edge.xyz().cross(n).normalize();
-            edge_planes.push(new_plane(edge_n, a.xyz()));
+            face_bounds.push(new_plane(edge_n, a.xyz()));
         }
-        edge_planes
+        face_bounds
     }
 
     pub fn from_points_edges_faces(

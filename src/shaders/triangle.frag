@@ -12,6 +12,7 @@ layout(set = 1, binding = 0) uniform sampler2D tex[];
 
 layout( push_constant ) uniform constants
 {
+	mat4 obj_transform;
 	uint tex_id;
 } pc;
 
