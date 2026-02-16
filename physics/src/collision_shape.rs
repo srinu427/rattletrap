@@ -16,6 +16,13 @@ pub struct Orientation {
 }
 
 impl Orientation {
+    pub fn new() -> Self {
+        Self {
+            trans: glam::Vec3::ZERO,
+            rot: glam::Mat4::IDENTITY,
+        }
+    }
+
     pub fn reverse(&self) -> Self {
         let rev_trans = -self.trans;
         let rev_rot = self.rot.transpose();

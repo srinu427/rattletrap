@@ -1,6 +1,6 @@
 use glam::Vec4Swizzles;
 
-use crate::utils::{get_triangle_plane, new_plane, orient_plane};
+use crate::utils::{get_triangle_plane, new_plane, orient_plane, point_vec4};
 
 #[derive(Debug, Clone)]
 pub struct ConvexMesh {
@@ -58,13 +58,47 @@ impl ConvexMesh {
 
     pub fn new_rect(c: glam::Vec3, u: glam::Vec3, v: glam::Vec3) -> Self {
         let points = vec![
-            glam::Vec4::from((c + u + v, 1.0)),
-            glam::Vec4::from((c + u - v, 1.0)),
-            glam::Vec4::from((c - u + v, 1.0)),
-            glam::Vec4::from((c - u - v, 1.0)),
+            point_vec4(c + u + v),
+            point_vec4(c + u - v),
+            point_vec4(c - u + v),
+            point_vec4(c - u - v),
         ];
-        let edges = vec![(0, 1), (2, 1), (3, 2), (0, 3)];
+        let edges = vec![(0, 1), (1, 2), (2, 3), (3, 0)];
         let faces = vec![vec![0, 1, 2, 3]];
+        Self::from_points_edges_faces(points, edges, faces)
+    }
+
+    pub fn new_cube(c: glam::Vec3, u: glam::Vec3, v: glam::Vec3, h: f32) -> Self {
+        let n = u.dot(v);
+        let hv = h * 0.5 * n;
+        let points = vec![
+            point_vec4(c + u + v + hv),
+            point_vec4(c + u - v + hv),
+            point_vec4(c - u + v + hv),
+            point_vec4(c - u - v + hv),
+            point_vec4(c + u + v - hv),
+            point_vec4(c + u - v - hv),
+            point_vec4(c - u + v - hv),
+            point_vec4(c - u - v - hv),
+        ];
+        let edges = vec![
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4),
+        ];
+        let faces = vec![
+            vec![0, 1, 2, 3],
+            vec![4, 5, 6, 7],
+            vec![4, 5, 1, 0],
+            vec![5, 6, 2, 1],
+            vec![6, 7, 3, 2],
+            vec![7, 4, 0, 3],
+        ];
         Self::from_points_edges_faces(points, edges, faces)
     }
 

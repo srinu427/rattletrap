@@ -1,4 +1,0 @@
-GEO RECT rectangle CUV (0 -5 0) (10 0 0) (0 0 -10)
-MDT rectangle data/textures/default
-GEO CUBE cube CUVH (0 0 0) (1 0 0) (0 1 0) 2
-MDT cube data/textures/alt

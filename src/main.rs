@@ -31,26 +31,32 @@ impl App {
             physics_manager: PhysicsManager::new(),
         }
     }
+
+    pub fn load_level(&mut self) {
+        let state = self.renderer.as_mut().unwrap();
+        state.clear_meshes();
+        let level = level::parse_lvl_ron("data/levels/1.ron").unwrap();
+        let meshes: Vec<_> = level.geometry.iter().map(|g| g.to_mesh()).collect();
+        state.add_meshes(meshes);
+        let textures: Vec<_> = level.draws.iter().map(|d| d.material.as_str()).collect();
+        state.add_materials(textures).unwrap();
+        state.clear_mesh_draws();
+        for d_info in &level.draws {
+            state.add_mesh_draw_info(d_info.geo_name.clone(), d_info.material.clone());
+        }
+    }
 }
 
 impl App {
     fn draw_frame(&mut self) {
-        let state = self.renderer.as_mut().unwrap();
         if self
             .inputs
             .key_pressed_this_frame(winit::keyboard::PhysicalKey::Code(KeyCode::KeyR))
         {
             println!("refreshing geo");
-            state.clear_meshes();
-            let (meshes, mesh_draw_targets) = level::parse_lvl("data/levels/1.lvl").unwrap();
-            let textures = mesh_draw_targets.iter().map(|mdt| mdt.1.as_str()).collect();
-            state.add_materials(textures);
-            state.add_meshes(meshes);
-            state.clear_mesh_draws();
-            for (mname, tname) in mesh_draw_targets {
-                state.add_mesh_draw_info(mname, tname);
-            }
+            self.load_level();
         }
+        let state = self.renderer.as_mut().unwrap();
         state.render().inspect_err(|e| eprintln!("{e}")).ok();
         self.inputs.advance_frame();
     }
@@ -66,16 +72,9 @@ impl ApplicationHandler for App {
             }))
             .map(Arc::new)
             .unwrap();
-        let mut state = Renderer::new(window).unwrap();
-        let (meshes, mesh_draw_targets) = level::parse_lvl("data/levels/1.lvl").unwrap();
-        let textures = mesh_draw_targets.iter().map(|mdt| mdt.1.as_str()).collect();
-        state.add_materials(textures);
-        state.add_meshes(meshes);
-        for (mname, tname) in mesh_draw_targets {
-            state.add_mesh_draw_info(mname, tname);
-        }
+        let state = Renderer::new(window).unwrap();
         self.renderer = Some(state);
-
+        self.load_level();
         // window.request_redraw();
     }
 

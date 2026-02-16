@@ -1,117 +1,99 @@
-use std::{fs, sync::LazyLock};
+use std::{
+    fs,
+    sync::{Arc, LazyLock},
+};
 
-use anyhow::Context;
-use regex::Regex;
+use physics::{
+    Kinematics, RigidBody,
+    collision_shape::{CollisionShape, Orientation, convex_mesh::ConvexMesh},
+};
+use serde::{Deserialize, Serialize};
 
 use crate::renderer::mesh::Mesh;
 
-static VEC3_STR: &str = "\\(([0-9.-]+) +([0-9.-]+) +([0-9.-]+)\\)";
-
-static VEC3_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(VEC3_STR).unwrap());
-
-fn split_vec3(s: &str) -> Option<(glam::Vec3, &str)> {
-    let cap = VEC3_RE.captures(s)?;
-    let x: f32 = cap.get(1).map(|s| s.as_str().parse().ok()).flatten()?;
-    let y: f32 = cap.get(2).map(|s| s.as_str().parse().ok()).flatten()?;
-    let z: f32 = cap.get(3).map(|s| s.as_str().parse().ok()).flatten()?;
-    let rem = &s[cap.get_match().end()..];
-    Some((glam::vec3(x, y, z), rem))
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Shape {
+    Rect {
+        pos: [f32; 3],
+        u: [f32; 3],
+        v: [f32; 3],
+    },
+    Cube {
+        pos: [f32; 3],
+        u: [f32; 3],
+        v: [f32; 3],
+        h: f32,
+    },
 }
 
-pub fn parse_cube(tokens: &str) -> anyhow::Result<Mesh> {
-    let (name, tokens) = tokens
-        .split_once(char::is_whitespace)
-        .context("no name given to cube")?;
-    let (c_inp_type, tokens) = tokens
-        .split_once(char::is_whitespace)
-        .context("no cube input type specified")?;
-    match c_inp_type {
-        "CUVH" => {
-            let (c, tokens) = split_vec3(tokens).context("cube center position vec3 expected")?;
-            let (u, tokens) = split_vec3(tokens).context("cube u direction vec3 expected")?;
-            let (v, tokens) = split_vec3(tokens).context("cube v direction vec3 expected")?;
-            let (mut h, tokens) = tokens
-                .split_once(char::is_whitespace)
-                .context("cube height expected")?;
-            if h == "" {
-                h = tokens;
-            }
-            let h: f32 = h.parse().context("expected f32 height")?;
-            Ok(Mesh::cube_cuvh(name, c, u, v, h))
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Geo {
+    pub name: String,
+    pub shape: Shape,
+    pub has_gravity: bool,
+}
+
+impl Geo {
+    pub fn to_mesh(&self) -> Mesh {
+        match &self.shape {
+            Shape::Rect { pos, u, v } => Mesh::rect_cuv(
+                &self.name,
+                glam::Vec3::from_array(pos.clone()),
+                glam::Vec3::from_array(u.clone()),
+                glam::Vec3::from_array(v.clone()),
+            ),
+            Shape::Cube { pos, u, v, h } => Mesh::cube_cuvh(
+                &self.name,
+                glam::Vec3::from_array(pos.clone()),
+                glam::Vec3::from_array(u.clone()),
+                glam::Vec3::from_array(v.clone()),
+                *h,
+            ),
         }
-        _ => Err(anyhow::Error::msg(format!(
-            "unknown cube input type: {c_inp_type}"
-        ))),
     }
-}
 
-pub fn parse_rect(tokens: &str) -> anyhow::Result<Mesh> {
-    let (name, tokens) = tokens
-        .split_once(char::is_whitespace)
-        .context("no name given to rect")?;
-    let (r_inp_type, tokens) = tokens
-        .split_once(char::is_whitespace)
-        .context("no rect input type specified")?;
-    match r_inp_type {
-        "CUV" => {
-            let (c, tokens) = split_vec3(tokens).context("rect center position vec3 expected")?;
-            let (u, tokens) = split_vec3(tokens).context("rect u direction vec3 expected")?;
-            let (v, _tokens) = split_vec3(tokens).context("rect v direction vec3 expected")?;
-            Ok(Mesh::rect_cuv(name, c, u, v))
-        }
-        _ => Err(anyhow::Error::msg(format!(
-            "unknown rect input type: {r_inp_type}"
-        ))),
-    }
-}
-
-pub fn parse_geo(tokens: &str) -> anyhow::Result<Mesh> {
-    let (geo_type, tokens) = tokens
-        .split_once(char::is_whitespace)
-        .context("can't find geo type token")?;
-    match geo_type {
-        "RECT" => parse_rect(tokens),
-        "CUBE" => parse_cube(tokens),
-        _ => Err(anyhow::Error::msg(format!("unknown geo type: {geo_type}"))),
-    }
-}
-
-pub fn parse_mdt(tokens: &str) -> anyhow::Result<(String, String)> {
-    let (mesh_name, tokens) = tokens
-        .split_once(char::is_whitespace)
-        .context("can't find mesh name")?;
-    println!("{tokens}");
-    let texture_name = tokens
-        .split_once(char::is_whitespace)
-        .map(|x| x.0)
-        .unwrap_or(tokens);
-    if texture_name == "" {
-        return Err(anyhow::Error::msg("can't find tex name"));
-    }
-    Ok((mesh_name.to_string(), texture_name.to_string()))
-}
-
-pub fn parse_lvl(path: &str) -> anyhow::Result<(Vec<Mesh>, Vec<(String, String)>)> {
-    let mut meshes = vec![];
-    let mut mesh_draw_targets = vec![];
-    let file_data = fs::read_to_string(path)?;
-    for line in file_data.lines() {
-        let Some((inp_type, tokens)) = line.split_once(char::is_whitespace) else {
-            continue;
+    pub fn to_rigid_body(&self) -> RigidBody {
+        let cm = match &self.shape {
+            Shape::Rect { pos, u, v } => ConvexMesh::new_rect(
+                glam::Vec3::from_array(pos.clone()),
+                glam::Vec3::from_array(u.clone()),
+                glam::Vec3::from_array(v.clone()),
+            ),
+            Shape::Cube { pos, u, v, h } => ConvexMesh::new_cube(
+                glam::Vec3::from_array(pos.clone()),
+                glam::Vec3::from_array(u.clone()),
+                glam::Vec3::from_array(v.clone()),
+                *h,
+            ),
         };
-        match inp_type {
-            "GEO" => match parse_geo(tokens) {
-                Ok(mesh) => meshes.push(mesh),
-                Err(e) => eprintln!("{e}. skipping geo"),
-            },
-            "MDT" => match parse_mdt(tokens) {
-                Ok(mdt) => mesh_draw_targets.push(mdt),
-                Err(e) => eprintln!("{e}. skipping mdt"),
-            },
-            _ => {
-                eprintln!("unknown input type '{inp_type}'")
-            }
+        RigidBody {
+            mass: 0.0,
+            shape: Arc::new(CollisionShape::Mesh(cm.clone())),
+            orient: Orientation::new(),
+            orient_shape: CollisionShape::Mesh(cm),
+            kinematics: Kinematics::new(),
+            can_rotate: false,
+            has_gravity: self.has_gravity,
+            dont_interact_mask: 0,
+            stuck: false,
         }
     }
-    Ok((meshes, mesh_draw_targets))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GeoDrawTarget {
+    pub geo_name: String,
+    pub material: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Level {
+    pub geometry: Vec<Geo>,
+    pub draws: Vec<GeoDrawTarget>,
+}
+
+pub fn parse_lvl_ron(path: &str) -> anyhow::Result<Level> {
+    let file_str = fs::read_to_string(path)?;
+    let level: Level = ron::from_str(&file_str)?;
+    Ok(level)
 }
