@@ -22,11 +22,12 @@ pub fn new_plane(n: glam::Vec3, p: glam::Vec3) -> glam::Vec4 {
 pub fn get_triangle_normal(a: glam::Vec3, b: glam::Vec3, c: glam::Vec3) -> glam::Vec3 {
     let e1 = b - a;
     let e2 = c - b;
-    e1.cross(e2)
+    e1.cross(e2).normalize()
 }
 
 pub fn get_triangle_plane(a: glam::Vec3, b: glam::Vec3, c: glam::Vec3) -> glam::Vec4 {
     let n = get_triangle_normal(a, b, c);
+    println!("normal for {a:?}, {b:?}, {c:?}: {n:?}");
     new_plane(n, a)
 }
 

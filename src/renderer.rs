@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{f32::consts::PI, sync::Arc};
 
 use hashbrown::HashMap;
 use include_bytes_aligned::include_bytes_aligned;
@@ -233,10 +233,10 @@ impl Renderer {
         let tex_dset = pipeline.new_set(1)?;
         let material_set = MaterialSet::new(tex_dset, 0)?;
         let mut camera = Cam3d::new(
-            glam::vec3(5.0, 5.0, 5.0),
-            glam::vec3(-1.0, -1.0, -1.0),
+            glam::vec3(0.0, 10.0, 10.0),
+            glam::vec3(0.0, -1.0, -1.0),
             glam::vec3(0.0, 1.0, 0.0),
-            120.0,
+            PI * 0.25,
             1.0,
         );
         camera.update_proj_view();

@@ -69,17 +69,17 @@ impl ConvexMesh {
     }
 
     pub fn new_cube(c: glam::Vec3, u: glam::Vec3, v: glam::Vec3, h: f32) -> Self {
-        let n = u.dot(v);
+        let n = u.cross(v);
         let hv = h * 0.5 * n;
         let points = vec![
-            point_vec4(c + u + v + hv),
-            point_vec4(c + u - v + hv),
-            point_vec4(c - u + v + hv),
             point_vec4(c - u - v + hv),
-            point_vec4(c + u + v - hv),
-            point_vec4(c + u - v - hv),
-            point_vec4(c - u + v - hv),
+            point_vec4(c + u - v + hv),
+            point_vec4(c + u + v + hv),
+            point_vec4(c - u + v + hv),
             point_vec4(c - u - v - hv),
+            point_vec4(c + u - v - hv),
+            point_vec4(c + u + v - hv),
+            point_vec4(c - u + v - hv),
         ];
         let edges = vec![
             (0, 1),
@@ -93,7 +93,7 @@ impl ConvexMesh {
         ];
         let faces = vec![
             vec![0, 1, 2, 3],
-            vec![4, 5, 6, 7],
+            vec![7, 6, 5, 4],
             vec![4, 5, 1, 0],
             vec![5, 6, 2, 1],
             vec![6, 7, 3, 2],

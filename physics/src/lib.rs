@@ -75,6 +75,7 @@ impl PhysicsManager {
     }
 
     pub fn add_obj(&mut self, name: &str, obj: RigidBody) {
+        println!("{name} {:?}", &obj.orient_shape);
         self.objects.push(obj);
         let last_obj_id = self.objects.len() - 1;
         self.object_ids.insert(name.to_string(), last_obj_id);
@@ -338,5 +339,7 @@ impl PhysicsManager {
         for i in 0..obj_count {
             self.resolve_penetrations(i);
         }
+
+        // print!("{:?}\r", self.contacts[0][1]);
     }
 }
