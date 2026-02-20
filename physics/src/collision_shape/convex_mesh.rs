@@ -59,9 +59,9 @@ impl ConvexMesh {
     pub fn new_rect(c: glam::Vec3, u: glam::Vec3, v: glam::Vec3) -> Self {
         let points = vec![
             point_vec4(c + u + v),
-            point_vec4(c + u - v),
-            point_vec4(c - u + v),
             point_vec4(c - u - v),
+            point_vec4(c - u + v),
+            point_vec4(c + u - v),
         ];
         let edges = vec![(0, 1), (1, 2), (2, 3), (3, 0)];
         let faces = vec![vec![0, 1, 2, 3]];
@@ -104,7 +104,7 @@ impl ConvexMesh {
 
     pub fn with_orientation(&self, trans: glam::Vec3, rot: glam::Mat4) -> Self {
         let out_transform = glam::Mat4::from_translation(trans) * rot;
-        let new_points: Vec<_> = self.points.iter().map(|p| out_transform * p).collect();
+        let new_points: Vec<_> = self.points.iter().map(|p| out_transform * *p).collect();
         let new_faces: Vec<_> = self
             .faces
             .iter()

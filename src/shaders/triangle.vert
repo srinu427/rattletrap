@@ -37,5 +37,5 @@ void main()
   outN = inN;
   outT = inT;
   outBT = inBT;
-	gl_Position = pc.obj_transform * camera.proj_view * inPos;
+	gl_Position = camera.proj_view * pc.obj_transform * inPos;
 }

@@ -10,9 +10,9 @@ pub fn dir_vec4(p: glam::Vec3) -> glam::Vec4 {
 
 pub fn orient_plane(pl: glam::Vec4, tr: &glam::Mat4) -> glam::Vec4 {
     let new_n = tr * dir_vec4(pl.xyz());
-    let new_p = tr * point_vec4(pl.xyz() * pl.w);
-    let new_pl = glam::Vec4::from((new_n.xyz(), -new_p.xyz().dot(new_n.xyz())));
-    new_pl
+    let new_p = tr * point_vec4(-pl.xyz() * pl.w);
+    // println!("orienting {:?} {:?} {:?}", &pl, &new_n, &new_p);
+    new_plane(new_n.xyz(), new_p.xyz())
 }
 
 pub fn new_plane(n: glam::Vec3, p: glam::Vec3) -> glam::Vec4 {

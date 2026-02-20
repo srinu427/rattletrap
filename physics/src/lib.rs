@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{process::exit, sync::Arc};
 
 use glam::Vec4Swizzles;
 use hashbrown::HashMap;
@@ -49,6 +49,7 @@ impl RigidBody {
         out.orient.trans += out.kinematics.velocity + 0.5 * out.kinematics.acceleration;
         out.kinematics.velocity += out.kinematics.acceleration;
         out.refresh_orient_shape();
+        // print!("current orient: {:?}\r", &out.orient);
         out
     }
 }
@@ -75,7 +76,6 @@ impl PhysicsManager {
     }
 
     pub fn add_obj(&mut self, name: &str, obj: RigidBody) {
-        println!("{name} {:?}", &obj.orient_shape);
         self.objects.push(obj);
         let last_obj_id = self.objects.len() - 1;
         self.object_ids.insert(name.to_string(), last_obj_id);
@@ -204,12 +204,7 @@ impl PhysicsManager {
         state.min_dist = min_dist_new;
         state.pl = pl_new;
         if min_dist_new < 0.0 {
-            println!("sep plane no longer valid");
-            println!("old: {:?}", &state.pl);
-            println!("new a: {:?}", &a.orient_shape);
-            println!("new b: {:?}", &b.orient_shape);
             let new_contact_state = ContactState::new(&a.orient_shape, &b.orient_shape);
-            println!("new: {:?}", &new_contact_state.pl);
             *state = new_contact_state;
         }
     }
@@ -228,7 +223,7 @@ impl PhysicsManager {
         if pen_depth_a < pen_depth_b {
             a_orient.trans += dir * pen_depth_a;
         } else {
-            a_orient.trans -= dir * pen_depth_a;
+            a_orient.trans -= dir * pen_depth_b;
         }
         (a_orient, b_orient)
     }
@@ -288,6 +283,8 @@ impl PhysicsManager {
                     self.contacts[i][pen_id] = self.contacts[pen_id][i].obj_swapped();
                 }
             }
+            // self.contacts[obj_id][pen_id].min_dist = 0.0;
+            // self.contacts[pen_id][obj_id].min_dist = 0.0;
             bound_directions.push(pen_dir);
         }
     }
@@ -295,7 +292,7 @@ impl PhysicsManager {
     pub fn forward_ms(&mut self) {
         for obj in &mut self.objects {
             if obj.has_gravity {
-                obj.kinematics.acceleration = 0.0000001 * glam::Vec3::NEG_Y;
+                obj.kinematics.acceleration = 0.000001 * glam::Vec3::NEG_Y;
             }
         }
         let obj_count = self.objects.len();

@@ -169,10 +169,12 @@ fn sp_sp_contact(s1: &Sphere, s2: &Sphere) -> ContactState {
 }
 
 fn mesh_mesh_contact(m1: &ConvexMesh, m2: &ConvexMesh) -> ContactState {
-    let mut max_min_dist = f32::NEG_INFINITY;
-    let mut max_sep = Separation::Face(0);
-    let mut max_of_first = true;
-    let mut max_pl = glam::Vec4::ZERO;
+    let mut max_out = ContactState {
+        sep: Separation::Face(0),
+        pl: glam::Vec4::ZERO,
+        min_dist: f32::NEG_INFINITY,
+        of_first: true,
+    };
     for (fi, face) in m1.faces.iter().enumerate() {
         let min_dist = points_min_dist(*face, &m2.points);
         let sep = Separation::Face(fi);
@@ -184,11 +186,11 @@ fn mesh_mesh_contact(m1: &ConvexMesh, m2: &ConvexMesh) -> ContactState {
                 of_first: true,
             };
         }
-        if min_dist > max_min_dist {
-            max_min_dist = min_dist;
-            max_sep = sep;
-            max_pl = *face;
-            max_of_first = true;
+        if min_dist > max_out.min_dist {
+            max_out.min_dist = min_dist;
+            max_out.sep = sep;
+            max_out.pl = *face;
+            max_out.of_first = true;
         }
     }
     for (fi, face) in m2.faces.iter().enumerate() {
@@ -202,11 +204,11 @@ fn mesh_mesh_contact(m1: &ConvexMesh, m2: &ConvexMesh) -> ContactState {
                 of_first: false,
             };
         }
-        if min_dist > max_min_dist {
-            max_min_dist = min_dist;
-            max_sep = sep;
-            max_pl = *face;
-            max_of_first = false;
+        if min_dist > max_out.min_dist {
+            max_out.min_dist = min_dist;
+            max_out.sep = sep;
+            max_out.pl = *face;
+            max_out.of_first = false;
         }
     }
     for (eid1, edge1) in m1.edges.iter().enumerate() {
@@ -224,10 +226,9 @@ fn mesh_mesh_contact(m1: &ConvexMesh, m2: &ConvexMesh) -> ContactState {
             let n = n.normalize();
             let pl = new_plane(n, a1.xyz());
             let side1 = points_on_side(pl, &m1.points);
-            let Some(side1) = side1 else {
+            let Some(negate) = side1 else {
                 continue;
             };
-            let negate = !side1;
             let pl = if negate { -pl } else { pl };
             let min_dist = points_min_dist(pl, &m2.points);
             let sep = Separation::EdgeCross {
@@ -243,20 +244,15 @@ fn mesh_mesh_contact(m1: &ConvexMesh, m2: &ConvexMesh) -> ContactState {
                     of_first: true,
                 };
             }
-            if min_dist > max_min_dist {
-                max_min_dist = min_dist;
-                max_sep = sep;
-                max_pl = pl;
-                max_of_first = true;
+            if min_dist > max_out.min_dist {
+                max_out.min_dist = min_dist;
+                max_out.sep = sep;
+                max_out.pl = pl;
+                max_out.of_first = true;
             }
         }
     }
-    ContactState {
-        sep: max_sep,
-        pl: max_pl,
-        min_dist: max_min_dist,
-        of_first: max_of_first,
-    }
+    max_out
 }
 
 fn sp_mesh_contact(s: &Sphere, m: &ConvexMesh) -> ContactState {
