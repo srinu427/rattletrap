@@ -16,8 +16,8 @@ impl ConvexMesh {
         let mut face_bounds = Vec::with_capacity(points.len());
         for i in 0..face_points.len() {
             let j = (i + 1) % face_points.len();
-            let a = points[i];
-            let b = points[j];
+            let a = points[face_points[i]];
+            let b = points[face_points[j]];
             let edge = b - a;
             let edge_n = edge.xyz().cross(n).normalize();
             face_bounds.push(new_plane(edge_n, a.xyz()));
@@ -69,7 +69,7 @@ impl ConvexMesh {
     }
 
     pub fn new_cube(c: glam::Vec3, u: glam::Vec3, v: glam::Vec3, h: f32) -> Self {
-        let n = u.cross(v);
+        let n = u.cross(v).normalize();
         let hv = h * 0.5 * n;
         let points = vec![
             point_vec4(c - u - v + hv),

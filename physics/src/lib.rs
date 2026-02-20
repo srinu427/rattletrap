@@ -92,6 +92,9 @@ impl PhysicsManager {
             let inv_state = self.contacts[last_obj_id][i].obj_swapped();
             self.contacts[i].push(inv_state);
         }
+        if self.objects.len() == 2 {
+            println!("sep_plane: {:?}", &self.contacts[0][1]);
+        }
     }
 
     pub fn get_obj_transform(&self, name: &str) -> Option<glam::Mat4> {
@@ -197,11 +200,16 @@ impl PhysicsManager {
         let (new_obj1, new_obj2) = if state.of_first { (a, b) } else { (b, a) };
         let pl_rel = orient_plane(pl_old, &obj1.orient.reverse().to_transform());
         let pl_new = orient_plane(pl_rel, &new_obj1.orient.to_transform());
-        let min_dist_new = new_obj2.shape.plane_min_dist(pl_new);
+        let min_dist_new = new_obj2.orient_shape.plane_min_dist(pl_new);
         state.min_dist = min_dist_new;
         state.pl = pl_new;
         if min_dist_new < 0.0 {
+            println!("sep plane no longer valid");
+            println!("old: {:?}", &state.pl);
+            println!("new a: {:?}", &a.orient_shape);
+            println!("new b: {:?}", &b.orient_shape);
             let new_contact_state = ContactState::new(&a.orient_shape, &b.orient_shape);
+            println!("new: {:?}", &new_contact_state.pl);
             *state = new_contact_state;
         }
     }
