@@ -1,6 +1,6 @@
 mod inputs;
 mod renderer;
-use std::sync::Arc;
+use std::{sync::Arc, time};
 
 use physics::PhysicsManager;
 use winit::{
@@ -9,6 +9,7 @@ use winit::{
     event::{DeviceEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::KeyCode,
+    keyboard::PhysicalKey,
     window::{Window, WindowId},
 };
 
@@ -19,6 +20,8 @@ use crate::{
 
 struct App {
     renderer: Option<Renderer>,
+    start_time: time::Instant,
+    last_frame_time_ms: u128,
     inputs: Inputs,
     physics_manager: PhysicsManager,
 }
@@ -27,6 +30,8 @@ impl App {
     pub fn new() -> Self {
         Self {
             renderer: None,
+            start_time: time::Instant::now(),
+            last_frame_time_ms: 0,
             inputs: Inputs::new(),
             physics_manager: PhysicsManager::new(),
         }
@@ -53,14 +58,29 @@ impl App {
 
 impl App {
     fn draw_frame(&mut self) {
+        let last_frame_time = self.last_frame_time_ms;
+        let current_time = self.start_time.elapsed().as_millis();
+        self.last_frame_time_ms = current_time;
+        let frame_time = current_time - last_frame_time;
         if self
             .inputs
-            .key_pressed_this_frame(winit::keyboard::PhysicalKey::Code(KeyCode::KeyR))
+            .key_pressed_this_frame(PhysicalKey::Code(KeyCode::KeyR))
         {
             println!("refreshing geo");
             self.load_level();
         }
-        self.physics_manager.forward_ms();
+        if self
+            .inputs
+            .key_pressed_this_frame(PhysicalKey::Code(KeyCode::Space))
+        {
+            println!("jumping cube");
+            if let Some(cube_mut) = self.physics_manager.get_obj_mut("cube") {
+                cube_mut.kinematics.velocity.y = 5.0;
+            };
+        }
+        for _ in 0..frame_time {
+            self.physics_manager.forward_ms();
+        }
         let state = self.renderer.as_mut().unwrap();
         for (name, id) in &self.physics_manager.object_ids {
             // if name == "cube" {
@@ -120,10 +140,6 @@ impl ApplicationHandler for App {
                 is_synthetic: _,
             } => {
                 self.inputs.add_key_event(event.physical_key, event.state);
-                match event.physical_key {
-                    winit::keyboard::PhysicalKey::Code(key_code) => if key_code == KeyCode::KeyR {},
-                    winit::keyboard::PhysicalKey::Unidentified(_native_key_code) => todo!(),
-                }
             }
             _ => {}
         }

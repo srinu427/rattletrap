@@ -13,8 +13,8 @@ mod utils;
 
 #[derive(Debug, Clone)]
 pub struct Kinematics {
-    velocity: glam::Vec3,
-    acceleration: glam::Vec3,
+    pub velocity: glam::Vec3,
+    pub acceleration: glam::Vec3,
 }
 
 impl Kinematics {
@@ -44,10 +44,11 @@ impl RigidBody {
         self.orient_shape = self.shape.with_orientation(&self.orient);
     }
 
-    pub fn make_fut(&self) -> Self {
+    pub fn make_fut_ms(&self) -> Self {
         let mut out = self.clone();
-        out.orient.trans += out.kinematics.velocity + 0.5 * out.kinematics.acceleration;
-        out.kinematics.velocity += out.kinematics.acceleration;
+        out.orient.trans +=
+            out.kinematics.velocity * 0.001 + 0.5 * out.kinematics.acceleration * 0.001 * 0.001;
+        out.kinematics.velocity += out.kinematics.acceleration * 0.001;
         out.refresh_orient_shape();
         out
     }
@@ -91,6 +92,11 @@ impl PhysicsManager {
             let inv_state = self.contacts[last_obj_id][i].obj_swapped();
             self.contacts[i].push(inv_state);
         }
+    }
+
+    pub fn get_obj_mut(&mut self, name: &str) -> Option<&mut RigidBody> {
+        let obj_id = self.object_ids.get(name)?;
+        Some(&mut self.objects[*obj_id])
     }
 
     pub fn get_obj_transform(&self, name: &str) -> Option<glam::Mat4> {
@@ -296,7 +302,7 @@ impl PhysicsManager {
     pub fn forward_ms(&mut self) {
         for obj in &mut self.objects {
             if obj.has_gravity {
-                obj.kinematics.acceleration = 0.000001 * glam::Vec3::NEG_Y;
+                obj.kinematics.acceleration = 10.0 * glam::Vec3::NEG_Y;
             }
         }
         let obj_count = self.objects.len();
@@ -329,7 +335,7 @@ impl PhysicsManager {
                 }
             }
         }
-        let new_objs: Vec<_> = self.objects.iter().map(|o| o.make_fut()).collect();
+        let new_objs: Vec<_> = self.objects.iter().map(|o| o.make_fut_ms()).collect();
 
         // Update contact states
         for i in 0..obj_count {
