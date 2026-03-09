@@ -1,4 +1,4 @@
-use std::{process::exit, sync::Arc};
+use std::sync::Arc;
 
 use glam::Vec4Swizzles;
 use hashbrown::HashMap;
@@ -49,7 +49,6 @@ impl RigidBody {
         out.orient.trans += out.kinematics.velocity + 0.5 * out.kinematics.acceleration;
         out.kinematics.velocity += out.kinematics.acceleration;
         out.refresh_orient_shape();
-        // print!("current orient: {:?}\r", &out.orient);
         out
     }
 }
@@ -91,9 +90,6 @@ impl PhysicsManager {
         for i in 0..last_obj_id {
             let inv_state = self.contacts[last_obj_id][i].obj_swapped();
             self.contacts[i].push(inv_state);
-        }
-        if self.objects.len() == 2 {
-            println!("sep_plane: {:?}", &self.contacts[0][1]);
         }
     }
 
@@ -219,11 +215,19 @@ impl PhysicsManager {
         let pen_depth_a = max_b - min_a;
         let pen_depth_b = max_a - min_b;
         let mut a_orient = a.orient.clone();
-        let b_orient = b.orient.clone();
+        let mut b_orient = b.orient.clone();
         if pen_depth_a < pen_depth_b {
-            a_orient.trans += dir * pen_depth_a;
+            if a.mass == f32::INFINITY {
+                b_orient.trans -= dir * pen_depth_a;
+            } else {
+                a_orient.trans += dir * pen_depth_a;
+            }
         } else {
-            a_orient.trans -= dir * pen_depth_b;
+            if a.mass == f32::INFINITY {
+                b_orient.trans += dir * pen_depth_a;
+            } else {
+                a_orient.trans -= dir * pen_depth_b;
+            }
         }
         (a_orient, b_orient)
     }
@@ -283,8 +287,8 @@ impl PhysicsManager {
                     self.contacts[i][pen_id] = self.contacts[pen_id][i].obj_swapped();
                 }
             }
-            // self.contacts[obj_id][pen_id].min_dist = 0.0;
-            // self.contacts[pen_id][obj_id].min_dist = 0.0;
+            self.objects[obj_id] = new_obj;
+            self.objects[pen_id] = new_pen_obj;
             bound_directions.push(pen_dir);
         }
     }

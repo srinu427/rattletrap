@@ -28,6 +28,7 @@ pub struct Geo {
     pub name: String,
     pub shape: Shape,
     pub has_gravity: bool,
+    pub mass: f32,
 }
 
 impl Geo {
@@ -64,7 +65,7 @@ impl Geo {
             ),
         };
         RigidBody {
-            mass: 0.0,
+            mass: self.mass,
             shape: Arc::new(CollisionShape::Mesh(cm.clone())),
             orient: Orientation::new(),
             orient_shape: CollisionShape::Mesh(cm),
