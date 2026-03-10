@@ -73,7 +73,6 @@ impl App {
             .inputs
             .key_pressed_this_frame(PhysicalKey::Code(KeyCode::Space))
         {
-            println!("jumping cube");
             if let Some(cube_mut) = self.physics_manager.get_obj_mut("cube") {
                 cube_mut.kinematics.velocity.y = 5.0;
             };
@@ -83,10 +82,6 @@ impl App {
         }
         let state = self.renderer.as_mut().unwrap();
         for (name, id) in &self.physics_manager.object_ids {
-            // if name == "cube" {
-            //     let pos = self.physics_manager.objects[*id].orient.trans;
-            //     println!("pos: {pos:?}");
-            // }
             state.update_mesh_transform(
                 name,
                 self.physics_manager.objects[*id].orient.to_transform(),
@@ -121,18 +116,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.draw_frame();
-                // Emits a new redraw requested event.
-                // state.window().request_redraw();
             }
             WindowEvent::Resized(size) => {
                 let state = self.renderer.as_mut().unwrap();
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
                 state.resize(size, true).unwrap();
-                // state.render().inspect_err(|e| eprintln!("{e}")).ok();
-                // state.refresh_resolution()
-                // .inspect_err(|e| println!("{e}"))
-                // .ok();
             }
             WindowEvent::KeyboardInput {
                 device_id: _,
