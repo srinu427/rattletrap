@@ -8,6 +8,7 @@ winit = { version = "0.30.12", features = ["android-native-activity"] }
 physics = { path = "physics" }
 rhi = { path = "rhi" }
 rhi2 = { path = "rhi2" }
+vk12_rhi2 = { path = "vk12_rhi2" }
 anyhow = "1.0.100"
 image = "0.25.9"
 bytemuck = "1.24.0"

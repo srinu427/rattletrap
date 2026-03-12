@@ -1,0 +1,172 @@
+use std::sync::{Arc, Mutex};
+
+use ash::{ext, khr, vk};
+use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
+use log::warn;
+
+use crate::{
+    instance::{InstanceDropper, VkGpuInfo},
+    swapchain::Swapchain,
+};
+
+fn get_device_extensions() -> Vec<*const i8> {
+    vec![
+        khr::swapchain::NAME.as_ptr(),
+        ext::descriptor_indexing::NAME.as_ptr(),
+        // khr::dynamic_rendering::NAME.as_ptr(),
+        #[cfg(target_os = "macos")]
+        khr::portability_subset::NAME.as_ptr(),
+    ]
+}
+
+pub struct DeviceDropper {
+    pub allocator: Arc<Mutex<Allocator>>,
+    pub swapchain_device: khr::swapchain::Device,
+    pub device: ash::Device,
+    pub gpu_info: VkGpuInfo,
+    pub instance_dropper: Arc<InstanceDropper>,
+}
+
+impl DeviceDropper {
+    pub fn new(instance_dropper: &Arc<InstanceDropper>, gpu_id: usize) -> Result<Self, String> {
+        let gpu_info = instance_dropper.gpus[gpu_id].clone();
+
+        let queue_priorities = [1.0];
+        let queue_infos = [vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(gpu_info.gfx_qf as _)
+            .queue_priorities(&queue_priorities)];
+        let device_extensions = get_device_extensions();
+        let mut device_12_features = vk::PhysicalDeviceVulkan12Features::default()
+            .timeline_semaphore(true)
+            .descriptor_indexing(true)
+            .runtime_descriptor_array(true)
+            .shader_sampled_image_array_non_uniform_indexing(true)
+            .descriptor_binding_sampled_image_update_after_bind(true)
+            .descriptor_binding_partially_bound(true)
+            .descriptor_binding_variable_descriptor_count(true);
+        let device_features = vk::PhysicalDeviceFeatures::default();
+        let device_create_info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queue_infos)
+            .enabled_extension_names(&device_extensions)
+            .enabled_features(&device_features)
+            .push_next(&mut device_12_features);
+        let device = unsafe {
+            instance_dropper
+                .instance
+                .create_device(gpu_info.handle, &device_create_info, None)
+                .map_err(|e| format!("create vk device failed: {e}"))?
+        };
+        let swapchain_device = khr::swapchain::Device::new(&instance_dropper.instance, &device);
+        let allocator_create_info = AllocatorCreateDesc {
+            instance: instance_dropper.instance.clone(),
+            device: device.clone(),
+            physical_device: gpu_info.handle,
+            debug_settings: Default::default(),
+            buffer_device_address: false,
+            allocation_sizes: Default::default(),
+        };
+        let allocator = Allocator::new(&allocator_create_info)
+            .map_err(|e| format!("creating gpu mem allocator failed: {e}"))?;
+        Ok(Self {
+            allocator: Arc::new(Mutex::new(allocator)),
+            swapchain_device,
+            device,
+            gpu_info,
+            instance_dropper: instance_dropper.clone(),
+        })
+    }
+}
+
+impl Drop for DeviceDropper {
+    fn drop(&mut self) {
+        unsafe {
+            if let Err(e) = self.device.device_wait_idle() {
+                warn!("error waiting for device to get idle before destroying: {e}")
+            };
+            self.device.destroy_device(None);
+        }
+    }
+}
+
+pub struct Device {
+    dropper: Arc<DeviceDropper>,
+    swapchain: Swapchain,
+}
+
+impl Device {
+    pub fn new(dropper: &Arc<DeviceDropper>) -> Result<Self, String> {
+        let swapchain =
+            Swapchain::new(dropper).map_err(|e| format!("swapchain create failed: {e}"))?;
+        Ok(Self {
+            dropper: dropper.clone(),
+            swapchain,
+        })
+    }
+}
+
+impl rhi2::Device for Device {
+    type BType;
+
+    type IType;
+
+    type IVType;
+
+    type SCType;
+
+    type SSType;
+
+    type GAType;
+
+    type GPType;
+
+    type FType;
+
+    fn swapchain(&self) -> &Self::SCType {
+        todo!()
+    }
+
+    fn swapchain_mut(&mut self) -> &mut Self::SCType {
+        todo!()
+    }
+
+    fn new_buffer(
+        &self,
+        size: usize,
+        flags: rhi2::enumflags2::BitFlags<rhi2::buffer::BufferFlags>,
+    ) -> Result<Self::BType, rhi2::DeviceErr> {
+        todo!()
+    }
+
+    fn new_image(
+        &self,
+        dim: rhi2::image::ImageDimension,
+        res: (u32, u32, u32),
+        flags: rhi2::enumflags2::BitFlags<rhi2::image::ImageFlags>,
+    ) -> Result<Self::IType, rhi2::DeviceErr> {
+        todo!()
+    }
+
+    fn new_graphics_pipeline(
+        &self,
+        rhi2::shader: &str,
+        sets: Vec<rhi2::shader::ShaderSetInfo>,
+        pc_size: usize,
+        vert_stage_info: rhi2::graphics_pipeline::VertexStageInfo,
+        frag_stage_info: rhi2::graphics_pipeline::FragmentStageInfo,
+    ) -> Self::GPType {
+        todo!()
+    }
+
+    fn run_commands(
+        &self,
+        commands: rhi2::command::Command<
+            Self::BType,
+            Self::IType,
+            Self::GPType,
+            Self::GAType,
+            Self::SSType,
+        >,
+    ) -> Self::FType {
+        todo!()
+    }
+}
