@@ -1,8 +1,17 @@
 use crate::{
+    Capped,
     buffer::Buffer,
     image::{Format, Image, ImageView},
     shader::ShaderSet,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum GraphicsPipelineErr {
+    #[error("set create failed: {0}")]
+    SetCreateFailed(String),
+    #[error("attach create failed: {0}")]
+    AttachCreateFailed(String),
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum VertexAttribute {
@@ -32,10 +41,11 @@ pub struct AttachInfo {
     pub store: bool,
 }
 
-pub trait GraphicsAttach: Clone {
+pub trait GraphicsAttach {
     type IVType: ImageView;
-    fn color_ivs(&self) -> &[Self::IVType];
-    fn depth_iv(&self) -> Option<&Self::IVType>;
+
+    fn color_ivs(&self) -> &[Capped<Self::IVType>];
+    fn depth_iv(&self) -> Option<&Capped<Self::IVType>>;
 }
 
 pub struct FragmentStageInfo<'a> {
@@ -44,7 +54,7 @@ pub struct FragmentStageInfo<'a> {
     pub depth: Option<AttachInfo>,
 }
 
-pub trait GraphicsPipeline: Clone {
+pub trait GraphicsPipeline {
     type BType: Buffer;
     type IType: Image;
     type IVType: ImageView<IType = Self::IType>;
@@ -53,6 +63,6 @@ pub trait GraphicsPipeline: Clone {
 
     fn set_count(&self) -> usize;
     fn pc_size(&self) -> usize;
-    fn new_set(&self, set_id: usize) -> Self::SetType;
-    fn new_attach(&self) -> Self::AttachType;
+    fn new_set(&mut self, set_id: usize) -> Result<Self::SetType, GraphicsPipelineErr>;
+    fn new_attach(&self, res: (u32, u32)) -> Result<Self::AttachType, GraphicsPipelineErr>;
 }

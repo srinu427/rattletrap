@@ -18,21 +18,24 @@ fn rhi2_buf_flags_to_vk_flags(flags: &BitFlags<rhi2::buffer::BufferFlags>) -> vk
     vk_flags
 }
 
-pub struct BufferDropper {
+pub struct Buffer {
     pub handle: vk::Buffer,
     pub memory: Memory,
+    pub size: usize,
+    pub flags: BitFlags<rhi2::buffer::BufferFlags>,
+    pub host_access: rhi2::HostAccess,
     pub device_dropper: Arc<DeviceDropper>,
 }
 
-impl BufferDropper {
+impl Buffer {
     pub fn new(
         device_dropper: &Arc<DeviceDropper>,
-        size: u64,
-        flags: &BitFlags<rhi2::buffer::BufferFlags>,
+        size: usize,
+        flags: BitFlags<rhi2::buffer::BufferFlags>,
         host_access: rhi2::HostAccess,
     ) -> Result<Self, String> {
-        let usage = rhi2_buf_flags_to_vk_flags(flags);
-        let create_info = vk::BufferCreateInfo::default().size(size).usage(usage);
+        let usage = rhi2_buf_flags_to_vk_flags(&flags);
+        let create_info = vk::BufferCreateInfo::default().size(size as _).usage(usage);
         let handle = unsafe {
             device_dropper
                 .device
@@ -46,29 +49,22 @@ impl BufferDropper {
             &format!("{:x}", handle.as_raw()),
             host_access,
         )
-        .map_err(|e| format!("buffer mem allocation failed: {e}"))?;
+        .map_err(|e| format!("mem allocation failed: {e}"))?;
+        unsafe {
+            device_dropper
+                .device
+                .bind_buffer_memory(handle, memory.handle.memory(), memory.handle.offset())
+                .map_err(|e| format!("bind mem to buffer failed: {e}"))?;
+        }
         Ok(Self {
             handle,
             memory,
             device_dropper: device_dropper.clone(),
+            size: size,
+            flags,
+            host_access,
         })
     }
-}
-
-impl Drop for BufferDropper {
-    fn drop(&mut self) {
-        unsafe {
-            self.device_dropper.device.destroy_buffer(self.handle, None);
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct Buffer {
-    dropper: Arc<BufferDropper>,
-    size: usize,
-    usage: BitFlags<rhi2::buffer::BufferFlags>,
-    host_access: rhi2::HostAccess,
 }
 
 impl rhi2::buffer::Buffer for Buffer {
@@ -80,8 +76,24 @@ impl rhi2::buffer::Buffer for Buffer {
         self.host_access
     }
 
-    fn host_write(&self, data: &[u8]) -> Result<(), rhi2::buffer::BufferErr> {
-        let mem_ptr = self.dropper.memory.handle.mapped_slice_mut();
-        todo!()
+    fn host_write(&mut self, data: &[u8]) -> Result<(), rhi2::buffer::BufferErr> {
+        match self.memory.handle.mapped_slice_mut() {
+            Some(mem_mut) => {
+                let copy_size = mem_mut.len().min(data.len());
+                if copy_size != 0 {
+                    mem_mut[..copy_size].copy_from_slice(&data[..copy_size]);
+                }
+                Ok(())
+            }
+            None => Err(rhi2::buffer::BufferErr::NotHostWriteable),
+        }
+    }
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        unsafe {
+            self.device_dropper.device.destroy_buffer(self.handle, None);
+        }
     }
 }

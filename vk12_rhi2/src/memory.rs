@@ -8,6 +8,7 @@ use gpu_allocator::{
     MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
 };
+use log::warn;
 
 pub struct Memory {
     pub allocator: Arc<Mutex<Allocator>>,
@@ -56,7 +57,10 @@ impl Drop for Memory {
                 Ok(obj) => obj,
                 Err(e) => e.into_inner(),
             };
-            allocator_mut.free(mem);
+            allocator_mut
+                .free(mem)
+                .inspect_err(|e| warn!("allocation freeing failed: {e}"))
+                .ok();
         }
     }
 }

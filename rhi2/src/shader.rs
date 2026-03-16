@@ -1,4 +1,5 @@
 use crate::{
+    Capped,
     buffer::Buffer,
     image::{Image, ImageView},
 };
@@ -11,9 +12,9 @@ pub enum ShaderSetInfo {
 }
 
 pub enum ShaderSetData<B: Buffer, IV: ImageView> {
-    UniformBuffer(Vec<B>),
-    StorageBuffer(Vec<B>),
-    Sampler2D(Vec<IV>),
+    UniformBuffer(Vec<Capped<B>>),
+    StorageBuffer(Vec<Capped<B>>),
+    Sampler2D(Vec<Capped<IV>>),
 }
 
 pub trait ShaderSet {
@@ -21,5 +22,5 @@ pub trait ShaderSet {
     type IType: Image;
     type IVType: ImageView<IType = Self::IType>;
 
-    fn update_binding(&mut self, data: ShaderSetData<Self::BType, Self::IVType>);
+    fn update_binding(&mut self, binding: usize, data: ShaderSetData<Self::BType, Self::IVType>);
 }

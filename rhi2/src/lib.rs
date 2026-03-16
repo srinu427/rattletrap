@@ -1,82 +1,51 @@
-use enumflags2::BitFlags;
+use std::{rc::Rc, sync::Arc};
 
 pub use enumflags2;
 
-use buffer::Buffer;
-
-use crate::{
-    buffer::BufferFlags,
-    command::{CmdFuture, Command},
-    graphics_pipeline::{FragmentStageInfo, GraphicsAttach, GraphicsPipeline, VertexStageInfo},
-    image::{Image, ImageDimension, ImageFlags, ImageView},
-    shader::{ShaderSet, ShaderSetInfo},
-    swapchain::Swapchain,
-};
+use crate::device::Device;
 
 pub mod buffer;
 pub mod command;
+pub mod device;
 pub mod graphics_pipeline;
 pub mod image;
 pub mod shader;
 pub mod swapchain;
+pub mod sync;
+
+pub enum Capped<T> {
+    Obj(T),
+    Arc(Arc<T>),
+    Rc(Rc<T>),
+}
+
+impl<T> Capped<T> {
+    pub fn from_obj(obj: T) -> Self {
+        Self::Obj(obj)
+    }
+
+    pub fn from_arc(obj: Arc<T>) -> Self {
+        Self::Arc(obj)
+    }
+
+    pub fn from_rc(obj: Rc<T>) -> Self {
+        Self::Rc(obj)
+    }
+
+    pub fn as_ref(&self) -> &T {
+        match self {
+            Capped::Obj(t) => t,
+            Capped::Arc(t) => t.as_ref(),
+            Capped::Rc(t) => t.as_ref(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum HostAccess {
     None,
     Read,
     Write,
-}
-
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum DeviceErr {
-    #[error("buffer creation failed")]
-    BufferCreateFailed,
-    #[error("image creation failed")]
-    ImageCreateFailed,
-}
-
-pub trait Device {
-    type BType: Buffer;
-    type IType: Image;
-    type IVType: ImageView<IType = Self::IType>;
-    type SCType: Swapchain<IType = Self::IType, IVType = Self::IVType>;
-    type SSType: ShaderSet<BType = Self::BType, IType = Self::IType, IVType = Self::IVType>;
-    type GAType: GraphicsAttach<IVType = Self::IVType>;
-    type GPType: GraphicsPipeline<
-            BType = Self::BType,
-            IType = Self::IType,
-            IVType = Self::IVType,
-            SetType = Self::SSType,
-            AttachType = Self::IVType,
-        >;
-    type FType: CmdFuture;
-
-    fn swapchain(&self) -> &Self::SCType;
-    fn swapchain_mut(&mut self) -> &mut Self::SCType;
-    fn new_buffer(
-        &self,
-        size: usize,
-        flags: BitFlags<BufferFlags>,
-        host_access: HostAccess,
-    ) -> Result<Self::BType, DeviceErr>;
-    fn new_image(
-        &self,
-        dim: ImageDimension,
-        res: (u32, u32, u32),
-        flags: BitFlags<ImageFlags>,
-    ) -> Result<Self::IType, DeviceErr>;
-    fn new_graphics_pipeline(
-        &self,
-        shader: &str,
-        sets: Vec<ShaderSetInfo>,
-        pc_size: usize,
-        vert_stage_info: VertexStageInfo,
-        frag_stage_info: FragmentStageInfo,
-    ) -> Self::GPType;
-    fn run_commands(
-        &self,
-        commands: Command<Self::BType, Self::IType, Self::GPType, Self::GAType, Self::SSType>,
-    ) -> Self::FType;
 }
 
 #[derive(Debug, Clone)]
@@ -89,8 +58,8 @@ pub struct GpuInfo {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum InstanceErr {
-    #[error("device creation failed")]
-    DeviceCreateFailed,
+    #[error("device creation failed: {0}")]
+    DeviceCreateFailed(String),
 }
 
 pub trait Instance {

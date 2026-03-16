@@ -1,20 +1,16 @@
 use enumflags2::bitflags;
 
+use crate::Capped;
+
 #[bitflags]
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ImageFlags {
-    HostAccess,
     CopyDst,
     CopySrc,
     RenderAttach,
     Sampled,
     Storage,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum ImageDimension {
-    E2d,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -39,6 +35,13 @@ impl Format {
         }
     }
 
+    pub fn has_stencil(&self) -> bool {
+        match self {
+            Self::D24S8 => true,
+            _ => false,
+        }
+    }
+
     pub fn rem_srgb(&self) -> Self {
         match self {
             Self::Rgba8Srgb => Self::Rgba8,
@@ -48,15 +51,18 @@ impl Format {
     }
 }
 
-pub trait Image: Clone {
+pub trait Image {
+    fn format(&self) -> Format;
     fn res(&self) -> (u32, u32, u32);
-    fn dimension(&self) -> ImageDimension;
+    fn layers(&self) -> u32;
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ImageViewErr {
     #[error("image view type requested is incompatible with the image")]
     IncompatibleViewType,
+    #[error("image view create error: {0}")]
+    CreateError(String),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -65,10 +71,10 @@ pub enum ViewType {
     ECube,
 }
 
-pub trait ImageView: Clone {
+pub trait ImageView: Sized {
     type IType: Image;
 
-    fn new(&self, image: &Self::IType, view_type: ViewType) -> Result<Self, ImageViewErr>;
-    fn image(&self) -> &Self::IType;
+    fn new(image: Capped<Self::IType>, view_type: ViewType) -> Result<Self, ImageViewErr>;
+    fn image(&self) -> &Capped<Self::IType>;
     fn view_type(&self) -> ViewType;
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ash::{khr, vk};
 use winit::window::Window;
 
-use crate::init_helpers;
+use crate::{device::Device, init_helpers};
 
 #[derive(Debug, Clone)]
 pub struct VkGpuInfo {
@@ -87,18 +87,41 @@ impl InstanceDropper {
 }
 
 pub struct Instance {
-    dropper: Arc<InstanceDropper>,
-    gpus: Vec<rhi2::GpuInfo>,
+    pub dropper: Arc<InstanceDropper>,
+    pub gpus: Vec<rhi2::GpuInfo>,
+}
+
+impl Instance {
+    pub fn new(window: &Arc<Window>) -> Result<Self, String> {
+        let dropper = InstanceDropper::new(window)
+            .map_err(|e| format!("instance dropper creation error: {e}"))?;
+        let gpus: Vec<_> = dropper
+            .gpus
+            .iter()
+            .map(|g| rhi2::GpuInfo {
+                id: g.id,
+                name: g.name.clone(),
+                dvram: g.dvram,
+                is_dedicated: g.is_dedicated,
+            })
+            .collect();
+        Ok(Self {
+            dropper: Arc::new(dropper),
+            gpus,
+        })
+    }
 }
 
 impl rhi2::Instance for Instance {
-    type DType;
+    type DType = Device;
 
     fn get_gpus(&self) -> &Vec<rhi2::GpuInfo> {
         &self.gpus
     }
 
     fn init_device(self, gpu_id: usize) -> Result<Self::DType, rhi2::InstanceErr> {
-        todo!()
+        Device::new(&self.dropper, gpu_id)
+            .map_err(|e| format!("device creation failed: {e}"))
+            .map_err(rhi2::InstanceErr::DeviceCreateFailed)
     }
 }

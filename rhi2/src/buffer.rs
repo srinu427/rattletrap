@@ -18,8 +18,8 @@ pub enum BufferFlags {
     Index,
 }
 
-pub trait Buffer: Clone {
+pub trait Buffer {
     fn size(&self) -> usize;
     fn host_access(&self) -> HostAccess;
-    fn host_write(&self, data: &[u8]) -> Result<(), BufferErr>;
+    fn host_write(&mut self, data: &[u8]) -> Result<(), BufferErr>;
 }

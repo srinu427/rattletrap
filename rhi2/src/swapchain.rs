@@ -1,11 +1,28 @@
-use crate::image::{Image, ImageView};
+use crate::{
+    command::CommandRecorder,
+    image::{Format, Image, ImageView},
+    sync::{CpuFuture, GpuFuture},
+};
+
+#[derive(Debug, thiserror::Error)]
+pub enum SwapchainErr {
+    #[error("acquiring swapchain image failed: {0}")]
+    AcquireImageErr(String),
+    #[error("swapchain refresh needed")]
+    RefreshSwapchainNeeded,
+}
 
 pub trait Swapchain {
-    type IType: Image;
-    type IVType: ImageView<IType = Self::IType>;
-    fn img_count(&self) -> usize;
+    type I: Image;
+    type IV: ImageView;
+    type CR: CommandRecorder;
+    type CF: CpuFuture;
+    type GF: GpuFuture;
+
     fn res(&self) -> (u32, u32);
-    fn get_image(&self, num: usize) -> &Self::IType;
-    fn get_image_view(&self, num: usize) -> &Self::IVType;
+    fn fmt(&self) -> Format;
+    fn img_count(&self) -> usize;
     fn refresh_res(&mut self);
+    fn acquire_image_view(&self) -> Result<(&Self::IV, Self::GF), SwapchainErr>;
+    fn present(&self, wait_for: Vec<Self::CR>) -> Result<Self::CF, SwapchainErr>;
 }
