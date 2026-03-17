@@ -1,28 +1,31 @@
+use std::sync::Arc;
+
 use crate::{
     command::CommandRecorder,
     image::{Format, Image, ImageView},
-    sync::{CpuFuture, GpuFuture},
+    sync::TaskFuture,
 };
 
 #[derive(Debug, thiserror::Error)]
 pub enum SwapchainErr {
     #[error("acquiring swapchain image failed: {0}")]
-    AcquireImageErr(String),
-    #[error("swapchain refresh needed")]
-    RefreshSwapchainNeeded,
+    NextImageIdxErr(String),
+    #[error("refreshing swapchain res failed: {0}")]
+    ResRefreshErr(String),
+    #[error("present swapchain image failed: {0}")]
+    PresentImageErr(String),
 }
 
 pub trait Swapchain {
     type I: Image;
     type IV: ImageView;
     type CR: CommandRecorder;
-    type CF: CpuFuture;
-    type GF: GpuFuture;
+    type TF: TaskFuture;
 
     fn res(&self) -> (u32, u32);
     fn fmt(&self) -> Format;
-    fn img_count(&self) -> usize;
-    fn refresh_res(&mut self);
-    fn acquire_image_view(&self) -> Result<(&Self::IV, Self::GF), SwapchainErr>;
-    fn present(&self, wait_for: Vec<Self::CR>) -> Result<Self::CF, SwapchainErr>;
+    fn views(&self) -> &[Arc<Self::IV>];
+    fn refresh_res(&mut self) -> Result<(), SwapchainErr>;
+    fn next_image_idx(&mut self) -> Result<Option<(usize, Self::TF)>, SwapchainErr>;
+    fn present(&mut self, idx: usize, deps: Vec<Self::TF>) -> Result<(), SwapchainErr>;
 }

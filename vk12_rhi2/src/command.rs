@@ -11,9 +11,7 @@ use crate::{
     graphics_pipeline::{GraphicsAttach, GraphicsPipeline},
     image::{Image, ImageAccess},
     shader::ShaderSet,
-    sync::{
-        BinSem, CpuFuture, CpuWaitable, Fence, GpuFuture, SyncPool, TlSem, rhi2_pipe_stage_to_vk,
-    },
+    sync::{SyncPool, TaskFuture},
 };
 
 pub struct CmdPool {
@@ -79,8 +77,8 @@ impl CmdBuffer {
 }
 
 pub struct CmdBufferGen {
-    pool: Arc<Mutex<Vec<CmdBuffer>>>,
-    device_dropper: Arc<DeviceDropper>,
+    pub pool: Arc<Mutex<Vec<CmdBuffer>>>,
+    pub device_dropper: Arc<DeviceDropper>,
 }
 
 impl CmdBufferGen {
@@ -110,9 +108,9 @@ impl CmdBufferGen {
 }
 
 pub struct GraphicsCommandRecorder {
-    recorder: CommandRecorder,
-    pipeline: vk::Pipeline,
-    pipeline_layout: vk::PipelineLayout,
+    pub recorder: CommandRecorder,
+    pub pipeline: vk::Pipeline,
+    pub pipeline_layout: vk::PipelineLayout,
 }
 
 impl rhi2::command::GraphicsCommandRecorder for GraphicsCommandRecorder {
@@ -176,15 +174,10 @@ impl rhi2::command::GraphicsCommandRecorder for GraphicsCommandRecorder {
 }
 
 pub struct CommandRecorder {
-    inner: CmdBuffer,
-    image_layouts: HashMap<vk::Image, (ImageAccess, Arc<Mutex<ImageAccess>>)>,
-    keep_alive_buffers: Vec<rhi2::Capped<Buffer>>,
-    dependant_futures: Vec<(
-        GpuFuture,
-        rhi2::sync::PipelineStage,
-        rhi2::sync::PipelineStage,
-    )>,
-    sync_pool: Arc<SyncPool>,
+    pub inner: CmdBuffer,
+    pub image_layouts: HashMap<vk::Image, (ImageAccess, Arc<Mutex<ImageAccess>>)>,
+    pub keep_alive_buffers: Vec<rhi2::Capped<Buffer>>,
+    pub sync_pool: Arc<SyncPool>,
 }
 
 impl CommandRecorder {
@@ -202,7 +195,6 @@ impl CommandRecorder {
                 inner: c,
                 image_layouts: HashMap::new(),
                 keep_alive_buffers: vec![],
-                dependant_futures: vec![],
                 sync_pool: sync_pool.clone(),
             })
             .collect();
@@ -272,9 +264,7 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
 
     type GCR = GraphicsCommandRecorder;
 
-    type GF = GpuFuture;
-
-    type CF = CpuFuture;
+    type TF = TaskFuture;
 
     fn copy_b2b(&mut self, src: &Self::B, src_offset: usize, dst: &Self::B, dst_offset: usize) {
         unsafe {
@@ -454,130 +444,39 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
         }
     }
 
-    fn buffer_keep_alive(&mut self, buffer: rhi2::Capped<Self::B>) {
+    fn keep_buffer_alive(&mut self, buffer: rhi2::Capped<Self::B>) {
         self.keep_alive_buffers.push(buffer);
     }
 
-    fn add_dependant(
+    fn run(
+        self,
+        deps: Vec<(
+            Self::TF,
+            rhi2::sync::PipelineStage,
+            rhi2::sync::PipelineStage,
+        )>,
+    ) -> Result<Self::TF, rhi2::command::CommandErr> {
+    }
+}
+
+pub struct CRDep {
+    task: Task,
+    on: rhi2::sync::PipelineStage,
+    by: rhi2::sync::PipelineStage,
+}
+
+pub struct Task {
+    cr: CommandRecorder,
+    deps: Vec<CRDep>,
+}
+
+impl rhi2::command::Task for Task {
+    fn add_dep(
         &mut self,
-        cr: Self::GF,
-        on_stage: rhi2::sync::PipelineStage,
-        by_stage: rhi2::sync::PipelineStage,
+        task: Self,
+        on: rhi2::sync::PipelineStage,
+        by: rhi2::sync::PipelineStage,
     ) {
-        self.dependant_futures.push((cr, on_stage, by_stage));
-    }
-
-    fn run_cpu_fut(mut self) -> Result<Self::CF, rhi2::command::CommandErr> {
-        let force_legacy = false;
-        let mut c_fut = if force_legacy {
-            let tl_sem = TlSem::get(&self.sync_pool, 1)
-                .map_err(|e| format!("failed getting TL semaphore: {e}"))
-                .map_err(rhi2::command::CommandErr::FutureCreateErr)?
-                .remove(0);
-            CpuFuture::from_tl_sem(tl_sem, vec![])
-        } else {
-            let fence = Fence::get(&self.sync_pool, 1)
-                .map_err(|e| format!("failed getting fence: {e}"))
-                .map_err(rhi2::command::CommandErr::FutureCreateErr)?
-                .remove(0);
-            CpuFuture::from_fence(fence, vec![])
-        };
-        let mut wait_sems = vec![];
-        let mut wait_nums = vec![];
-        let mut on_stages = vec![];
-        let mut by_stages = vec![];
-        for (f, on, by) in self.dependant_futures.drain(..) {
-            let (s, c) = f.get_wait_info();
-            wait_sems.push(s);
-            wait_nums.push(c);
-            on_stages.push(rhi2_pipe_stage_to_vk(&on));
-            by_stages.push(rhi2_pipe_stage_to_vk(&by));
-            self.keep_alive_buffers.extend(f.preserve_buffers);
-        }
-        let fence = match &c_fut.inner {
-            CpuWaitable::Fence(fence) => fence.handle,
-            CpuWaitable::TlSem(_) => vk::Fence::null(),
-        };
-        let mut tl_submit_info =
-            vk::TimelineSemaphoreSubmitInfo::default().wait_semaphore_values(&wait_nums);
-        match &c_fut.inner {
-            CpuWaitable::Fence(_) => {}
-            CpuWaitable::TlSem(tl_sem) => {
-                tl_submit_info =
-                    tl_submit_info.signal_semaphore_values(core::slice::from_ref(&tl_sem.count))
-            }
-        };
-        unsafe {
-            let mut submit_info = vk::SubmitInfo::default()
-                .command_buffers(core::slice::from_ref(&self.inner.handle))
-                .wait_semaphores(&wait_sems)
-                .wait_dst_stage_mask(&on_stages)
-                .push_next(&mut tl_submit_info);
-            match &c_fut.inner {
-                CpuWaitable::Fence(_) => {}
-                CpuWaitable::TlSem(tl_sem) => {
-                    submit_info =
-                        submit_info.signal_semaphores(core::slice::from_ref(&tl_sem.handle));
-                }
-            };
-            self.get_device()
-                .device
-                .queue_submit(self.get_device().gfx_queue, &[submit_info], fence)
-                .map_err(|e| format!("queue submission error: {e}"))
-                .map_err(rhi2::command::CommandErr::FutureCreateErr)?;
-        }
-        c_fut.preserve_buffers = self.keep_alive_buffers;
-        Ok(c_fut)
-    }
-
-    fn run_gpu_fut(mut self) -> Result<Self::GF, rhi2::command::CommandErr> {
-        let force_legacy = false;
-        let mut wait_sems = vec![];
-        let mut wait_nums = vec![];
-        let mut on_stages = vec![];
-        let mut by_stages = vec![];
-        for (f, on, by) in self.dependant_futures.drain(..) {
-            let (s, c) = f.get_wait_info();
-            wait_sems.push(s);
-            wait_nums.push(c);
-            on_stages.push(rhi2_pipe_stage_to_vk(&on));
-            by_stages.push(rhi2_pipe_stage_to_vk(&by));
-            self.keep_alive_buffers.extend(f.preserve_buffers);
-        }
-        let mut gfut = if force_legacy {
-            let bin_sem = BinSem::get(&self.sync_pool, 1)
-                .map_err(|e| format!("failed getting Bin semaphore: {e}"))
-                .map_err(rhi2::command::CommandErr::FutureCreateErr)?
-                .remove(0);
-            GpuFuture::from_bin(bin_sem, vec![])
-        } else {
-            let tl_sem = TlSem::get(&self.sync_pool, 1)
-                .map_err(|e| format!("failed getting TL semaphore: {e}"))
-                .map_err(rhi2::command::CommandErr::FutureCreateErr)?
-                .remove(0);
-            GpuFuture::from_tl(tl_sem, vec![])
-        };
-        let (sig_sem, sig_count) = gfut.get_wait_info();
-        let mut tl_submit_info = vk::TimelineSemaphoreSubmitInfo::default()
-            .wait_semaphore_values(&wait_nums)
-            .signal_semaphore_values(core::slice::from_ref(&sig_count));
-        unsafe {
-            self.get_device()
-                .device
-                .queue_submit(
-                    self.get_device().gfx_queue,
-                    &[vk::SubmitInfo::default()
-                        .command_buffers(&[self.inner.handle])
-                        .wait_semaphores(&wait_sems)
-                        .wait_dst_stage_mask(&on_stages)
-                        .signal_semaphores(core::slice::from_ref(&sig_sem))
-                        .push_next(&mut tl_submit_info)],
-                    vk::Fence::null(),
-                )
-                .map_err(|e| format!("queue submission error: {e}"))
-                .map_err(rhi2::command::CommandErr::FutureCreateErr)?;
-        }
-        gfut.preserve_buffers = self.keep_alive_buffers;
-        Ok(gfut)
+        self.deps.push(CRDep { task, on, by });
     }
 }

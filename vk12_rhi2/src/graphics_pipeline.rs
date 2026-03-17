@@ -579,4 +579,65 @@ impl rhi2::graphics_pipeline::GraphicsPipeline for GraphicsPipeline {
             device_dropper: self.device_dropper.clone(),
         })
     }
+
+    fn make_attach(
+        &self,
+        color_ivs: Vec<rhi2::Capped<Self::IVType>>,
+        depth_iv: Option<rhi2::Capped<Self::IVType>>,
+    ) -> Result<Self::AttachType, rhi2::graphics_pipeline::GraphicsPipelineErr> {
+        let res = color_ivs
+            .first()
+            .ok_or("empty color attach list given".to_string())
+            .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed)?
+            .as_ref()
+            .image()
+            .as_ref()
+            .res;
+        let res = (res.0, res.1);
+        for iv in &color_ivs[1..] {
+            let iv_res = iv.as_ref().image().as_ref().res;
+            let iv_res = (iv_res.0, iv_res.1);
+            if iv_res != res {
+                return Err(
+                    rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed(
+                        "image views are of different res".to_string(),
+                    ),
+                );
+            }
+        }
+        if let Some(iv) = depth_iv.as_ref() {
+            let iv_res = iv.as_ref().image().as_ref().res;
+            let iv_res = (iv_res.0, iv_res.1);
+            return Err(
+                rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed(
+                    "image views are of different res".to_string(),
+                ),
+            );
+        }
+        let mut attachments: Vec<_> = color_ivs.iter().map(|iv| iv.as_ref().handle).collect();
+        if let Some(iv) = depth_iv.as_ref() {
+            attachments.push(iv.as_ref().handle);
+        }
+        let fb_create_info = vk::FramebufferCreateInfo::default()
+            .width(res.0)
+            .height(res.1)
+            .layers(1)
+            .render_pass(self.render_pass)
+            .attachments(&attachments)
+            .attachment_count(attachments.len() as _);
+        let framebuffer = unsafe {
+            self.device_dropper
+                .device
+                .create_framebuffer(&fb_create_info, None)
+                .map_err(|e| e.to_string())
+                .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed)?
+        };
+        Ok(GraphicsAttach {
+            color_ivs,
+            depth_iv,
+            framebuffer,
+            res,
+            device_dropper: self.device_dropper.clone(),
+        })
+    }
 }

@@ -4,11 +4,9 @@ pub enum SyncErr {
     WaitErr(String),
 }
 
-pub trait CpuFuture {
-    fn wait(&mut self);
+pub trait TaskFuture {
+    fn wait(&mut self) -> Result<(), SyncErr>;
 }
-
-pub trait GpuFuture {}
 
 pub enum PipelineStage {
     Top,
@@ -17,5 +15,5 @@ pub enum PipelineStage {
     Fragment,
     AttachWrite,
     Transfer,
-    End,
+    Bottom,
 }

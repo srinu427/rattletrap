@@ -12,7 +12,7 @@ use crate::{
     instance::{InstanceDropper, VkGpuInfo},
     shader::ShaderSet,
     swapchain::Swapchain,
-    sync::{CpuFuture, SyncPool},
+    sync::{BinSem, CpuFuture, GpuFuture, SyncPool, TlSem, rhi2_pipe_stage_to_vk},
 };
 
 fn get_device_extensions() -> Vec<*const i8> {
@@ -142,6 +142,8 @@ impl rhi2::device::Device for Device {
 
     type CFType = CpuFuture;
 
+    type GFType = GpuFuture;
+
     fn swapchain(&self) -> &Self::SC {
         &self.swapchain
     }
@@ -199,4 +201,67 @@ impl rhi2::device::Device for Device {
             .map_err(|e| format!("cmd recorders creation failed: {e}"))
             .map_err(rhi2::device::DeviceErr::CmdRecorderCreateFailed)
     }
+}
+
+pub fn run_cmds_gpu_sync_internal(
+    sync_pool: &Arc<SyncPool>,
+    cbs: Vec<CommandRecorder>,
+    wait_for: Vec<rhi2::command::CmdWaitInfo<GpuFuture>>,
+    force_bin_sem: bool,
+) -> Result<GpuFuture, String> {
+    let mut gfut = if force_bin_sem {
+        let bin_sem = BinSem::get(sync_pool, 1)
+            .map_err(|e| format!("failed getting bin sem: {e}"))?
+            .remove(0);
+        GpuFuture::from_bin(bin_sem, vec![])
+    } else {
+        let tl_sem = TlSem::get(sync_pool, 1)
+            .map_err(|e| format!("failed getting tl sem: {e}"))?
+            .remove(0);
+        GpuFuture::from_tl(tl_sem, vec![])
+    };
+    gfut.increase_count(1);
+
+    let mut wait_sems = vec![];
+    let mut wait_nums = vec![];
+    let mut on_stages = vec![];
+    let mut by_stages = vec![];
+    for wait_info in wait_for {
+        let Some((s, c)) = wait_info.gfut.get_wait_info() else {
+            continue;
+        };
+        wait_sems.push(s);
+        wait_nums.push(c);
+        on_stages.push(rhi2_pipe_stage_to_vk(&wait_info.on));
+        by_stages.push(rhi2_pipe_stage_to_vk(&wait_info.by));
+        gfut.preserve_buffers
+            .extend(wait_info.gfut.preserve_buffers);
+    }
+
+    let Some((sig_sem, sig_val)) = gfut.get_wait_info() else {
+        unreachable!()
+    };
+
+    let mut tl_submit_info = vk::TimelineSemaphoreSubmitInfo::default()
+        .wait_semaphore_values(&wait_nums)
+        .signal_semaphore_values(core::slice::from_ref(&sig_val));
+    let cb_vks: Vec<_> = cbs.iter().map(|c| c.inner.handle).collect();
+    unsafe {
+        let submit_info = vk::SubmitInfo::default()
+            .command_buffers(&cb_vks)
+            .wait_semaphores(&wait_sems)
+            .wait_dst_stage_mask(&on_stages)
+            .signal_semaphores(core::slice::from_ref(&sig_sem))
+            .push_next(&mut tl_submit_info);
+        sync_pool
+            .device_dropper
+            .device
+            .queue_submit(
+                sync_pool.device_dropper.gfx_queue,
+                &[submit_info],
+                vk::Fence::null(),
+            )
+            .map_err(|e| format!("queue submission error: {e}"))?;
+    }
+    Ok(gfut)
 }

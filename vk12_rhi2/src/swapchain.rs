@@ -5,10 +5,10 @@ use log::warn;
 use rhi2::image::{Format, ImageView as _};
 
 use crate::{
-    command::CommandRecorder,
-    device::DeviceDropper,
+    command::{CommandRecorder, Task},
+    device::{DeviceDropper, run_cmds_gpu_sync_internal},
     image::{Image, ImageAccess, ImageView, rhi2_fmt_to_vk_fmt},
-    sync::{BinSem, CpuFuture, GpuFuture, SyncPool},
+    sync::{BinSem, SyncPool, TaskFuture},
 };
 
 fn get_sc_formats(device: &Arc<DeviceDropper>) -> Result<Vec<vk::SurfaceFormatKHR>, String> {
@@ -100,14 +100,14 @@ pub struct Swapchain {
     present_mode: vk::PresentModeKHR,
     images: Vec<Arc<Image>>,
     views: Vec<Arc<ImageView>>,
-    gfuts: Vec<Vec<GpuFuture>>,
-    cfuts: Vec<Vec<CpuFuture>>,
+    dep_task_futs: Vec<Vec<TaskFuture>>,
     res: (u32, u32),
     sync_pool: Arc<SyncPool>,
     device_dropper: Arc<DeviceDropper>,
 }
 
 impl Swapchain {
+    fn wrap_img(img: vk::Image, format: rhi2::image::Format, res: (usize, usize))
     pub fn new(
         device: &Arc<DeviceDropper>,
         sync_pool: &Arc<SyncPool>,
@@ -198,8 +198,7 @@ impl Swapchain {
                     .map_err(|e| e.to_string())
             })
             .collect::<Result<_, _>>()?;
-        let cfuts = (0..images.len()).map(|_| Vec::new()).collect();
-        let gfuts = (0..images.len()).map(|_| Vec::new()).collect();
+        let dep_task_futs = (0..images.len()).map(|_| Vec::new()).collect();
         Ok(Self {
             handle: swapchain,
             format: surface_format,
@@ -207,8 +206,7 @@ impl Swapchain {
             present_mode: surface_present_mode,
             images,
             views,
-            cfuts,
-            gfuts,
+            dep_task_futs,
             res: (surface_resolution.width, surface_resolution.height),
             device_dropper: device.clone(),
             sync_pool: sync_pool.clone(),
@@ -300,59 +298,42 @@ impl rhi2::swapchain::Swapchain for Swapchain {
 
     type CR = CommandRecorder;
 
-    type CF = CpuFuture;
-
-    type GF = GpuFuture;
-
-    fn img_count(&self) -> usize {
-        self.images.len()
-    }
+    type TF = TaskFuture;
 
     fn res(&self) -> (u32, u32) {
         self.res
     }
 
-    fn refresh_res(&mut self) {
+    fn refresh_res(&mut self) -> Result<(), rhi2::swapchain::SwapchainErr> {
         self.refresh_res()
-            .inspect_err(|e| warn!("refreshing swapchain res failed: {e}"))
-            .ok();
+            .map_err(|e| format!("refreshing swapchain res failed: {e}"))
+            .map_err(rhi2::swapchain::SwapchainErr::ResRefreshErr)
     }
 
     fn fmt(&self) -> Format {
         self.rhi2_fmt
     }
 
-    fn acquire_image_view(&self) -> Result<(&Self::IV, Self::GF), rhi2::swapchain::SwapchainErr> {
-        let bin_sem = BinSem::get(&self.sync_pool, 1)
-            .map_err(|e| format!("bin sem getting failed: {e}"))
-            .map_err(rhi2::swapchain::SwapchainErr::AcquireImageErr)?
-            .remove(0);
-        let (idx, _) = unsafe {
-            match self.device_dropper.swapchain_device.acquire_next_image(
-                self.handle,
-                u64::MAX,
-                bin_sem.handle,
-                vk::Fence::null(),
-            ) {
-                Ok((idx, ref_needed)) => (idx, ref_needed),
-                Err(e) => match e {
-                    vk::Result::SUBOPTIMAL_KHR => {
-                        todo!()
-                    }
-                    _ => {
-                        return Err(rhi2::swapchain::SwapchainErr::AcquireImageErr(format!(
-                            "vk acquire next image call failed: {e}"
-                        )));
-                    }
-                },
-            }
-        };
-        let gfut = GpuFuture::from_bin(bin_sem, vec![]);
-        Ok((&self.views[idx as usize], gfut))
+    fn views(&self) -> &[Arc<Self::IV>] {
+        &self.views
     }
 
-    fn present(&self, wait_for: Vec<Self::CR>) -> Result<Self::CF, rhi2::swapchain::SwapchainErr> {
+    fn next_image_idx(
+        &mut self,
+    ) -> Result<Option<(usize, Self::TF)>, rhi2::swapchain::SwapchainErr> {
         todo!()
+    }
+
+    fn present(
+        &mut self,
+        idx: usize,
+        deps: Vec<Self::TF>,
+    ) -> Result<(), rhi2::swapchain::SwapchainErr> {
+        let wait_sems: Vec<_> = deps
+            .iter()
+            .filter_map(|d| d.bin_sem.as_ref().map(|s| s.handle))
+            .collect();
+
     }
 }
 

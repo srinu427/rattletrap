@@ -10,7 +10,7 @@ use crate::{
     image::{Format, Image, ImageFlags, ImageView},
     shader::{ShaderSet, ShaderSetInfo},
     swapchain::Swapchain,
-    sync::CpuFuture,
+    sync::TaskFuture,
 };
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -44,7 +44,7 @@ pub trait Device {
             AttachType = Self::GAType,
         >;
     type CRType: CommandRecorder;
-    type CFType: CpuFuture;
+    type TFType: TaskFuture;
 
     fn swapchain(&self) -> &Self::SC;
     fn swapchain_mut(&mut self) -> &mut Self::SC;

@@ -65,4 +65,9 @@ pub trait GraphicsPipeline {
     fn pc_size(&self) -> usize;
     fn new_set(&mut self, set_id: usize) -> Result<Self::SetType, GraphicsPipelineErr>;
     fn new_attach(&self, res: (u32, u32)) -> Result<Self::AttachType, GraphicsPipelineErr>;
+    fn make_attach(
+        &self,
+        color_ivs: Vec<Capped<Self::IVType>>,
+        depth_iv: Option<Capped<Self::IVType>>,
+    ) -> Result<Self::AttachType, GraphicsPipelineErr>;
 }
