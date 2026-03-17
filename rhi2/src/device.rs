@@ -6,7 +6,7 @@ use crate::{
     HostAccess,
     buffer::{Buffer, BufferFlags},
     command::CommandRecorder,
-    graphics_pipeline::{FragmentStageInfo, GraphicsAttach, GraphicsPipeline, VertexStageInfo},
+    graphics_pipeline::{FragmentStageInfo, GraphicsPipeline, VertexStageInfo},
     image::{Format, Image, ImageFlags, ImageView},
     shader::{ShaderSet, ShaderSetInfo},
     swapchain::Swapchain,
@@ -35,13 +35,11 @@ pub trait Device {
     type IType: Image;
     type IVType: ImageView<IType = Self::IType>;
     type SSType: ShaderSet<BType = Self::BType, IType = Self::IType, IVType = Self::IVType>;
-    type GAType: GraphicsAttach<IVType = Self::IVType>;
     type GPType: GraphicsPipeline<
             BType = Self::BType,
             IType = Self::IType,
             IVType = Self::IVType,
             SetType = Self::SSType,
-            AttachType = Self::GAType,
         >;
     type CRType: CommandRecorder;
     type TFType: TaskFuture;
@@ -70,5 +68,5 @@ pub trait Device {
         vert_stage_info: VertexStageInfo,
         frag_stage_info: FragmentStageInfo,
     ) -> Result<Self::GPType, DeviceErr>;
-    fn new_cmd_recorders(&self, count: usize) -> Result<Vec<Self::CRType>, DeviceErr>;
+    fn new_cmd_recorder(&self) -> Result<Self::CRType, DeviceErr>;
 }

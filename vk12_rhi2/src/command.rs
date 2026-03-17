@@ -4,14 +4,15 @@ use std::{
 };
 
 use ash::vk;
+use rhi2::command::CommandErr;
 
 use crate::{
     buffer::Buffer,
     device::DeviceDropper,
-    graphics_pipeline::{GraphicsAttach, GraphicsPipeline},
-    image::{Image, ImageAccess},
+    graphics_pipeline::GraphicsPipeline,
+    image::{Image, ImageAccess, ImageView},
     shader::ShaderSet,
-    sync::{SyncPool, TaskFuture},
+    sync::{SyncPool, TaskFuture, rhi2_pipe_stage_to_vk},
 };
 
 pub struct CmdPool {
@@ -256,9 +257,9 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
 
     type I = Image;
 
-    type GP = GraphicsPipeline;
+    type IV = ImageView;
 
-    type GA = GraphicsAttach;
+    type GP = GraphicsPipeline;
 
     type SS = ShaderSet;
 
@@ -319,15 +320,19 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
         }
     }
 
-    fn graphics(self, pipeline: &Self::GP, attach: &Self::GA) -> Self::GCR {
-        let mut clear_values: Vec<_> = attach
-            .color_ivs
+    fn graphics(
+        self,
+        pipeline: &mut Self::GP,
+        color_ivs: &[Self::IV],
+        depth_iv: Option<&Self::IV>,
+    ) -> Result<Self::GCR, (CommandErr, Self)> {
+        let mut clear_values: Vec<_> = color_ivs
             .iter()
             .map(|_| vk::ClearValue {
                 color: vk::ClearColorValue { float32: [0.0; 4] },
             })
             .collect();
-        if attach.depth_iv.is_some() {
+        if depth_iv.is_some() {
             clear_values.push(vk::ClearValue {
                 depth_stencil: vk::ClearDepthStencilValue {
                     depth: 0.0,
@@ -335,20 +340,34 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
                 },
             });
         }
+        let framebuffer = match pipeline
+            .create_framebuffer(color_ivs, depth_iv)
+            .map_err(CommandErr::GcrCreate)
+        {
+            Ok(fb) => fb,
+            Err(e) => return Err((e, self)),
+        };
+        let res = match color_ivs
+            .first()
+            .ok_or("no color attachments found".to_string())
+            .map_err(CommandErr::GcrCreate)
+        {
+            Ok(iv) => iv,
+            Err(e) => return Err((e, self)),
+        }
+        .image_holder
+        .as_ref()
+        .res;
         unsafe {
             self.get_device().device.cmd_begin_render_pass(
                 self.inner.handle,
                 &vk::RenderPassBeginInfo::default()
                     .render_pass(pipeline.render_pass)
-                    .framebuffer(attach.framebuffer)
+                    .framebuffer(framebuffer)
                     .render_area(
                         vk::Rect2D::default()
                             .offset(vk::Offset2D::default())
-                            .extent(
-                                vk::Extent2D::default()
-                                    .width(attach.res.0)
-                                    .height(attach.res.1),
-                            ),
+                            .extent(vk::Extent2D::default().width(res.0).height(res.1)),
                     )
                     .clear_values(&clear_values),
                 vk::SubpassContents::INLINE,
@@ -359,11 +378,11 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
                 pipeline.handle,
             );
         }
-        GraphicsCommandRecorder {
+        Ok(GraphicsCommandRecorder {
             recorder: self,
             pipeline: pipeline.handle,
             pipeline_layout: pipeline.layout_handle,
-        }
+        })
     }
 
     fn finish_graphics(gcr: Self::GCR) -> Self {
@@ -456,27 +475,24 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
             rhi2::sync::PipelineStage,
         )>,
     ) -> Result<Self::TF, rhi2::command::CommandErr> {
-    }
-}
+        let mut sems = vec![];
+        let mut sem_counts = vec![];
+        let mut on_stages = vec![];
+        let mut by_stages = vec![];
 
-pub struct CRDep {
-    task: Task,
-    on: rhi2::sync::PipelineStage,
-    by: rhi2::sync::PipelineStage,
-}
+        for (tf, on, by) in &deps {
+            let sem_infos = tf.sem_infos();
+            let on_stage = rhi2_pipe_stage_to_vk(on);
+            let by_stage = rhi2_pipe_stage_to_vk(by);
+            for (sem, count) in sem_infos {
+                sems.push(sem);
+                sem_counts.push(count);
+                on_stages.push(on_stage);
+                by_stages.push(by_stage);
+            }
+        }
 
-pub struct Task {
-    cr: CommandRecorder,
-    deps: Vec<CRDep>,
-}
-
-impl rhi2::command::Task for Task {
-    fn add_dep(
-        &mut self,
-        task: Self,
-        on: rhi2::sync::PipelineStage,
-        by: rhi2::sync::PipelineStage,
-    ) {
-        self.deps.push(CRDep { task, on, by });
+        unsafe {}
+        todo!()
     }
 }

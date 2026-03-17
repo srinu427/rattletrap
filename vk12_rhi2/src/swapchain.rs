@@ -1,14 +1,16 @@
 use std::sync::{Arc, Mutex};
 
 use ash::vk;
-use log::warn;
-use rhi2::image::{Format, ImageView as _};
+use rhi2::{
+    image::{Format, ImageView as _},
+    swapchain::SwapchainErr,
+};
 
 use crate::{
-    command::{CommandRecorder, Task},
-    device::{DeviceDropper, run_cmds_gpu_sync_internal},
+    command::CommandRecorder,
+    device::DeviceDropper,
     image::{Image, ImageAccess, ImageView, rhi2_fmt_to_vk_fmt},
-    sync::{BinSem, SyncPool, TaskFuture},
+    sync::{SyncPool, TaskFuture},
 };
 
 fn get_sc_formats(device: &Arc<DeviceDropper>) -> Result<Vec<vk::SurfaceFormatKHR>, String> {
@@ -107,7 +109,31 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    fn wrap_img(img: vk::Image, format: rhi2::image::Format, res: (usize, usize))
+    fn wrap_img(
+        device_dropper: &Arc<DeviceDropper>,
+        img: vk::Image,
+        format: rhi2::image::Format,
+        res: (u32, u32),
+    ) -> Image {
+        Image {
+            handle: img,
+            format,
+            res: (res.0, res.1, 1),
+            layers: 1,
+            memory: None,
+            flags: rhi2::image::ImageFlags::Storage
+                | rhi2::image::ImageFlags::CopyDst
+                | rhi2::image::ImageFlags::RenderAttach,
+            host_access: rhi2::HostAccess::None,
+            device_dropper: device_dropper.clone(),
+            last_access: Arc::new(Mutex::new(ImageAccess {
+                layout: vk::ImageLayout::UNDEFINED,
+                access: vk::AccessFlags::empty(),
+                psf: vk::PipelineStageFlags::ALL_COMMANDS,
+            })),
+        }
+    }
+
     pub fn new(
         device: &Arc<DeviceDropper>,
         sync_pool: &Arc<SyncPool>,
@@ -164,29 +190,14 @@ impl Swapchain {
                 .create_swapchain(&swapchain_create_info, None)
                 .map_err(|e| format!("create Swapchain failed: {e}"))?
         };
+        let res = (surface_resolution.width, surface_resolution.height);
         let images: Vec<_> = unsafe {
             device
                 .swapchain_device
                 .get_swapchain_images(swapchain)
                 .map_err(|e| format!("get swapchain images failed: {e}"))?
                 .into_iter()
-                .map(|img| Image {
-                    handle: img,
-                    format: swapchain_format,
-                    res: (surface_resolution.width, surface_resolution.height, 1),
-                    layers: 1,
-                    memory: None,
-                    flags: rhi2::image::ImageFlags::Storage
-                        | rhi2::image::ImageFlags::CopyDst
-                        | rhi2::image::ImageFlags::RenderAttach,
-                    host_access: rhi2::HostAccess::None,
-                    device_dropper: device.clone(),
-                    last_access: Arc::new(Mutex::new(ImageAccess {
-                        layout: vk::ImageLayout::UNDEFINED,
-                        access: vk::AccessFlags::empty(),
-                        psf: vk::PipelineStageFlags::ALL_COMMANDS,
-                    })),
-                })
+                .map(|img| Self::wrap_img(device, img, swapchain_format, res))
                 .map(Arc::new)
                 .collect()
         };
@@ -207,7 +218,7 @@ impl Swapchain {
             images,
             views,
             dep_task_futs,
-            res: (surface_resolution.width, surface_resolution.height),
+            res,
             device_dropper: device.clone(),
             sync_pool: sync_pool.clone(),
         })
@@ -244,29 +255,14 @@ impl Swapchain {
                 .create_swapchain(&swapchain_create_info, None)
                 .map_err(|e| format!("new swapchain creation failed: {e}"))?
         };
+        let res = (surface_resolution.width, surface_resolution.height);
         let new_images: Vec<_> = unsafe {
             self.device_dropper
                 .swapchain_device
                 .get_swapchain_images(new_sc)
                 .map_err(|e| format!("get swapchain images failed: {e}"))?
                 .into_iter()
-                .map(|img| Image {
-                    handle: img,
-                    format: self.rhi2_fmt,
-                    res: (surface_resolution.width, surface_resolution.height, 1),
-                    layers: 1,
-                    memory: None,
-                    flags: rhi2::image::ImageFlags::Storage
-                        | rhi2::image::ImageFlags::CopyDst
-                        | rhi2::image::ImageFlags::RenderAttach,
-                    host_access: rhi2::HostAccess::None,
-                    device_dropper: self.device_dropper.clone(),
-                    last_access: Arc::new(Mutex::new(ImageAccess {
-                        layout: vk::ImageLayout::UNDEFINED,
-                        access: vk::AccessFlags::empty(),
-                        psf: vk::PipelineStageFlags::ALL_COMMANDS,
-                    })),
-                })
+                .map(|img| Self::wrap_img(&self.device_dropper, img, self.rhi2_fmt, res))
                 .map(Arc::new)
                 .collect()
         };
@@ -304,7 +300,7 @@ impl rhi2::swapchain::Swapchain for Swapchain {
         self.res
     }
 
-    fn refresh_res(&mut self) -> Result<(), rhi2::swapchain::SwapchainErr> {
+    fn refresh_res(&mut self) -> Result<(), SwapchainErr> {
         self.refresh_res()
             .map_err(|e| format!("refreshing swapchain res failed: {e}"))
             .map_err(rhi2::swapchain::SwapchainErr::ResRefreshErr)
@@ -318,22 +314,29 @@ impl rhi2::swapchain::Swapchain for Swapchain {
         &self.views
     }
 
-    fn next_image_idx(
-        &mut self,
-    ) -> Result<Option<(usize, Self::TF)>, rhi2::swapchain::SwapchainErr> {
+    fn next_image_idx(&mut self) -> Result<Option<(usize, Self::TF)>, SwapchainErr> {
         todo!()
     }
 
-    fn present(
-        &mut self,
-        idx: usize,
-        deps: Vec<Self::TF>,
-    ) -> Result<(), rhi2::swapchain::SwapchainErr> {
+    fn present(&mut self, idx: usize, deps: Vec<Self::TF>) -> Result<(), SwapchainErr> {
         let wait_sems: Vec<_> = deps
             .iter()
             .filter_map(|d| d.bin_sem.as_ref().map(|s| s.handle))
             .collect();
-
+        unsafe {
+            self.device_dropper
+                .swapchain_device
+                .queue_present(
+                    self.device_dropper.gfx_queue,
+                    &vk::PresentInfoKHR::default()
+                        .swapchains(&[self.handle])
+                        .image_indices(&[idx as _])
+                        .wait_semaphores(&wait_sems),
+                )
+                .map_err(|e| format!("image present failed: {e}"))
+                .map_err(SwapchainErr::PresentImageErr);
+        }
+        Ok(())
     }
 }
 

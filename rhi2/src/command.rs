@@ -1,14 +1,16 @@
 use crate::{
     Capped,
     buffer::Buffer,
-    graphics_pipeline::{GraphicsAttach, GraphicsPipeline},
-    image::Image,
+    graphics_pipeline::GraphicsPipeline,
+    image::{Image, ImageView},
     shader::ShaderSet,
     sync::{PipelineStage, TaskFuture},
 };
 
 #[derive(Debug, thiserror::Error)]
 pub enum CommandErr {
+    #[error("graphics command recorder creation error: {0}")]
+    GcrCreate(String),
     #[error("future creation error: {0}")]
     RunErr(String),
 }
@@ -26,15 +28,20 @@ pub trait GraphicsCommandRecorder {
 pub trait CommandRecorder: Sized {
     type B: Buffer;
     type I: Image;
+    type IV: ImageView;
     type GP: GraphicsPipeline;
-    type GA: GraphicsAttach;
     type SS: ShaderSet;
     type GCR: GraphicsCommandRecorder;
     type TF: TaskFuture;
 
     fn copy_b2b(&mut self, src: &Self::B, src_offset: usize, dst: &Self::B, dst_offset: usize);
     fn copy_b2i(&mut self, src: &Self::B, dst: &Self::I);
-    fn graphics(self, pipeline: &Self::GP, attach: &Self::GA) -> Self::GCR;
+    fn graphics(
+        self,
+        pipeline: &mut Self::GP,
+        color_ivs: &[Self::IV],
+        depth_iv: Option<&Self::IV>,
+    ) -> Result<Self::GCR, (CommandErr, Self)>;
     fn finish_graphics(gcr: Self::GCR) -> Self;
     fn blit(&mut self, src: &Self::I, dst: &Self::I);
     fn keep_buffer_alive(&mut self, buffer: Capped<Self::B>);

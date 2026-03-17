@@ -1,5 +1,4 @@
 use crate::{
-    Capped,
     buffer::Buffer,
     image::{Format, Image, ImageView},
     shader::ShaderSet,
@@ -41,13 +40,6 @@ pub struct AttachInfo {
     pub store: bool,
 }
 
-pub trait GraphicsAttach {
-    type IVType: ImageView;
-
-    fn color_ivs(&self) -> &[Capped<Self::IVType>];
-    fn depth_iv(&self) -> Option<&Capped<Self::IVType>>;
-}
-
 pub struct FragmentStageInfo<'a> {
     pub entrypoint: &'a str,
     pub outputs: Vec<AttachInfo>,
@@ -59,15 +51,8 @@ pub trait GraphicsPipeline {
     type IType: Image;
     type IVType: ImageView<IType = Self::IType>;
     type SetType: ShaderSet<BType = Self::BType, IType = Self::IType, IVType = Self::IVType>;
-    type AttachType: GraphicsAttach<IVType = Self::IVType>;
 
     fn set_count(&self) -> usize;
     fn pc_size(&self) -> usize;
     fn new_set(&mut self, set_id: usize) -> Result<Self::SetType, GraphicsPipelineErr>;
-    fn new_attach(&self, res: (u32, u32)) -> Result<Self::AttachType, GraphicsPipelineErr>;
-    fn make_attach(
-        &self,
-        color_ivs: Vec<Capped<Self::IVType>>,
-        depth_iv: Option<Capped<Self::IVType>>,
-    ) -> Result<Self::AttachType, GraphicsPipelineErr>;
 }

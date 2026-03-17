@@ -156,6 +156,14 @@ impl TaskFuture {
     pub fn increase_count(&mut self, count: u64) {
         self.inner.count += count;
     }
+
+    pub fn sem_infos(&self) -> Vec<(vk::Semaphore, u64)> {
+        let mut out = vec![(self.inner.handle, self.inner.count)];
+        if let Some(bs) = self.bin_sem.as_ref() {
+            out.push((bs.handle, 0));
+        }
+        out
+    }
 }
 
 impl rhi2::sync::TaskFuture for TaskFuture {

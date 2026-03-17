@@ -1,6 +1,7 @@
 use std::{fs, sync::Arc};
 
 use ash::vk;
+use hashbrown::HashMap;
 use rhi2::image::ImageView as _;
 
 use crate::{
@@ -11,35 +12,7 @@ use crate::{
     shader::ShaderSet,
 };
 
-pub struct GraphicsAttach {
-    pub color_ivs: Vec<rhi2::Capped<ImageView>>,
-    pub depth_iv: Option<rhi2::Capped<ImageView>>,
-    pub framebuffer: vk::Framebuffer,
-    pub res: (u32, u32),
-    pub device_dropper: Arc<DeviceDropper>,
-}
-
-impl rhi2::graphics_pipeline::GraphicsAttach for GraphicsAttach {
-    type IVType = ImageView;
-
-    fn color_ivs(&self) -> &[rhi2::Capped<Self::IVType>] {
-        &self.color_ivs
-    }
-
-    fn depth_iv(&self) -> Option<&rhi2::Capped<Self::IVType>> {
-        self.depth_iv.as_ref()
-    }
-}
-
-impl Drop for GraphicsAttach {
-    fn drop(&mut self) {
-        unsafe {
-            self.device_dropper
-                .device
-                .destroy_framebuffer(self.framebuffer, None);
-        }
-    }
-}
+const MAX_CACHED_FBS: usize = 128;
 
 pub struct DPool {
     pub handle: vk::DescriptorPool,
@@ -240,6 +213,12 @@ fn rhi2_va_to_vk_fmt(att: &rhi2::graphics_pipeline::VertexAttribute) -> vk::Form
     }
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct ImagesHashable {
+    color: Vec<vk::ImageView>,
+    depth: Option<vk::ImageView>,
+}
+
 pub struct GraphicsPipeline {
     pub handle: vk::Pipeline,
     pub layout_handle: vk::PipelineLayout,
@@ -248,6 +227,7 @@ pub struct GraphicsPipeline {
     pub pc_size: usize,
     pub frag_output_infos: Vec<rhi2::graphics_pipeline::AttachInfo>,
     pub frag_depth_infos: Option<rhi2::graphics_pipeline::AttachInfo>,
+    pub framebuffer_cache: HashMap<ImagesHashable, vk::Framebuffer>,
     pub device_dropper: Arc<DeviceDropper>,
 }
 
@@ -482,8 +462,70 @@ impl GraphicsPipeline {
             pc_size,
             frag_output_infos: frag_stage_info.outputs,
             frag_depth_infos: frag_stage_info.depth,
+            framebuffer_cache: HashMap::new(),
             device_dropper: device_dropper.clone(),
         })
+    }
+
+    pub fn create_framebuffer(
+        &mut self,
+        color: &[ImageView],
+        depth: Option<&ImageView>,
+    ) -> Result<vk::Framebuffer, String> {
+        let hash_obj = ImagesHashable {
+            color: color.iter().map(|a| a.handle).collect(),
+            depth: depth.as_ref().map(|a| a.handle),
+        };
+        if let Some(fb) = self.framebuffer_cache.get(&hash_obj).cloned() {
+            return Ok(fb);
+        }
+        let res = color
+            .first()
+            .ok_or("no color attachments provided".to_string())?
+            .image_holder
+            .as_ref()
+            .res;
+        let res = (res.0, res.1);
+        for ca in &color[1..] {
+            let ca_res = ca.image_holder.as_ref().res;
+            let ca_res = (ca_res.0, ca_res.1);
+            if ca_res != res {
+                return Err("not all attachments are of same res".to_string());
+            }
+        }
+        if let Some(da) = &depth {
+            let da_res = da.image_holder.as_ref().res;
+            let da_res = (da_res.0, da_res.1);
+            if da_res != res {
+                return Err("not all attachments are of same res".to_string());
+            }
+        }
+        let mut attachments: Vec<_> = color.iter().map(|a| a.handle).collect();
+        if let Some(da) = &depth {
+            attachments.push(da.handle);
+        }
+        let create_info = vk::FramebufferCreateInfo::default()
+            .render_pass(self.render_pass)
+            .attachment_count(attachments.len() as _)
+            .attachments(&attachments)
+            .width(res.0)
+            .height(res.1)
+            .layers(1);
+        let fb = unsafe {
+            self.device_dropper
+                .device
+                .create_framebuffer(&create_info, None)
+                .map_err(|e| format!("vk framebuffer create failed: {e}"))?
+        };
+        if self.framebuffer_cache.len() >= MAX_CACHED_FBS {
+            for (_, fb) in self.framebuffer_cache.drain() {
+                unsafe {
+                    self.device_dropper.device.destroy_framebuffer(fb, None);
+                }
+            }
+        }
+        self.framebuffer_cache.insert(hash_obj, fb);
+        Ok(fb)
     }
 }
 
@@ -495,8 +537,6 @@ impl rhi2::graphics_pipeline::GraphicsPipeline for GraphicsPipeline {
     type IVType = ImageView;
 
     type SetType = ShaderSet;
-
-    type AttachType = GraphicsAttach;
 
     fn set_count(&self) -> usize {
         self.descriptor_gens.len()
@@ -514,130 +554,14 @@ impl rhi2::graphics_pipeline::GraphicsPipeline for GraphicsPipeline {
             .new_shader_set()
             .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::SetCreateFailed)
     }
+}
 
-    fn new_attach(
-        &self,
-        res: (u32, u32),
-    ) -> Result<Self::AttachType, rhi2::graphics_pipeline::GraphicsPipelineErr> {
-        let mut color_ivs = vec![];
-        for attach_info in &self.frag_output_infos {
-            let image = Image::new(
-                &self.device_dropper,
-                attach_info.format,
-                (res.0, res.1, 1),
-                1,
-                rhi2::image::ImageFlags::RenderAttach.into(),
-                rhi2::HostAccess::None,
-            )
-            .map_err(|e| e.to_string())
-            .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed)?;
-            let iv = ImageView::new(rhi2::Capped::Obj(image), rhi2::image::ViewType::E2d)
-                .map_err(|e| e.to_string())
-                .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed)?;
-            color_ivs.push(rhi2::Capped::Obj(iv));
-        }
-        let mut depth_iv = None;
-        if let Some(attach_info) = &self.frag_depth_infos {
-            let image = Image::new(
-                &self.device_dropper,
-                attach_info.format,
-                (res.0, res.1, 1),
-                1,
-                rhi2::image::ImageFlags::RenderAttach.into(),
-                rhi2::HostAccess::None,
-            )
-            .map_err(|e| e.to_string())
-            .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed)?;
-            let iv = ImageView::new(rhi2::Capped::Obj(image), rhi2::image::ViewType::E2d)
-                .map_err(|e| e.to_string())
-                .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed)?;
-            depth_iv = Some(rhi2::Capped::Obj(iv))
-        }
-        let mut attachments: Vec<_> = color_ivs.iter().map(|iv| iv.as_ref().handle).collect();
-        if let Some(iv) = depth_iv.as_ref() {
-            attachments.push(iv.as_ref().handle);
-        }
-        let fb_create_info = vk::FramebufferCreateInfo::default()
-            .width(res.0)
-            .height(res.1)
-            .layers(1)
-            .render_pass(self.render_pass)
-            .attachments(&attachments)
-            .attachment_count(attachments.len() as _);
-        let framebuffer = unsafe {
-            self.device_dropper
-                .device
-                .create_framebuffer(&fb_create_info, None)
-                .map_err(|e| e.to_string())
-                .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed)?
-        };
-        Ok(GraphicsAttach {
-            color_ivs,
-            depth_iv,
-            framebuffer,
-            res,
-            device_dropper: self.device_dropper.clone(),
-        })
-    }
-
-    fn make_attach(
-        &self,
-        color_ivs: Vec<rhi2::Capped<Self::IVType>>,
-        depth_iv: Option<rhi2::Capped<Self::IVType>>,
-    ) -> Result<Self::AttachType, rhi2::graphics_pipeline::GraphicsPipelineErr> {
-        let res = color_ivs
-            .first()
-            .ok_or("empty color attach list given".to_string())
-            .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed)?
-            .as_ref()
-            .image()
-            .as_ref()
-            .res;
-        let res = (res.0, res.1);
-        for iv in &color_ivs[1..] {
-            let iv_res = iv.as_ref().image().as_ref().res;
-            let iv_res = (iv_res.0, iv_res.1);
-            if iv_res != res {
-                return Err(
-                    rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed(
-                        "image views are of different res".to_string(),
-                    ),
-                );
+impl Drop for GraphicsPipeline {
+    fn drop(&mut self) {
+        unsafe {
+            for (_, fb) in self.framebuffer_cache.drain() {
+                self.device_dropper.device.destroy_framebuffer(fb, None);
             }
         }
-        if let Some(iv) = depth_iv.as_ref() {
-            let iv_res = iv.as_ref().image().as_ref().res;
-            let iv_res = (iv_res.0, iv_res.1);
-            return Err(
-                rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed(
-                    "image views are of different res".to_string(),
-                ),
-            );
-        }
-        let mut attachments: Vec<_> = color_ivs.iter().map(|iv| iv.as_ref().handle).collect();
-        if let Some(iv) = depth_iv.as_ref() {
-            attachments.push(iv.as_ref().handle);
-        }
-        let fb_create_info = vk::FramebufferCreateInfo::default()
-            .width(res.0)
-            .height(res.1)
-            .layers(1)
-            .render_pass(self.render_pass)
-            .attachments(&attachments)
-            .attachment_count(attachments.len() as _);
-        let framebuffer = unsafe {
-            self.device_dropper
-                .device
-                .create_framebuffer(&fb_create_info, None)
-                .map_err(|e| e.to_string())
-                .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::AttachCreateFailed)?
-        };
-        Ok(GraphicsAttach {
-            color_ivs,
-            depth_iv,
-            framebuffer,
-            res,
-            device_dropper: self.device_dropper.clone(),
-        })
     }
 }
