@@ -72,9 +72,9 @@ pub enum ViewType {
 }
 
 pub trait ImageView: Sized {
-    type IType: Image;
+    type I: Image;
 
-    fn new(image: Capped<Self::IType>, view_type: ViewType) -> Result<Self, ImageViewErr>;
-    fn image(&self) -> &Capped<Self::IType>;
+    fn new(image: Capped<Self::I>, view_type: ViewType) -> Result<Self, ImageViewErr>;
+    fn image(&self) -> &Capped<Self::I>;
     fn view_type(&self) -> ViewType;
 }

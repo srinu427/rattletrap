@@ -2,7 +2,6 @@ use std::{fs, sync::Arc};
 
 use ash::vk;
 use hashbrown::HashMap;
-use rhi2::image::ImageView as _;
 
 use crate::{
     buffer::Buffer,
@@ -227,7 +226,7 @@ pub struct GraphicsPipeline {
     pub pc_size: usize,
     pub frag_output_infos: Vec<rhi2::graphics_pipeline::AttachInfo>,
     pub frag_depth_infos: Option<rhi2::graphics_pipeline::AttachInfo>,
-    pub framebuffer_cache: HashMap<ImagesHashable, vk::Framebuffer>,
+    framebuffer_cache: HashMap<ImagesHashable, vk::Framebuffer>,
     pub device_dropper: Arc<DeviceDropper>,
 }
 
@@ -530,13 +529,13 @@ impl GraphicsPipeline {
 }
 
 impl rhi2::graphics_pipeline::GraphicsPipeline for GraphicsPipeline {
-    type BType = Buffer;
+    type B = Buffer;
 
-    type IType = Image;
+    type I = Image;
 
-    type IVType = ImageView;
+    type IV = ImageView;
 
-    type SetType = ShaderSet;
+    type SS = ShaderSet;
 
     fn set_count(&self) -> usize {
         self.descriptor_gens.len()
@@ -549,7 +548,7 @@ impl rhi2::graphics_pipeline::GraphicsPipeline for GraphicsPipeline {
     fn new_set(
         &mut self,
         set_id: usize,
-    ) -> Result<Self::SetType, rhi2::graphics_pipeline::GraphicsPipelineErr> {
+    ) -> Result<Self::SS, rhi2::graphics_pipeline::GraphicsPipelineErr> {
         self.descriptor_gens[set_id]
             .new_shader_set()
             .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::SetCreateFailed)

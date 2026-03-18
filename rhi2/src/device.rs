@@ -5,7 +5,7 @@ use enumflags2::BitFlags;
 use crate::{
     HostAccess,
     buffer::{Buffer, BufferFlags},
-    command::CommandRecorder,
+    command::{CommandRecorder, GraphicsCommandRecorder},
     graphics_pipeline::{FragmentStageInfo, GraphicsPipeline, VertexStageInfo},
     image::{Format, Image, ImageFlags, ImageView},
     shader::{ShaderSet, ShaderSetInfo},
@@ -31,18 +31,20 @@ pub enum DeviceErr {
 
 pub trait Device {
     type SC: Swapchain;
-    type BType: Buffer;
-    type IType: Image;
-    type IVType: ImageView<IType = Self::IType>;
-    type SSType: ShaderSet<BType = Self::BType, IType = Self::IType, IVType = Self::IVType>;
-    type GPType: GraphicsPipeline<
-            BType = Self::BType,
-            IType = Self::IType,
-            IVType = Self::IVType,
-            SetType = Self::SSType,
+    type B: Buffer;
+    type I: Image;
+    type IV: ImageView<I = Self::I>;
+    type SS: ShaderSet<B = Self::B, I = Self::I, IV = Self::IV>;
+    type GP: GraphicsPipeline<B = Self::B, I = Self::I, IV = Self::IV, SS = Self::SS>;
+    type TF: TaskFuture;
+    type CR: CommandRecorder<
+            B = Self::B,
+            I = Self::I,
+            IV = Self::IV,
+            GP = Self::GP,
+            SS = Self::SS,
+            TF = Self::TF,
         >;
-    type CRType: CommandRecorder;
-    type TFType: TaskFuture;
 
     fn swapchain(&self) -> &Self::SC;
     fn swapchain_mut(&mut self) -> &mut Self::SC;
@@ -51,7 +53,7 @@ pub trait Device {
         size: usize,
         flags: BitFlags<BufferFlags>,
         host_access: HostAccess,
-    ) -> Result<Self::BType, DeviceErr>;
+    ) -> Result<Self::B, DeviceErr>;
     fn new_image(
         &self,
         format: Format,
@@ -59,7 +61,7 @@ pub trait Device {
         layers: u32,
         flags: BitFlags<ImageFlags>,
         host_access: HostAccess,
-    ) -> Result<Self::IType, DeviceErr>;
+    ) -> Result<Self::I, DeviceErr>;
     fn new_graphics_pipeline(
         &self,
         shader: &str,
@@ -67,6 +69,7 @@ pub trait Device {
         pc_size: usize,
         vert_stage_info: VertexStageInfo,
         frag_stage_info: FragmentStageInfo,
-    ) -> Result<Self::GPType, DeviceErr>;
-    fn new_cmd_recorder(&self) -> Result<Self::CRType, DeviceErr>;
+    ) -> Result<Self::GP, DeviceErr>;
+    fn new_cmd_recorder(&self) -> Result<Self::CR, DeviceErr>;
+    fn run_work_graph(&self) -> Result<Self::TF, DeviceErr>;
 }

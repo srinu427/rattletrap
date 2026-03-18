@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    buffer::Buffer,
     command::CommandRecorder,
     image::{Format, Image, ImageView},
     sync::TaskFuture,
@@ -17,10 +18,11 @@ pub enum SwapchainErr {
 }
 
 pub trait Swapchain {
+    type B: Buffer;
     type I: Image;
-    type IV: ImageView;
-    type CR: CommandRecorder;
+    type IV: ImageView<I = Self::I>;
     type TF: TaskFuture;
+    type CR: CommandRecorder<B = Self::B, I = Self::I, IV = Self::IV, TF = Self::TF>;
 
     fn res(&self) -> (u32, u32);
     fn fmt(&self) -> Format;

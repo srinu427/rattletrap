@@ -117,6 +117,10 @@ pub struct GraphicsCommandRecorder {
 impl rhi2::command::GraphicsCommandRecorder for GraphicsCommandRecorder {
     type B = Buffer;
 
+    type I = Image;
+
+    type IV = ImageView;
+
     type SS = ShaderSet;
 
     fn bind_vbs(&mut self, vbs: &[Self::B]) {
@@ -179,6 +183,7 @@ pub struct CommandRecorder {
     pub image_layouts: HashMap<vk::Image, (ImageAccess, Arc<Mutex<ImageAccess>>)>,
     pub keep_alive_buffers: Vec<rhi2::Capped<Buffer>>,
     pub sync_pool: Arc<SyncPool>,
+    pub has_swapchain_updates: bool,
 }
 
 impl CommandRecorder {
@@ -197,6 +202,7 @@ impl CommandRecorder {
                 image_layouts: HashMap::new(),
                 keep_alive_buffers: vec![],
                 sync_pool: sync_pool.clone(),
+                has_swapchain_updates: false,
             })
             .collect();
         Ok(crs)
@@ -318,10 +324,13 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
                     )],
             );
         }
+        if dst.is_swapchain() && !self.has_swapchain_updates {
+            self.has_swapchain_updates = true;
+        }
     }
 
     fn graphics(
-        self,
+        mut self,
         pipeline: &mut Self::GP,
         color_ivs: &[Self::IV],
         depth_iv: Option<&Self::IV>,
@@ -377,6 +386,21 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
                 vk::PipelineBindPoint::GRAPHICS,
                 pipeline.handle,
             );
+        }
+        if !self.has_swapchain_updates {
+            for a in color_ivs {
+                if a.is_swapchain() {
+                    self.has_swapchain_updates = true;
+                    break;
+                }
+            }
+        }
+        if !self.has_swapchain_updates {
+            if let Some(a) = depth_iv.as_ref() {
+                if a.is_swapchain() {
+                    self.has_swapchain_updates = true;
+                }
+            }
         }
         Ok(GraphicsCommandRecorder {
             recorder: self,
@@ -461,6 +485,11 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
                 vk::Filter::NEAREST,
             );
         }
+        if !self.has_swapchain_updates {
+            if src.is_swapchain() || dst.is_swapchain() {
+                self.has_swapchain_updates = true;
+            }
+        }
     }
 
     fn keep_buffer_alive(&mut self, buffer: rhi2::Capped<Self::B>) {
@@ -474,7 +503,7 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
             rhi2::sync::PipelineStage,
             rhi2::sync::PipelineStage,
         )>,
-    ) -> Result<Self::TF, rhi2::command::CommandErr> {
+    ) -> Result<Self::TF, CommandErr> {
         let mut sems = vec![];
         let mut sem_counts = vec![];
         let mut on_stages = vec![];
@@ -492,7 +521,38 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
             }
         }
 
-        unsafe {}
-        todo!()
+        let mut tf = TaskFuture::new(&self.sync_pool, self.has_swapchain_updates)
+            .map_err(|e| format!("creating task future failed: {e}"))
+            .map_err(CommandErr::RunErr)?;
+        tf.increase_count(1);
+        let mut sub_sems = vec![];
+        let mut sub_sem_counts = vec![];
+        let sub_sem_infos = tf.sem_infos();
+        for (sem, count) in sub_sem_infos {
+            sub_sems.push(sem);
+            sub_sem_counts.push(count);
+        }
+
+        unsafe {
+            let mut tl_sem_info = vk::TimelineSemaphoreSubmitInfo::default()
+                .signal_semaphore_values(&sem_counts)
+                .wait_semaphore_values(&sub_sem_counts);
+
+            self.get_device()
+                .device
+                .queue_submit(
+                    self.get_device().gfx_queue,
+                    &[vk::SubmitInfo::default()
+                        .command_buffers(&[self.inner.handle])
+                        .wait_semaphores(&sems)
+                        .wait_dst_stage_mask(&on_stages)
+                        .signal_semaphores(&sub_sems)
+                        .push_next(&mut tl_sem_info)],
+                    vk::Fence::null(),
+                )
+                .map_err(|e| format!("submitting task to queue failed: {e}"))
+                .map_err(CommandErr::RunErr)?;
+        }
+        Ok(tf)
     }
 }

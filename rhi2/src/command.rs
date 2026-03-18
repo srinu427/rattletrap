@@ -17,7 +17,9 @@ pub enum CommandErr {
 
 pub trait GraphicsCommandRecorder {
     type B: Buffer;
-    type SS: ShaderSet;
+    type I: Image;
+    type IV: ImageView<I = Self::I>;
+    type SS: ShaderSet<B = Self::B, I = Self::I, IV = Self::IV>;
 
     fn bind_vbs(&mut self, vbs: &[Self::B]);
     fn bind_ib(&mut self, ib: &Self::B, is_16bit: bool);
@@ -28,10 +30,10 @@ pub trait GraphicsCommandRecorder {
 pub trait CommandRecorder: Sized {
     type B: Buffer;
     type I: Image;
-    type IV: ImageView;
-    type GP: GraphicsPipeline;
-    type SS: ShaderSet;
-    type GCR: GraphicsCommandRecorder;
+    type IV: ImageView<I = Self::I>;
+    type SS: ShaderSet<B = Self::B, I = Self::I, IV = Self::IV>;
+    type GP: GraphicsPipeline<B = Self::B, I = Self::I, IV = Self::IV, SS = Self::SS>;
+    type GCR: GraphicsCommandRecorder<B = Self::B, I = Self::I, IV = Self::IV, SS = Self::SS>;
     type TF: TaskFuture;
 
     fn copy_b2b(&mut self, src: &Self::B, src_offset: usize, dst: &Self::B, dst_offset: usize);

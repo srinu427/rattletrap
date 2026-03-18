@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    u64,
+};
 
 use ash::vk;
 use rhi2::{
@@ -7,11 +10,18 @@ use rhi2::{
 };
 
 use crate::{
+    buffer::Buffer,
     command::CommandRecorder,
     device::DeviceDropper,
     image::{Image, ImageAccess, ImageView, rhi2_fmt_to_vk_fmt},
     sync::{SyncPool, TaskFuture},
 };
+
+fn sc_img_usage_flags() -> vk::ImageUsageFlags {
+    vk::ImageUsageFlags::COLOR_ATTACHMENT
+        | vk::ImageUsageFlags::TRANSFER_DST
+        | vk::ImageUsageFlags::STORAGE
+}
 
 fn get_sc_formats(device: &Arc<DeviceDropper>) -> Result<Vec<vk::SurfaceFormatKHR>, String> {
     unsafe {
@@ -102,7 +112,6 @@ pub struct Swapchain {
     present_mode: vk::PresentModeKHR,
     images: Vec<Arc<Image>>,
     views: Vec<Arc<ImageView>>,
-    dep_task_futs: Vec<Vec<TaskFuture>>,
     res: (u32, u32),
     sync_pool: Arc<SyncPool>,
     device_dropper: Arc<DeviceDropper>,
@@ -170,11 +179,7 @@ impl Swapchain {
             .image_color_space(surface_format.color_space)
             .image_extent(surface_resolution)
             .image_array_layers(1)
-            .image_usage(
-                vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::TRANSFER_DST
-                    | vk::ImageUsageFlags::STORAGE,
-            )
+            .image_usage(sc_img_usage_flags())
             .pre_transform(sc_caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(surface_present_mode)
@@ -209,7 +214,6 @@ impl Swapchain {
                     .map_err(|e| e.to_string())
             })
             .collect::<Result<_, _>>()?;
-        let dep_task_futs = (0..images.len()).map(|_| Vec::new()).collect();
         Ok(Self {
             handle: swapchain,
             format: surface_format,
@@ -217,7 +221,6 @@ impl Swapchain {
             present_mode: surface_present_mode,
             images,
             views,
-            dep_task_futs,
             res,
             device_dropper: device.clone(),
             sync_pool: sync_pool.clone(),
@@ -239,11 +242,7 @@ impl Swapchain {
             .image_color_space(self.format.color_space)
             .image_extent(surface_resolution)
             .image_array_layers(1)
-            .image_usage(
-                vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::TRANSFER_DST
-                    | vk::ImageUsageFlags::STORAGE,
-            )
+            .image_usage(sc_img_usage_flags())
             .pre_transform(sc_caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(self.present_mode)
@@ -288,6 +287,8 @@ impl Swapchain {
 }
 
 impl rhi2::swapchain::Swapchain for Swapchain {
+    type B = Buffer;
+
     type I = Image;
 
     type IV = ImageView;
@@ -315,13 +316,45 @@ impl rhi2::swapchain::Swapchain for Swapchain {
     }
 
     fn next_image_idx(&mut self) -> Result<Option<(usize, Self::TF)>, SwapchainErr> {
-        todo!()
+        let tf = TaskFuture::new(&self.sync_pool, true)
+            .map_err(|e| format!("task future creation failed: {e}"))
+            .map_err(SwapchainErr::NextImageIdxErr)?;
+        let sem = tf
+            .bin_sem
+            .clone()
+            .ok_or("bin sem not created. shouldn't happen".to_string())
+            .map_err(SwapchainErr::NextImageIdxErr)?;
+        let aqr_img_res = unsafe {
+            self.device_dropper.swapchain_device.acquire_next_image(
+                self.handle,
+                u64::MAX,
+                sem,
+                vk::Fence::null(),
+            )
+        };
+        let res = match aqr_img_res {
+            Ok(x) => {
+                if x.1 {
+                    Some((x.0 as usize, tf))
+                } else {
+                    None
+                }
+            }
+            Err(e) => match e {
+                vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR => None,
+                _ => {
+                    let err_str = format!("get next image failed: {e}");
+                    return Err(SwapchainErr::NextImageIdxErr(err_str));
+                }
+            },
+        };
+        Ok(res)
     }
 
     fn present(&mut self, idx: usize, deps: Vec<Self::TF>) -> Result<(), SwapchainErr> {
         let wait_sems: Vec<_> = deps
             .iter()
-            .filter_map(|d| d.bin_sem.as_ref().map(|s| s.handle))
+            .filter_map(|d| d.bin_sem.as_ref().map(|s| *s))
             .collect();
         unsafe {
             self.device_dropper
@@ -334,7 +367,7 @@ impl rhi2::swapchain::Swapchain for Swapchain {
                         .wait_semaphores(&wait_sems),
                 )
                 .map_err(|e| format!("image present failed: {e}"))
-                .map_err(SwapchainErr::PresentImageErr);
+                .map_err(SwapchainErr::PresentImageErr)?;
         }
         Ok(())
     }

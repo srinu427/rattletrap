@@ -2,13 +2,12 @@ use std::{rc::Rc, sync::Arc};
 
 pub use enumflags2;
 
-use crate::device::Device;
-
 pub mod buffer;
 pub mod command;
 pub mod device;
 pub mod graphics_pipeline;
 pub mod image;
+pub mod instance;
 pub mod shader;
 pub mod swapchain;
 pub mod sync;
@@ -46,24 +45,4 @@ pub enum HostAccess {
     None,
     Read,
     Write,
-}
-
-#[derive(Debug, Clone)]
-pub struct GpuInfo {
-    pub id: usize,
-    pub name: String,
-    pub dvram: u64,
-    pub is_dedicated: bool,
-}
-
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum InstanceErr {
-    #[error("device creation failed: {0}")]
-    DeviceCreateFailed(String),
-}
-
-pub trait Instance {
-    type DType: Device;
-    fn get_gpus(&self) -> &Vec<GpuInfo>;
-    fn init_device(self, gpu_id: usize) -> Result<Self::DType, InstanceErr>;
 }

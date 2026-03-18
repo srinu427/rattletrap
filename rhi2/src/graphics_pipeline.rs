@@ -47,12 +47,12 @@ pub struct FragmentStageInfo<'a> {
 }
 
 pub trait GraphicsPipeline {
-    type BType: Buffer;
-    type IType: Image;
-    type IVType: ImageView<IType = Self::IType>;
-    type SetType: ShaderSet<BType = Self::BType, IType = Self::IType, IVType = Self::IVType>;
+    type B: Buffer;
+    type I: Image;
+    type IV: ImageView<I = Self::I>;
+    type SS: ShaderSet<B = Self::B, I = Self::I, IV = Self::IV>;
 
     fn set_count(&self) -> usize;
     fn pc_size(&self) -> usize;
-    fn new_set(&mut self, set_id: usize) -> Result<Self::SetType, GraphicsPipelineErr>;
+    fn new_set(&mut self, set_id: usize) -> Result<Self::SS, GraphicsPipelineErr>;
 }

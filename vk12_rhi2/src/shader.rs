@@ -14,16 +14,16 @@ pub struct ShaderSet {
 }
 
 impl rhi2::shader::ShaderSet for ShaderSet {
-    type BType = Buffer;
+    type B = Buffer;
 
-    type IType = Image;
+    type I = Image;
 
-    type IVType = ImageView;
+    type IV = ImageView;
 
     fn update_binding(
         &mut self,
         binding: usize,
-        data: rhi2::shader::ShaderSetData<Self::BType, Self::IVType>,
+        data: rhi2::shader::ShaderSetData<Self::B, Self::IV>,
     ) {
         match data {
             rhi2::shader::ShaderSetData::UniformBuffer(cappeds) => unsafe {

@@ -121,6 +121,10 @@ impl Image {
             })),
         })
     }
+
+    pub fn is_swapchain(&self) -> bool {
+        self.memory.is_none()
+    }
 }
 
 impl rhi2::image::Image for Image {
@@ -160,11 +164,17 @@ pub struct ImageView {
     pub view_type: rhi2::image::ViewType,
 }
 
+impl ImageView {
+    pub fn is_swapchain(&self) -> bool {
+        self.image_holder.as_ref().is_swapchain()
+    }
+}
+
 impl rhi2::image::ImageView for ImageView {
-    type IType = Image;
+    type I = Image;
 
     fn new(
-        image: rhi2::Capped<Self::IType>,
+        image: rhi2::Capped<Self::I>,
         view_type: rhi2::image::ViewType,
     ) -> Result<Self, rhi2::image::ImageViewErr> {
         let image_ref = image.as_ref();
@@ -202,7 +212,7 @@ impl rhi2::image::ImageView for ImageView {
         self.view_type
     }
 
-    fn image(&self) -> &rhi2::Capped<Self::IType> {
+    fn image(&self) -> &rhi2::Capped<Self::I> {
         &self.image_holder
     }
 }

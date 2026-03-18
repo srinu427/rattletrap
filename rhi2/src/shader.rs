@@ -18,9 +18,9 @@ pub enum ShaderSetData<B: Buffer, IV: ImageView> {
 }
 
 pub trait ShaderSet {
-    type BType: Buffer;
-    type IType: Image;
-    type IVType: ImageView<IType = Self::IType>;
+    type B: Buffer;
+    type I: Image;
+    type IV: ImageView<I = Self::I>;
 
-    fn update_binding(&mut self, binding: usize, data: ShaderSetData<Self::BType, Self::IVType>);
+    fn update_binding(&mut self, binding: usize, data: ShaderSetData<Self::B, Self::IV>);
 }

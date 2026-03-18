@@ -1,5 +1,6 @@
 mod inputs;
 mod renderer;
+mod renderer2;
 use std::{sync::Arc, time};
 
 use physics::PhysicsManager;

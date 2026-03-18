@@ -4,110 +4,6 @@ use ash::vk;
 
 use crate::{buffer::Buffer, device::DeviceDropper};
 
-pub struct TlSem {
-    pub handle: vk::Semaphore,
-    pub count: u64,
-    pub pool: Arc<SyncPool>,
-}
-
-impl TlSem {
-    pub fn get(pool: &Arc<SyncPool>, count: usize) -> Result<Vec<Self>, String> {
-        let mut tl_sem_pool = match pool.tl_sem_pool.lock() {
-            Ok(p) => p,
-            Err(e) => e.into_inner(),
-        };
-        let mut rem_count = count;
-        let mut tl_sems = vec![];
-        while let Some((tl_sem, count)) = tl_sem_pool.pop()
-            && rem_count > 0
-        {
-            tl_sems.push(Self {
-                handle: tl_sem,
-                count,
-                pool: pool.clone(),
-            });
-            rem_count -= 1;
-        }
-        let mut tl_sem_type =
-            vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE);
-        let sem_create_info = vk::SemaphoreCreateInfo::default().push_next(&mut tl_sem_type);
-        for _ in 0..rem_count {
-            let bin_sem = unsafe {
-                pool.device_dropper
-                    .device
-                    .create_semaphore(&sem_create_info, None)
-                    .map_err(|e| format!("vk sem create failed: {e}"))?
-            };
-            let tl_sem = Self {
-                handle: bin_sem,
-                count: 0,
-                pool: pool.clone(),
-            };
-            tl_sems.push(tl_sem);
-        }
-        Ok(tl_sems)
-    }
-}
-
-impl Drop for TlSem {
-    fn drop(&mut self) {
-        let mut pool = match self.pool.tl_sem_pool.lock() {
-            Ok(fp) => fp,
-            Err(e) => e.into_inner(),
-        };
-        pool.push((self.handle, self.count));
-    }
-}
-
-pub struct BinSem {
-    pub handle: vk::Semaphore,
-    pub pool: Arc<SyncPool>,
-}
-
-impl BinSem {
-    pub fn get(pool: &Arc<SyncPool>, count: usize) -> Result<Vec<Self>, String> {
-        let mut bin_sem_pool = match pool.bin_sem_pool.lock() {
-            Ok(p) => p,
-            Err(e) => e.into_inner(),
-        };
-        let mut rem_count = count;
-        let mut bin_sems = vec![];
-        while let Some(bin_sem) = bin_sem_pool.pop()
-            && rem_count > 0
-        {
-            bin_sems.push(Self {
-                handle: bin_sem,
-                pool: pool.clone(),
-            });
-            rem_count -= 1;
-        }
-        for _ in 0..rem_count {
-            let bin_sem = unsafe {
-                pool.device_dropper
-                    .device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                    .map_err(|e| format!("vk sem create failed: {e}"))?
-            };
-            let fence = Self {
-                handle: bin_sem,
-                pool: pool.clone(),
-            };
-            bin_sems.push(fence);
-        }
-        Ok(bin_sems)
-    }
-}
-
-impl Drop for BinSem {
-    fn drop(&mut self) {
-        let mut pool = match self.pool.bin_sem_pool.lock() {
-            Ok(fp) => fp,
-            Err(e) => e.into_inner(),
-        };
-        pool.push(self.handle);
-    }
-}
-
 pub struct SyncPool {
     pub tl_sem_pool: Arc<Mutex<Vec<(vk::Semaphore, u64)>>>,
     pub bin_sem_pool: Arc<Mutex<Vec<vk::Semaphore>>>,
@@ -147,20 +43,79 @@ impl Drop for SyncPool {
 
 pub struct TaskFuture {
     pub preserve_buffers: Vec<rhi2::Capped<Buffer>>,
-    pub inner: TlSem,
-    pub bin_sem: Option<BinSem>,
+    pub tl_sem: vk::Semaphore,
+    pub count: u64,
+    pub bin_sem: Option<vk::Semaphore>,
+    pub sync_pool: Arc<SyncPool>,
     waited: bool,
 }
 
 impl TaskFuture {
+    pub fn new(sync_pool: &Arc<SyncPool>, bin_sem: bool) -> Result<Self, String> {
+        let (tl_sem, count) = {
+            let mut pool_mut = match sync_pool.tl_sem_pool.lock() {
+                Ok(p) => p,
+                Err(e) => e.into_inner(),
+            };
+            match pool_mut.pop() {
+                Some(s) => s,
+                None => {
+                    let mut tl_sem_info = vk::SemaphoreTypeCreateInfo::default()
+                        .semaphore_type(vk::SemaphoreType::TIMELINE)
+                        .initial_value(0);
+                    let sem = unsafe {
+                        sync_pool
+                            .device_dropper
+                            .device
+                            .create_semaphore(
+                                &vk::SemaphoreCreateInfo::default().push_next(&mut tl_sem_info),
+                                None,
+                            )
+                            .map_err(|e| format!("creating vk tl sem failed: {e}"))?
+                    };
+                    (sem, 0)
+                }
+            }
+        };
+        let bin_sem = if bin_sem {
+            let mut pool_mut = match sync_pool.bin_sem_pool.lock() {
+                Ok(p) => p,
+                Err(e) => e.into_inner(),
+            };
+            match pool_mut.pop() {
+                Some(s) => Some(s),
+                None => {
+                    let sem = unsafe {
+                        sync_pool
+                            .device_dropper
+                            .device
+                            .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                            .map_err(|e| format!("creating vk bin sem failed: {e}"))?
+                    };
+                    Some(sem)
+                }
+            }
+        } else {
+            None
+        };
+        Ok(Self {
+            preserve_buffers: vec![],
+            tl_sem,
+            count,
+            bin_sem,
+            sync_pool: sync_pool.clone(),
+            waited: false,
+        })
+    }
+
     pub fn increase_count(&mut self, count: u64) {
-        self.inner.count += count;
+        self.count += count;
     }
 
     pub fn sem_infos(&self) -> Vec<(vk::Semaphore, u64)> {
-        let mut out = vec![(self.inner.handle, self.inner.count)];
+        let mut out = vec![(self.tl_sem, self.count)];
         if let Some(bs) = self.bin_sem.as_ref() {
-            out.push((bs.handle, 0));
+            out.push((*bs, 0));
         }
         out
     }
@@ -172,14 +127,13 @@ impl rhi2::sync::TaskFuture for TaskFuture {
             return Ok(());
         }
         unsafe {
-            self.inner
-                .pool
+            self.sync_pool
                 .device_dropper
                 .device
                 .wait_semaphores(
                     &vk::SemaphoreWaitInfo::default()
-                        .semaphores(&[self.inner.handle])
-                        .values(&[self.inner.count]),
+                        .semaphores(&[self.tl_sem])
+                        .values(&[self.count]),
                     u64::MAX,
                 )
                 .map_err(|e| format!("failed waiting for TL Semaphore: {e}"))
@@ -188,6 +142,24 @@ impl rhi2::sync::TaskFuture for TaskFuture {
 
         self.waited = true;
         Ok(())
+    }
+}
+
+impl Drop for TaskFuture {
+    fn drop(&mut self) {
+        let mut pool_mut = match self.sync_pool.tl_sem_pool.lock() {
+            Ok(p) => p,
+            Err(e) => e.into_inner(),
+        };
+        pool_mut.push((self.tl_sem, self.count));
+
+        if let Some(bin_sem) = self.bin_sem.take() {
+            let mut pool_mut = match self.sync_pool.bin_sem_pool.lock() {
+                Ok(p) => p,
+                Err(e) => e.into_inner(),
+            };
+            pool_mut.push(bin_sem);
+        }
     }
 }
 
