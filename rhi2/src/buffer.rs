@@ -16,10 +16,12 @@ pub enum BufferFlags {
     CopySrc,
     Vertex,
     Index,
+    Uniform,
+    Storage,
 }
 
 pub trait Buffer {
     fn size(&self) -> usize;
     fn host_access(&self) -> HostAccess;
-    fn host_write(&mut self, data: &[u8]) -> Result<(), BufferErr>;
+    fn host_write(&mut self, offset: usize, data: &[u8]) -> Result<(), BufferErr>;
 }

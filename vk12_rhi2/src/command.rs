@@ -1,10 +1,8 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use ash::vk;
-use rhi2::command::CommandErr;
+use log::warn;
+use rhi2::{command::CommandErr, image::Format, sync::PipelineStage};
 
 use crate::{
     buffer::Buffer,
@@ -12,35 +10,134 @@ use crate::{
     graphics_pipeline::GraphicsPipeline,
     image::{Image, ImageAccess, ImageView},
     shader::ShaderSet,
-    sync::{SyncPool, TaskFuture, rhi2_pipe_stage_to_vk},
+    sync::{TaskFuture, TlSemPool, rhi2_pipe_stage_to_vk},
 };
 
-pub struct CmdPool {
+pub struct CmdBuffer {
+    pub recording: bool,
+    pub handle: vk::CommandBuffer,
+    pub pool: Arc<CmdBufferGen>,
+}
+
+impl CmdBuffer {
+    pub fn new_batch(pool: &Arc<CmdBufferGen>, count: usize) -> Result<Vec<Self>, String> {
+        let rem_count = count;
+        let mut cbs = vec![];
+        let mut pool_mut = match pool.pool.lock() {
+            Ok(p) => p,
+            Err(e) => e.into_inner(),
+        };
+        while let Some(cb) = pool_mut.pop() {
+            cbs.push(cb);
+        }
+        let cbs = unsafe {
+            pool.device_dropper
+                .device
+                .allocate_command_buffers(
+                    &vk::CommandBufferAllocateInfo::default()
+                        .level(vk::CommandBufferLevel::PRIMARY)
+                        .command_pool(pool.handle)
+                        .command_buffer_count(rem_count as _),
+                )
+                .map_err(|e| format!("vk cmd buffers allocation failed: {e}"))?
+        };
+        let cbs: Vec<_> = cbs
+            .into_iter()
+            .map(|c| Self {
+                recording: false,
+                handle: c,
+                pool: pool.clone(),
+            })
+            .collect();
+        Ok(cbs)
+    }
+
+    pub fn start_recording(&mut self) -> Result<(), String> {
+        if self.recording {
+            return Ok(());
+        }
+        unsafe {
+            self.pool
+                .device_dropper
+                .device
+                .begin_command_buffer(self.handle, &vk::CommandBufferBeginInfo::default())
+                .map_err(|e| format!("cmd buffer beginning failed: {e}"))?;
+        }
+        self.recording = true;
+        Ok(())
+    }
+
+    pub fn stop_recording(&mut self) -> Result<(), String> {
+        if !self.recording {
+            return Ok(());
+        }
+        unsafe {
+            self.pool
+                .device_dropper
+                .device
+                .end_command_buffer(self.handle)
+                .map_err(|e| format!("cmd buffer stopping failed: {e}"))?;
+        }
+        self.recording = false;
+        Ok(())
+    }
+
+    pub(crate) fn submit(
+        &mut self,
+        deps: Vec<(TaskFuture, PipelineStage, PipelineStage)>,
+        sub: &TaskFuture,
+    ) -> Result<(), String> {
+        self.stop_recording()?;
+        let mut sems = vec![];
+        let mut sem_counts = vec![];
+        let mut on_stgs = vec![];
+        let mut by_stgs = vec![];
+
+        for (tf, on, by) in deps {
+            sems.push(tf.tl_sem);
+            sem_counts.push(tf.count);
+            on_stgs.push(rhi2_pipe_stage_to_vk(&on));
+            by_stgs.push(rhi2_pipe_stage_to_vk(&by));
+        }
+
+        let mut tl_sem_info = vk::TimelineSemaphoreSubmitInfo::default()
+            .wait_semaphore_values(&sem_counts)
+            .signal_semaphore_values(core::slice::from_ref(&sub.count));
+        unsafe {
+            self.pool
+                .device_dropper
+                .device
+                .queue_submit(
+                    self.pool.device_dropper.gfx_queue,
+                    &[vk::SubmitInfo::default()
+                        .command_buffers(&[self.handle])
+                        .wait_semaphores(&sems)
+                        .signal_semaphores(core::slice::from_ref(&sub.tl_sem))
+                        .wait_dst_stage_mask(&on_stgs)
+                        .push_next(&mut tl_sem_info)],
+                    vk::Fence::null(),
+                )
+                .map_err(|e| format!("vk queue submit failed: {e}"))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CmdBuffer {
+    fn drop(&mut self) {
+        self.stop_recording().inspect_err(|e| warn!("{e}")).ok();
+    }
+}
+
+pub struct CmdBufferGen {
+    pub pool: Arc<Mutex<Vec<CmdBuffer>>>,
     pub handle: vk::CommandPool,
     pub device_dropper: Arc<DeviceDropper>,
 }
 
-impl Drop for CmdPool {
-    fn drop(&mut self) {
-        unsafe {
-            self.device_dropper
-                .device
-                .destroy_command_pool(self.handle, None);
-        }
-    }
-}
-
-pub struct CmdBuffer {
-    pub handle: vk::CommandBuffer,
-    pub cmd_pool: Arc<CmdPool>,
-}
-
-impl CmdBuffer {
-    pub fn new_batch(
-        device_dropper: &Arc<DeviceDropper>,
-        count: usize,
-    ) -> Result<Vec<Self>, String> {
-        let pool = unsafe {
+impl CmdBufferGen {
+    pub fn new(device_dropper: &Arc<DeviceDropper>) -> Result<Self, String> {
+        let handle = unsafe {
             device_dropper
                 .device
                 .create_command_pool(
@@ -51,60 +148,21 @@ impl CmdBuffer {
                 )
                 .map_err(|e| format!("vk cmd pool creation failed: {e}"))?
         };
-        let pool = Arc::new(CmdPool {
-            handle: pool,
-            device_dropper: device_dropper.clone(),
-        });
-        let cbs = unsafe {
-            device_dropper
-                .device
-                .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::default()
-                        .level(vk::CommandBufferLevel::PRIMARY)
-                        .command_pool(pool.handle)
-                        .command_buffer_count(count as _),
-                )
-                .map_err(|e| format!("vk cmd buffers allocation failed: {e}"))?
-        };
-        let cbs: Vec<_> = cbs
-            .into_iter()
-            .map(|c| Self {
-                handle: c,
-                cmd_pool: pool.clone(),
-            })
-            .collect();
-        Ok(cbs)
-    }
-}
-
-pub struct CmdBufferGen {
-    pub pool: Arc<Mutex<Vec<CmdBuffer>>>,
-    pub device_dropper: Arc<DeviceDropper>,
-}
-
-impl CmdBufferGen {
-    pub fn new(device_dropper: &Arc<DeviceDropper>) -> Self {
-        Self {
+        Ok(Self {
+            handle,
             pool: Arc::new(Mutex::new(vec![])),
             device_dropper: device_dropper.clone(),
-        }
+        })
     }
+}
 
-    pub fn get_cmd_buffers(&self, count: usize) -> Result<Vec<CmdBuffer>, String> {
-        let mut rem_count = count;
-        let mut cbs = vec![];
-        let mut pool_mut = match self.pool.lock() {
-            Ok(p) => p,
-            Err(e) => e.into_inner(),
-        };
-        while let Some(cb) = pool_mut.pop() {
-            cbs.push(cb);
-            rem_count -= 1;
+impl Drop for CmdBufferGen {
+    fn drop(&mut self) {
+        unsafe {
+            self.device_dropper
+                .device
+                .destroy_command_pool(self.handle, None);
         }
-        let new_cbs = CmdBuffer::new_batch(&self.device_dropper, rem_count)
-            .map_err(|e| format!("new cmd buffer creation failed: {e}"))?;
-        cbs.extend(new_cbs);
-        Ok(cbs)
     }
 }
 
@@ -123,7 +181,7 @@ impl rhi2::command::GraphicsCommandRecorder for GraphicsCommandRecorder {
 
     type SS = ShaderSet;
 
-    fn bind_vbs(&mut self, vbs: &[Self::B]) {
+    fn bind_vbs(&mut self, vbs: &[&Self::B]) {
         let buffers: Vec<_> = vbs.iter().map(|b| b.handle).collect();
         unsafe {
             self.recorder.get_device().device.cmd_bind_vertex_buffers(
@@ -151,7 +209,7 @@ impl rhi2::command::GraphicsCommandRecorder for GraphicsCommandRecorder {
         }
     }
 
-    fn bind_sets(&mut self, sets: &[Self::SS]) {
+    fn bind_sets(&mut self, sets: &[&Self::SS]) {
         let dsets: Vec<_> = sets.iter().map(|s| s.handle).collect();
         unsafe {
             self.recorder.get_device().device.cmd_bind_descriptor_sets(
@@ -176,53 +234,71 @@ impl rhi2::command::GraphicsCommandRecorder for GraphicsCommandRecorder {
             );
         }
     }
+
+    fn draw(&mut self, count: usize) {
+        unsafe {
+            self.recorder.get_device().device.cmd_draw(
+                self.recorder.inner.handle,
+                count as _,
+                1,
+                0,
+                0,
+            );
+        }
+    }
+
+    fn draw_indexed(&mut self, vert_offset: usize, indx_offset: usize, count: usize) {
+        unsafe {
+            self.recorder.get_device().device.cmd_draw_indexed(
+                self.recorder.inner.handle,
+                count as _,
+                1,
+                indx_offset as _,
+                vert_offset as _,
+                0,
+            );
+        }
+    }
 }
 
 pub struct CommandRecorder {
     pub inner: CmdBuffer,
-    pub image_layouts: HashMap<vk::Image, (ImageAccess, Arc<Mutex<ImageAccess>>)>,
+    // pub image_layouts: HashMap<vk::Image, ImageAccess>,
     pub keep_alive_buffers: Vec<rhi2::Capped<Buffer>>,
-    pub sync_pool: Arc<SyncPool>,
-    pub has_swapchain_updates: bool,
+    pub sync_pool: Arc<TlSemPool>,
+    pub swapchain_img: Option<(vk::Image, Format)>,
 }
 
 impl CommandRecorder {
     pub fn new(
-        cb_gen: &CmdBufferGen,
-        sync_pool: &Arc<SyncPool>,
+        cb_gen: &Arc<CmdBufferGen>,
+        sync_pool: &Arc<TlSemPool>,
         count: usize,
     ) -> Result<Vec<Self>, String> {
-        let cbs = cb_gen
-            .get_cmd_buffers(count)
+        let cbs = CmdBuffer::new_batch(&cb_gen, count)
             .map_err(|e| format!("getting cmd buffers failed: {e}"))?;
-        let crs: Vec<_> = cbs
+        let mut crs: Vec<_> = cbs
             .into_iter()
             .map(|c| Self {
                 inner: c,
-                image_layouts: HashMap::new(),
+                // image_layouts: HashMap::new(),
                 keep_alive_buffers: vec![],
                 sync_pool: sync_pool.clone(),
-                has_swapchain_updates: false,
+                swapchain_img: None,
             })
             .collect();
+        for cr in &mut crs {
+            cr.inner.start_recording()?;
+        }
         Ok(crs)
     }
 
     fn get_device(&self) -> &DeviceDropper {
-        &self.inner.cmd_pool.device_dropper
+        &self.inner.pool.device_dropper
     }
 
-    pub fn image_layout_update(&mut self, img: &Image, access: ImageAccess) {
-        let ex_access = match self.image_layouts.get(&img.handle) {
-            Some((ex_access, _)) => ex_access.clone(),
-            None => {
-                let ex_access = match img.last_access.lock() {
-                    Ok(ll) => ll,
-                    Err(e) => e.into_inner(),
-                };
-                ex_access.clone()
-            }
-        };
+    pub(crate) fn image_layout_update(&mut self, img: &Image, access: ImageAccess) {
+        let ex_access = img.get_last_access();
         let aspect_mask = if img.format.is_depth() {
             vk::ImageAspectFlags::DEPTH
         } else {
@@ -255,6 +331,7 @@ impl CommandRecorder {
                     )],
             );
         }
+        img.set_last_access(access);
     }
 }
 
@@ -273,7 +350,14 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
 
     type TF = TaskFuture;
 
-    fn copy_b2b(&mut self, src: &Self::B, src_offset: usize, dst: &Self::B, dst_offset: usize) {
+    fn copy_b2b(
+        &mut self,
+        src: &Self::B,
+        src_offset: usize,
+        dst: &Self::B,
+        dst_offset: usize,
+        copy_size: usize,
+    ) {
         unsafe {
             self.get_device().device.cmd_copy_buffer(
                 self.inner.handle,
@@ -282,7 +366,7 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
                 &[vk::BufferCopy::default()
                     .src_offset(src_offset as _)
                     .dst_offset(dst_offset as _)
-                    .size(vk::WHOLE_SIZE)],
+                    .size(copy_size as _)],
             );
         }
     }
@@ -324,33 +408,41 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
                     )],
             );
         }
-        if dst.is_swapchain() && !self.has_swapchain_updates {
-            self.has_swapchain_updates = true;
+        if self.swapchain_img.is_none() && dst.is_swapchain() {
+            self.swapchain_img = Some((dst.handle, dst.format))
         }
     }
 
     fn graphics(
         mut self,
         pipeline: &mut Self::GP,
-        color_ivs: &[Self::IV],
+        color_ivs: Vec<&Self::IV>,
+        color_clears: Vec<[f32; 4]>,
         depth_iv: Option<&Self::IV>,
+        depth_clear: Option<f32>,
     ) -> Result<Self::GCR, (CommandErr, Self)> {
-        let mut clear_values: Vec<_> = color_ivs
-            .iter()
+        let mut clear_values: Vec<_> = (0..color_ivs.len())
             .map(|_| vk::ClearValue {
                 color: vk::ClearColorValue { float32: [0.0; 4] },
             })
             .collect();
-        if depth_iv.is_some() {
-            clear_values.push(vk::ClearValue {
+        for i in 0..color_clears.len() {
+            clear_values[i].color.float32 = color_clears[i];
+        }
+        if let Some(_) = &depth_iv {
+            let mut clr_val = vk::ClearValue {
                 depth_stencil: vk::ClearDepthStencilValue {
                     depth: 0.0,
                     stencil: 0,
                 },
-            });
+            };
+            if let Some(clr) = depth_clear {
+                clr_val.depth_stencil.depth = clr;
+            }
+            clear_values.push(clr_val);
         }
         let framebuffer = match pipeline
-            .create_framebuffer(color_ivs, depth_iv)
+            .create_framebuffer(&color_ivs, depth_iv)
             .map_err(CommandErr::GcrCreate)
         {
             Ok(fb) => fb,
@@ -367,6 +459,29 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
         .image_holder
         .as_ref()
         .res;
+
+        for a in &color_ivs {
+            self.image_layout_update(
+                a.image_holder.as_ref(),
+                ImageAccess {
+                    layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    access: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    psf: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                },
+            );
+        }
+        if let Some(a) = depth_iv.as_ref() {
+            self.image_layout_update(
+                a.image_holder.as_ref(),
+                ImageAccess {
+                    layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+                    access: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                    psf: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                },
+            );
+        }
+
         unsafe {
             self.get_device().device.cmd_begin_render_pass(
                 self.inner.handle,
@@ -386,19 +501,37 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
                 vk::PipelineBindPoint::GRAPHICS,
                 pipeline.handle,
             );
+            self.get_device().device.cmd_set_viewport(
+                self.inner.handle,
+                0,
+                &[vk::Viewport::default()
+                    .width(res.0 as _)
+                    .height(res.1 as _)
+                    .min_depth(0.0)
+                    .max_depth(1.0)],
+            );
+            self.get_device().device.cmd_set_scissor(
+                self.inner.handle,
+                0,
+                &[vk::Rect2D::default()
+                    .offset(vk::Offset2D::default())
+                    .extent(vk::Extent2D::default().width(res.0).height(res.1))],
+            );
         }
-        if !self.has_swapchain_updates {
+        if self.swapchain_img.is_none() {
             for a in color_ivs {
                 if a.is_swapchain() {
-                    self.has_swapchain_updates = true;
+                    let i = a.image_holder.as_ref();
+                    self.swapchain_img = Some((i.handle, i.format));
                     break;
                 }
             }
         }
-        if !self.has_swapchain_updates {
+        if self.swapchain_img.is_none() {
             if let Some(a) = depth_iv.as_ref() {
                 if a.is_swapchain() {
-                    self.has_swapchain_updates = true;
+                    let i = a.image_holder.as_ref();
+                    self.swapchain_img = Some((i.handle, i.format));
                 }
             }
         }
@@ -485,9 +618,11 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
                 vk::Filter::NEAREST,
             );
         }
-        if !self.has_swapchain_updates {
-            if src.is_swapchain() || dst.is_swapchain() {
-                self.has_swapchain_updates = true;
+        if self.swapchain_img.is_none() {
+            if src.is_swapchain() {
+                self.swapchain_img = Some((src.handle, src.format))
+            } else if dst.is_swapchain() {
+                self.swapchain_img = Some((dst.handle, dst.format))
             }
         }
     }
@@ -497,62 +632,23 @@ impl rhi2::command::CommandRecorder for CommandRecorder {
     }
 
     fn run(
-        self,
+        mut self,
         deps: Vec<(
             Self::TF,
             rhi2::sync::PipelineStage,
             rhi2::sync::PipelineStage,
         )>,
     ) -> Result<Self::TF, CommandErr> {
-        let mut sems = vec![];
-        let mut sem_counts = vec![];
-        let mut on_stages = vec![];
-        let mut by_stages = vec![];
-
-        for (tf, on, by) in &deps {
-            let sem_infos = tf.sem_infos();
-            let on_stage = rhi2_pipe_stage_to_vk(on);
-            let by_stage = rhi2_pipe_stage_to_vk(by);
-            for (sem, count) in sem_infos {
-                sems.push(sem);
-                sem_counts.push(count);
-                on_stages.push(on_stage);
-                by_stages.push(by_stage);
-            }
-        }
-
-        let mut tf = TaskFuture::new(&self.sync_pool, self.has_swapchain_updates)
+        let mut out_tf = TaskFuture::new(&self.sync_pool)
             .map_err(|e| format!("creating task future failed: {e}"))
             .map_err(CommandErr::RunErr)?;
-        tf.increase_count(1);
-        let mut sub_sems = vec![];
-        let mut sub_sem_counts = vec![];
-        let sub_sem_infos = tf.sem_infos();
-        for (sem, count) in sub_sem_infos {
-            sub_sems.push(sem);
-            sub_sem_counts.push(count);
-        }
-
-        unsafe {
-            let mut tl_sem_info = vk::TimelineSemaphoreSubmitInfo::default()
-                .signal_semaphore_values(&sem_counts)
-                .wait_semaphore_values(&sub_sem_counts);
-
-            self.get_device()
-                .device
-                .queue_submit(
-                    self.get_device().gfx_queue,
-                    &[vk::SubmitInfo::default()
-                        .command_buffers(&[self.inner.handle])
-                        .wait_semaphores(&sems)
-                        .wait_dst_stage_mask(&on_stages)
-                        .signal_semaphores(&sub_sems)
-                        .push_next(&mut tl_sem_info)],
-                    vk::Fence::null(),
-                )
-                .map_err(|e| format!("submitting task to queue failed: {e}"))
-                .map_err(CommandErr::RunErr)?;
-        }
-        Ok(tf)
+        out_tf.increase_count(1);
+        self.inner
+            .submit(deps, &out_tf)
+            .map_err(|e| format!("submitting command buffer failed: {e}"))
+            .map_err(CommandErr::RunErr)?;
+        out_tf.preserve_cmds.push(self.inner);
+        out_tf.preserve_buffers.extend(self.keep_alive_buffers);
+        Ok(out_tf)
     }
 }

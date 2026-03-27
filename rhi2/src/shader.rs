@@ -22,5 +22,5 @@ pub trait ShaderSet {
     type I: Image;
     type IV: ImageView<I = Self::I>;
 
-    fn update_binding(&mut self, binding: usize, data: ShaderSetData<Self::B, Self::IV>);
+    fn update_binding_data(&mut self, binding: usize, data: ShaderSetData<Self::B, Self::IV>);
 }

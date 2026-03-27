@@ -1,19 +1,19 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ash::{ext, khr, vk};
-use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use log::warn;
 use rhi2::device::DeviceErr;
 
 use crate::{
     buffer::Buffer,
-    command::{CmdBufferGen, CommandRecorder, GraphicsCommandRecorder},
+    command::{CmdBufferGen, CommandRecorder},
     graphics_pipeline::GraphicsPipeline,
     image::{Image, ImageView},
     instance::{InstanceDropper, VkGpuInfo},
+    memory::MemAlloc,
     shader::ShaderSet,
     swapchain::Swapchain,
-    sync::{SyncPool, TaskFuture},
+    sync::{TaskFuture, TlSemPool},
 };
 
 fn get_device_extensions() -> Vec<*const i8> {
@@ -27,7 +27,6 @@ fn get_device_extensions() -> Vec<*const i8> {
 }
 
 pub struct DeviceDropper {
-    pub allocator: Arc<Mutex<Allocator>>,
     pub swapchain_device: khr::swapchain::Device,
     pub gfx_queue: vk::Queue,
     pub device: ash::Device,
@@ -66,18 +65,7 @@ impl DeviceDropper {
         };
         let gfx_queue = unsafe { device.get_device_queue(gpu_info.gfx_qf as _, 0) };
         let swapchain_device = khr::swapchain::Device::new(&instance_dropper.instance, &device);
-        let allocator_create_info = AllocatorCreateDesc {
-            instance: instance_dropper.instance.clone(),
-            device: device.clone(),
-            physical_device: gpu_info.handle,
-            debug_settings: Default::default(),
-            buffer_device_address: false,
-            allocation_sizes: Default::default(),
-        };
-        let allocator = Allocator::new(&allocator_create_info)
-            .map_err(|e| format!("creating gpu mem allocator failed: {e}"))?;
         Ok(Self {
-            allocator: Arc::new(Mutex::new(allocator)),
             swapchain_device,
             gfx_queue,
             device,
@@ -99,10 +87,11 @@ impl Drop for DeviceDropper {
 }
 
 pub struct Device {
-    dropper: Arc<DeviceDropper>,
+    pub dropper: Arc<DeviceDropper>,
+    pub allocator: Arc<MemAlloc>,
     swapchain: Swapchain,
-    cmd_pool: CmdBufferGen,
-    sync_pool: Arc<SyncPool>,
+    cmd_pool: Arc<CmdBufferGen>,
+    sync_pool: Arc<TlSemPool>,
 }
 
 impl Device {
@@ -110,13 +99,18 @@ impl Device {
         let dropper = DeviceDropper::new(instance_dropper, gpu_id)
             .map(Arc::new)
             .map_err(|e| format!("device dropper creation failed: {e}"))?;
-        let sync_pool = Arc::new(SyncPool::new(&dropper));
-        let swapchain = Swapchain::new(&dropper, &sync_pool, None)
+        let sync_pool = Arc::new(TlSemPool::new(&dropper));
+        let cmd_pool = CmdBufferGen::new(&dropper)
+            .map(Arc::new)
+            .map_err(|e| format!("command pool creation failed: {e}"))?;
+        let swapchain = Swapchain::new(&dropper, &cmd_pool, None)
             .map_err(|e| format!("swapchain create failed: {e}"))?;
-        let cmd_pool = CmdBufferGen::new(&dropper);
-
+        let allocator = MemAlloc::new(&dropper)
+            .map(Arc::new)
+            .map_err(|e| format!("mem allocator creation failed: {e}"))?;
         Ok(Self {
             dropper: dropper.clone(),
+            allocator,
             swapchain,
             cmd_pool,
             sync_pool,
@@ -137,11 +131,19 @@ impl rhi2::device::Device for Device {
 
     type GP = GraphicsPipeline;
 
-    type GCR = GraphicsCommandRecorder;
-
     type CR = CommandRecorder;
 
     type TF = TaskFuture;
+
+    fn gpu_info(&self) -> rhi2::device::GpuInfo {
+        let vk_gpu_info = &self.dropper.gpu_info;
+        rhi2::device::GpuInfo {
+            id: vk_gpu_info.id,
+            name: vk_gpu_info.name.clone(),
+            dvram: vk_gpu_info.dvram,
+            is_dedicated: vk_gpu_info.is_dedicated,
+        }
+    }
 
     fn swapchain(&self) -> &Self::SC {
         &self.swapchain
@@ -157,7 +159,8 @@ impl rhi2::device::Device for Device {
         flags: rhi2::enumflags2::BitFlags<rhi2::buffer::BufferFlags>,
         host_access: rhi2::HostAccess,
     ) -> Result<Self::B, DeviceErr> {
-        Buffer::new(&self.dropper, size, flags, host_access).map_err(DeviceErr::BufferCreateFailed)
+        Buffer::new(&self.allocator, size, flags, host_access)
+            .map_err(DeviceErr::BufferCreateFailed)
     }
 
     fn new_image(
@@ -168,7 +171,7 @@ impl rhi2::device::Device for Device {
         flags: rhi2::enumflags2::BitFlags<rhi2::image::ImageFlags>,
         host_access: rhi2::HostAccess,
     ) -> Result<Self::I, DeviceErr> {
-        Image::new(&self.dropper, format, res, layers, flags, host_access)
+        Image::new(&self.allocator, format, res, layers, flags, host_access)
             .map_err(DeviceErr::ImageCreateFailed)
     }
 
@@ -193,12 +196,22 @@ impl rhi2::device::Device for Device {
 
     fn new_cmd_recorder(&self) -> Result<Self::CR, DeviceErr> {
         CommandRecorder::new(&self.cmd_pool, &self.sync_pool, 1)
-            .map(|mut crs| crs.remove(0))
+            .map(|mut v| v.remove(0))
             .map_err(|e| format!("cmd recorder creation failed: {e}"))
             .map_err(DeviceErr::CmdRecorderCreateFailed)
     }
 
     fn run_work_graph(&self) -> Result<Self::TF, DeviceErr> {
         todo!()
+    }
+
+    fn wait_idle(&self) {
+        unsafe {
+            self.dropper
+                .device
+                .device_wait_idle()
+                .inspect_err(|e| warn!("{e}"))
+                .ok();
+        }
     }
 }

@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
 use crate::{
-    buffer::Buffer,
     command::CommandRecorder,
     image::{Format, Image, ImageView},
     sync::TaskFuture,
@@ -17,17 +14,31 @@ pub enum SwapchainErr {
     PresentImageErr(String),
 }
 
+pub trait SwapchainImage {
+    type I: Image;
+    type IV: ImageView<I = Self::I>;
+
+    fn view(&self) -> &Self::IV;
+    fn present(&mut self) -> Result<(), SwapchainErr>;
+}
+
+pub enum SCImageRes<SI: SwapchainImage> {
+    Success(SI),
+    Unavailable,
+    Outdated,
+    Error(String),
+}
+
 pub trait Swapchain {
-    type B: Buffer;
     type I: Image;
     type IV: ImageView<I = Self::I>;
     type TF: TaskFuture;
-    type CR: CommandRecorder<B = Self::B, I = Self::I, IV = Self::IV, TF = Self::TF>;
+    type CR: CommandRecorder<I = Self::I, IV = Self::IV, TF = Self::TF>;
+    type SI: SwapchainImage<I = Self::I, IV = Self::IV>;
 
     fn res(&self) -> (u32, u32);
     fn fmt(&self) -> Format;
-    fn views(&self) -> &[Arc<Self::IV>];
+    fn img_count(&self) -> usize;
     fn refresh_res(&mut self) -> Result<(), SwapchainErr>;
-    fn next_image_idx(&mut self) -> Result<Option<(usize, Self::TF)>, SwapchainErr>;
-    fn present(&mut self, idx: usize, deps: Vec<Self::TF>) -> Result<(), SwapchainErr>;
+    fn next_image(&mut self) -> SCImageRes<Self::SI>;
 }

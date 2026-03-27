@@ -1,9 +1,12 @@
+mod ecs;
 mod inputs;
 mod renderer;
 mod renderer2;
+mod scene;
 use std::{sync::Arc, time};
 
 use physics::PhysicsManager;
+use vk12_rhi2::{device::Device, instance::Instance};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -16,11 +19,12 @@ use winit::{
 
 use crate::{
     inputs::Inputs,
-    renderer::{Renderer, level},
+    renderer2::Renderer,
+    // renderer::{Renderer, level},
 };
 
 struct App {
-    renderer: Option<Renderer>,
+    renderer: Option<Renderer<Device>>,
     start_time: time::Instant,
     last_frame_time_ms: u128,
     inputs: Inputs,
@@ -38,23 +42,23 @@ impl App {
         }
     }
 
-    pub fn load_level(&mut self) {
-        let state = self.renderer.as_mut().unwrap();
-        state.clear_meshes();
-        let level = level::parse_lvl_ron("data/levels/1.ron").unwrap();
-        let meshes: Vec<_> = level.geometry.iter().map(|g| g.to_mesh()).collect();
-        state.add_meshes(meshes);
-        let textures: Vec<_> = level.draws.iter().map(|d| d.material.as_str()).collect();
-        state.add_materials(textures).unwrap();
-        state.clear_mesh_draws();
-        for d_info in &level.draws {
-            state.add_mesh_draw_info(d_info.geo_name.clone(), d_info.material.clone());
-        }
-        self.physics_manager.clear();
-        for geo in &level.geometry {
-            self.physics_manager.add_obj(&geo.name, geo.to_rigid_body());
-        }
-    }
+    // pub fn load_level(&mut self) {
+    //     let state = self.renderer.as_mut().unwrap();
+    //     state.clear_meshes();
+    //     let level = level::parse_lvl_ron("data/levels/1.ron").unwrap();
+    //     let meshes: Vec<_> = level.geometry.iter().map(|g| g.to_mesh()).collect();
+    //     state.add_meshes(meshes);
+    //     let textures: Vec<_> = level.draws.iter().map(|d| d.material.as_str()).collect();
+    //     state.add_materials(textures).unwrap();
+    //     state.clear_mesh_draws();
+    //     for d_info in &level.draws {
+    //         state.add_mesh_draw_info(d_info.geo_name.clone(), d_info.material.clone());
+    //     }
+    //     self.physics_manager.clear();
+    //     for geo in &level.geometry {
+    //         self.physics_manager.add_obj(&geo.name, geo.to_rigid_body());
+    //     }
+    // }
 }
 
 impl App {
@@ -68,7 +72,7 @@ impl App {
             .key_pressed_this_frame(PhysicalKey::Code(KeyCode::KeyR))
         {
             println!("refreshing geo");
-            self.load_level();
+            // self.load_level();
         }
         if self
             .inputs
@@ -82,12 +86,12 @@ impl App {
             self.physics_manager.forward_ms();
         }
         let state = self.renderer.as_mut().unwrap();
-        for (name, id) in &self.physics_manager.object_ids {
-            state.update_mesh_transform(
-                name,
-                self.physics_manager.objects[*id].orient.to_transform(),
-            );
-        }
+        // for (name, id) in &self.physics_manager.object_ids {
+        //     state.update_mesh_transform(
+        //         name,
+        //         self.physics_manager.objects[*id].orient.to_transform(),
+        //     );
+        // }
 
         state.render().inspect_err(|e| eprintln!("{e}")).ok();
         self.inputs.advance_frame();
@@ -104,9 +108,11 @@ impl ApplicationHandler for App {
             }))
             .map(Arc::new)
             .unwrap();
-        let state = Renderer::new(window).unwrap();
+        let inst = Instance::new(&window).unwrap();
+        let device = inst.init_device(0).unwrap();
+        let state = Renderer::new(device).unwrap();
         self.renderer = Some(state);
-        self.load_level();
+        // self.load_level();
         // window.request_redraw();
     }
 
@@ -122,7 +128,7 @@ impl ApplicationHandler for App {
                 let state = self.renderer.as_mut().unwrap();
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
-                state.resize(size, true).unwrap();
+                state.resize().unwrap();
             }
             WindowEvent::KeyboardInput {
                 device_id: _,

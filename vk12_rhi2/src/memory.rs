@@ -6,18 +6,43 @@ use std::{
 use ash::vk;
 use gpu_allocator::{
     MemoryLocation,
-    vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
+    vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc},
 };
 use log::warn;
 
+use crate::device::DeviceDropper;
+
+pub struct MemAlloc {
+    pub allocator: Mutex<Allocator>,
+    pub device_dropper: Arc<DeviceDropper>,
+}
+impl MemAlloc {
+    pub fn new(device_dropper: &Arc<DeviceDropper>) -> Result<Self, String> {
+        let allocator_create_info = AllocatorCreateDesc {
+            instance: device_dropper.instance_dropper.instance.clone(),
+            device: device_dropper.device.clone(),
+            physical_device: device_dropper.gpu_info.handle,
+            debug_settings: Default::default(),
+            buffer_device_address: false,
+            allocation_sizes: Default::default(),
+        };
+        let allocator = Allocator::new(&allocator_create_info)
+            .map_err(|e| format!("creating gpu mem allocator failed: {e}"))?;
+        Ok(Self {
+            allocator: Mutex::new(allocator),
+            device_dropper: device_dropper.clone(),
+        })
+    }
+}
+
 pub struct Memory {
-    pub allocator: Arc<Mutex<Allocator>>,
+    pub allocator: Arc<MemAlloc>,
     pub handle: ManuallyDrop<Allocation>,
 }
 
 impl Memory {
     pub fn new(
-        allocator: &Arc<Mutex<Allocator>>,
+        allocator: &Arc<MemAlloc>,
         reqs: vk::MemoryRequirements,
         name: &str,
         host_access: rhi2::HostAccess,
@@ -34,7 +59,7 @@ impl Memory {
             linear: true,
             allocation_scheme: AllocationScheme::GpuAllocatorManaged,
         };
-        let mut allocator_mut = match allocator.lock() {
+        let mut allocator_mut = match allocator.allocator.lock() {
             Ok(obj) => obj,
             Err(e) => e.into_inner(),
         };
@@ -53,7 +78,7 @@ impl Drop for Memory {
     fn drop(&mut self) {
         unsafe {
             let mem = ManuallyDrop::take(&mut self.handle);
-            let mut allocator_mut = match self.allocator.lock() {
+            let mut allocator_mut = match self.allocator.allocator.lock() {
                 Ok(obj) => obj,
                 Err(e) => e.into_inner(),
             };

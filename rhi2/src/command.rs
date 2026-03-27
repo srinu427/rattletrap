@@ -21,10 +21,12 @@ pub trait GraphicsCommandRecorder {
     type IV: ImageView<I = Self::I>;
     type SS: ShaderSet<B = Self::B, I = Self::I, IV = Self::IV>;
 
-    fn bind_vbs(&mut self, vbs: &[Self::B]);
+    fn bind_vbs(&mut self, vbs: &[&Self::B]);
     fn bind_ib(&mut self, ib: &Self::B, is_16bit: bool);
-    fn bind_sets(&mut self, sets: &[Self::SS]);
+    fn bind_sets(&mut self, sets: &[&Self::SS]);
     fn set_pc(&mut self, data: &[u8]);
+    fn draw(&mut self, count: usize);
+    fn draw_indexed(&mut self, vert_offset: usize, indx_offset: usize, count: usize);
 }
 
 pub trait CommandRecorder: Sized {
@@ -36,13 +38,22 @@ pub trait CommandRecorder: Sized {
     type GCR: GraphicsCommandRecorder<B = Self::B, I = Self::I, IV = Self::IV, SS = Self::SS>;
     type TF: TaskFuture;
 
-    fn copy_b2b(&mut self, src: &Self::B, src_offset: usize, dst: &Self::B, dst_offset: usize);
+    fn copy_b2b(
+        &mut self,
+        src: &Self::B,
+        src_offset: usize,
+        dst: &Self::B,
+        dst_offset: usize,
+        copy_size: usize,
+    );
     fn copy_b2i(&mut self, src: &Self::B, dst: &Self::I);
     fn graphics(
         self,
         pipeline: &mut Self::GP,
-        color_ivs: &[Self::IV],
+        color_ivs: Vec<&Self::IV>,
+        color_clears: Vec<[f32; 4]>,
         depth_iv: Option<&Self::IV>,
+        depth_clear: Option<f32>,
     ) -> Result<Self::GCR, (CommandErr, Self)>;
     fn finish_graphics(gcr: Self::GCR) -> Self;
     fn blit(&mut self, src: &Self::I, dst: &Self::I);

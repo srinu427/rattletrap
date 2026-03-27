@@ -3,17 +3,7 @@ use std::sync::Arc;
 use ash::{khr, vk};
 use winit::window::Window;
 
-use crate::{
-    buffer::Buffer,
-    command::{CommandRecorder, GraphicsCommandRecorder},
-    device::Device,
-    graphics_pipeline::GraphicsPipeline,
-    image::{Image, ImageView},
-    init_helpers,
-    shader::ShaderSet,
-    swapchain::Swapchain,
-    sync::TaskFuture,
-};
+use crate::{device::Device, init_helpers};
 
 #[derive(Debug, Clone)]
 pub struct VkGpuInfo {
@@ -98,7 +88,7 @@ impl InstanceDropper {
 
 pub struct Instance {
     pub dropper: Arc<InstanceDropper>,
-    pub gpus: Vec<rhi2::instance::GpuInfo>,
+    pub gpus: Vec<rhi2::device::GpuInfo>,
 }
 
 impl Instance {
@@ -108,7 +98,7 @@ impl Instance {
         let gpus: Vec<_> = dropper
             .gpus
             .iter()
-            .map(|g| rhi2::instance::GpuInfo {
+            .map(|g| rhi2::device::GpuInfo {
                 id: g.id,
                 name: g.name.clone(),
                 dvram: g.dvram,
@@ -120,36 +110,12 @@ impl Instance {
             gpus,
         })
     }
-}
 
-impl rhi2::instance::Instance for Instance {
-    type SC: Swapchain;
-
-    type B: Buffer;
-
-    type I = Image;
-
-    type IV = ImageView;
-
-    type SS = ShaderSet;
-
-    type GP = GraphicsPipeline;
-
-    type GCR = GraphicsCommandRecorder;
-
-    type CR = CommandRecorder;
-
-    type TF = TaskFuture;
-
-    type DType = Device;
-
-    fn get_gpus(&self) -> &Vec<rhi2::instance::GpuInfo> {
+    pub fn get_gpus(&self) -> &Vec<rhi2::device::GpuInfo> {
         &self.gpus
     }
 
-    fn init_device(self, gpu_id: usize) -> Result<Self::DType, rhi2::instance::InstanceErr> {
-        Device::new(&self.dropper, gpu_id)
-            .map_err(|e| format!("device creation failed: {e}"))
-            .map_err(rhi2::instance::InstanceErr::DeviceCreateFailed)
+    pub fn init_device(self, gpu_id: usize) -> Result<Device, String> {
+        Device::new(&self.dropper, gpu_id).map_err(|e| format!("device creation failed: {e}"))
     }
 }

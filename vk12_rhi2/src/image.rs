@@ -3,7 +3,10 @@ use std::sync::{Arc, Mutex};
 use ash::vk::{self, Handle};
 use rhi2::enumflags2::BitFlags;
 
-use crate::{device::DeviceDropper, memory::Memory};
+use crate::{
+    device::DeviceDropper,
+    memory::{MemAlloc, Memory},
+};
 
 pub fn rhi2_fmt_to_vk_fmt(fmt: rhi2::image::Format) -> vk::Format {
     match fmt {
@@ -59,19 +62,22 @@ pub struct Image {
     pub flags: BitFlags<rhi2::image::ImageFlags>,
     pub host_access: rhi2::HostAccess,
     pub device_dropper: Arc<DeviceDropper>,
-    pub last_access: Arc<Mutex<ImageAccess>>,
+    pub last_access: Mutex<ImageAccess>,
 }
 
 impl Image {
     pub fn new(
-        device_dropper: &Arc<DeviceDropper>,
+        allocator: &Arc<MemAlloc>,
         format: rhi2::image::Format,
         res: (u32, u32, u32),
         layers: u32,
         flags: BitFlags<rhi2::image::ImageFlags>,
         host_access: rhi2::HostAccess,
     ) -> Result<Self, String> {
-        let extent = vk::Extent3D::default().width(res.0).height(res.1).width(1);
+        let extent = vk::Extent3D::default()
+            .width(res.0)
+            .height(res.1)
+            .depth(res.2);
         let image_type = if extent.depth == 1 {
             vk::ImageType::TYPE_2D
         } else {
@@ -84,23 +90,31 @@ impl Image {
             .array_layers(layers)
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .usage(rhi2_flags_to_vk_img_usage_flags(format, &flags))
-            .mip_levels(1);
+            .mip_levels(1)
+            .samples(vk::SampleCountFlags::TYPE_1);
         let handle = unsafe {
-            device_dropper
+            allocator
+                .device_dropper
                 .device
                 .create_image(&create_info, None)
                 .map_err(|e| format!("create vk image failed: {e}"))?
         };
-        let reqs = unsafe { device_dropper.device.get_image_memory_requirements(handle) };
+        let reqs = unsafe {
+            allocator
+                .device_dropper
+                .device
+                .get_image_memory_requirements(handle)
+        };
         let memory = Memory::new(
-            &device_dropper.allocator,
+            allocator,
             reqs,
             &format!("{:x}", handle.as_raw()),
             host_access,
         )
         .map_err(|e| format!("mem allocation failed: {e}"))?;
         unsafe {
-            device_dropper
+            allocator
+                .device_dropper
                 .device
                 .bind_image_memory(handle, memory.handle.memory(), memory.handle.offset())
                 .map_err(|e| format!("bind mem to buffer failed: {e}"))?;
@@ -113,13 +127,28 @@ impl Image {
             layers,
             flags,
             host_access,
-            device_dropper: device_dropper.clone(),
-            last_access: Arc::new(Mutex::new(ImageAccess {
+            device_dropper: allocator.device_dropper.clone(),
+            last_access: Mutex::new(ImageAccess {
                 layout: vk::ImageLayout::UNDEFINED,
                 access: vk::AccessFlags::empty(),
                 psf: vk::PipelineStageFlags::ALL_COMMANDS,
-            })),
+            }),
         })
+    }
+
+    pub(crate) fn get_last_access(&self) -> ImageAccess {
+        match self.last_access.lock() {
+            Ok(a) => a.clone(),
+            Err(e) => e.into_inner().clone(),
+        }
+    }
+
+    pub(crate) fn set_last_access(&self, access: ImageAccess) {
+        let mut la_mut = match self.last_access.lock() {
+            Ok(a) => a,
+            Err(e) => e.into_inner(),
+        };
+        *la_mut = access;
     }
 
     pub fn is_swapchain(&self) -> bool {

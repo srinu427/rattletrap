@@ -6,15 +6,14 @@ use std::{
 use ash::vk;
 use rhi2::{
     image::{Format, ImageView as _},
-    swapchain::SwapchainErr,
+    swapchain::{SCImageRes, SwapchainErr},
 };
 
 use crate::{
-    buffer::Buffer,
-    command::CommandRecorder,
+    command::{CmdBuffer, CmdBufferGen, CommandRecorder},
     device::DeviceDropper,
     image::{Image, ImageAccess, ImageView, rhi2_fmt_to_vk_fmt},
-    sync::{SyncPool, TaskFuture},
+    sync::TaskFuture,
 };
 
 fn sc_img_usage_flags() -> vk::ImageUsageFlags {
@@ -113,7 +112,9 @@ pub struct Swapchain {
     images: Vec<Arc<Image>>,
     views: Vec<Arc<ImageView>>,
     res: (u32, u32),
-    sync_pool: Arc<SyncPool>,
+    fence: vk::Fence,
+    sems: Vec<vk::Semaphore>,
+    cmd_pool: Arc<CmdBufferGen>,
     device_dropper: Arc<DeviceDropper>,
 }
 
@@ -135,17 +136,17 @@ impl Swapchain {
                 | rhi2::image::ImageFlags::RenderAttach,
             host_access: rhi2::HostAccess::None,
             device_dropper: device_dropper.clone(),
-            last_access: Arc::new(Mutex::new(ImageAccess {
+            last_access: Mutex::new(ImageAccess {
                 layout: vk::ImageLayout::UNDEFINED,
                 access: vk::AccessFlags::empty(),
                 psf: vk::PipelineStageFlags::ALL_COMMANDS,
-            })),
+            }),
         }
     }
 
     pub fn new(
         device: &Arc<DeviceDropper>,
-        sync_pool: &Arc<SyncPool>,
+        cmd_pool: &Arc<CmdBufferGen>,
         old_swapchain: Option<&Swapchain>,
     ) -> Result<Self, String> {
         let sc_fmts = get_sc_formats(device)?;
@@ -214,6 +215,22 @@ impl Swapchain {
                     .map_err(|e| e.to_string())
             })
             .collect::<Result<_, _>>()?;
+        let fence = unsafe {
+            device
+                .device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+                .map_err(|e| format!("fence creation feailed: {e}"))?
+        };
+        let mut sems = Vec::with_capacity(images.len());
+        for _ in 0..images.len() {
+            let sem = unsafe {
+                device
+                    .device
+                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                    .map_err(|e| format!("fence creation feailed: {e}"))?
+            };
+            sems.push(sem);
+        }
         Ok(Self {
             handle: swapchain,
             format: surface_format,
@@ -222,8 +239,10 @@ impl Swapchain {
             images,
             views,
             res,
+            fence,
+            sems,
+            cmd_pool: cmd_pool.clone(),
             device_dropper: device.clone(),
-            sync_pool: sync_pool.clone(),
         })
     }
 
@@ -284,16 +303,30 @@ impl Swapchain {
 
         Ok(())
     }
+
+    fn wait_fence(&self) -> Result<(), String> {
+        unsafe {
+            self.device_dropper
+                .device
+                .wait_for_fences(&[self.fence], true, u64::MAX)
+                .map_err(|e| format!("waiting for fence failed: {e}"))?;
+            self.device_dropper
+                .device
+                .reset_fences(&[self.fence])
+                .map_err(|e| format!("resetting fence failed: {e}"))?;
+        }
+        Ok(())
+    }
 }
 
 impl rhi2::swapchain::Swapchain for Swapchain {
-    type B = Buffer;
-
     type I = Image;
 
     type IV = ImageView;
 
     type CR = CommandRecorder;
+
+    type SI = SwapchainImage;
 
     type TF = TaskFuture;
 
@@ -311,65 +344,44 @@ impl rhi2::swapchain::Swapchain for Swapchain {
         self.rhi2_fmt
     }
 
-    fn views(&self) -> &[Arc<Self::IV>] {
-        &self.views
+    fn img_count(&self) -> usize {
+        self.images.len()
     }
 
-    fn next_image_idx(&mut self) -> Result<Option<(usize, Self::TF)>, SwapchainErr> {
-        let tf = TaskFuture::new(&self.sync_pool, true)
-            .map_err(|e| format!("task future creation failed: {e}"))
-            .map_err(SwapchainErr::NextImageIdxErr)?;
-        let sem = tf
-            .bin_sem
-            .clone()
-            .ok_or("bin sem not created. shouldn't happen".to_string())
-            .map_err(SwapchainErr::NextImageIdxErr)?;
-        let aqr_img_res = unsafe {
+    fn next_image(&mut self) -> SCImageRes<Self::SI> {
+        let acq_res = unsafe {
             self.device_dropper.swapchain_device.acquire_next_image(
                 self.handle,
                 u64::MAX,
-                sem,
-                vk::Fence::null(),
+                vk::Semaphore::null(),
+                self.fence,
             )
         };
-        let res = match aqr_img_res {
-            Ok(x) => {
-                if x.1 {
-                    Some((x.0 as usize, tf))
+        match acq_res {
+            Ok((idx, outdated)) => {
+                if !outdated {
+                    if let Err(e) = self.wait_fence() {
+                        return SCImageRes::Error(e);
+                    }
+                    return SCImageRes::Success(SwapchainImage {
+                        view: self.views[idx as usize].clone(),
+                        idx: idx as _,
+                        swapchain: self.handle,
+                        sem: self.sems[idx as usize],
+                        cmd_pool: self.cmd_pool.clone(),
+                        device_dropper: self.device_dropper.clone(),
+                    });
                 } else {
-                    None
+                    return SCImageRes::Outdated;
                 }
             }
             Err(e) => match e {
-                vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR => None,
-                _ => {
-                    let err_str = format!("get next image failed: {e}");
-                    return Err(SwapchainErr::NextImageIdxErr(err_str));
+                vk::Result::SUBOPTIMAL_KHR | vk::Result::ERROR_OUT_OF_DATE_KHR => {
+                    return SCImageRes::Outdated;
                 }
+                _ => return SCImageRes::Error(format!("{e}")),
             },
         };
-        Ok(res)
-    }
-
-    fn present(&mut self, idx: usize, deps: Vec<Self::TF>) -> Result<(), SwapchainErr> {
-        let wait_sems: Vec<_> = deps
-            .iter()
-            .filter_map(|d| d.bin_sem.as_ref().map(|s| *s))
-            .collect();
-        unsafe {
-            self.device_dropper
-                .swapchain_device
-                .queue_present(
-                    self.device_dropper.gfx_queue,
-                    &vk::PresentInfoKHR::default()
-                        .swapchains(&[self.handle])
-                        .image_indices(&[idx as _])
-                        .wait_semaphores(&wait_sems),
-                )
-                .map_err(|e| format!("image present failed: {e}"))
-                .map_err(SwapchainErr::PresentImageErr)?;
-        }
-        Ok(())
     }
 }
 
@@ -379,6 +391,109 @@ impl Drop for Swapchain {
             self.device_dropper
                 .swapchain_device
                 .destroy_swapchain(self.handle, None);
+            self.device_dropper.device.destroy_fence(self.fence, None);
+            for sem in self.sems.drain(..) {
+                self.device_dropper.device.destroy_semaphore(sem, None);
+            }
         }
+    }
+}
+
+pub struct SwapchainImage {
+    pub view: Arc<ImageView>,
+    pub idx: usize,
+    pub swapchain: vk::SwapchainKHR,
+    pub sem: vk::Semaphore,
+    pub cmd_pool: Arc<CmdBufferGen>,
+    pub device_dropper: Arc<DeviceDropper>,
+}
+
+impl rhi2::swapchain::SwapchainImage for SwapchainImage {
+    type I = Image;
+
+    type IV = ImageView;
+
+    fn view(&self) -> &Self::IV {
+        &self.view
+    }
+
+    fn present(&mut self) -> Result<(), SwapchainErr> {
+        let mut cmd_buf = CmdBuffer::new_batch(&self.cmd_pool, 1)
+            .map(|mut v| v.remove(0))
+            .map_err(|e| format!("getting command buffer failed: {e}"))
+            .map_err(SwapchainErr::PresentImageErr)?;
+        cmd_buf
+            .start_recording()
+            .map_err(SwapchainErr::PresentImageErr)?;
+        let img = self.view.image_holder.as_ref();
+        let mut old_access_mut = match img.last_access.lock() {
+            Ok(a) => a,
+            Err(e) => e.into_inner(),
+        };
+        let old_access = old_access_mut.clone();
+        *old_access_mut = ImageAccess {
+            layout: vk::ImageLayout::PRESENT_SRC_KHR,
+            access: vk::AccessFlags::MEMORY_READ,
+            psf: vk::PipelineStageFlags::ALL_COMMANDS,
+        };
+        if old_access.layout != vk::ImageLayout::PRESENT_SRC_KHR {
+            let aspect_mask = if img.format.is_depth() {
+                vk::ImageAspectFlags::DEPTH
+            } else {
+                vk::ImageAspectFlags::COLOR
+            };
+            unsafe {
+                self.device_dropper.device.cmd_pipeline_barrier(
+                    cmd_buf.handle,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    vk::DependencyFlags::BY_REGION,
+                    &[],
+                    &[],
+                    &[vk::ImageMemoryBarrier::default()
+                        .image(img.handle)
+                        .old_layout(old_access.layout)
+                        .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                        .src_access_mask(old_access.access)
+                        .dst_access_mask(vk::AccessFlags::MEMORY_READ)
+                        .src_queue_family_index(self.device_dropper.gpu_info.gfx_qf as _)
+                        .dst_queue_family_index(self.device_dropper.gpu_info.gfx_qf as _)
+                        .subresource_range(
+                            vk::ImageSubresourceRange::default()
+                                .aspect_mask(aspect_mask)
+                                .level_count(1)
+                                .layer_count(img.layers),
+                        )],
+                );
+            }
+        }
+        cmd_buf
+            .stop_recording()
+            .map_err(SwapchainErr::PresentImageErr)?;
+        unsafe {
+            self.device_dropper
+                .device
+                .queue_submit(
+                    self.device_dropper.gfx_queue,
+                    &[vk::SubmitInfo::default()
+                        .command_buffers(&[cmd_buf.handle])
+                        .signal_semaphores(&[self.sem])],
+                    vk::Fence::null(),
+                )
+                .map_err(|e| format!("queue submission failed:{e}"))
+                .map_err(SwapchainErr::PresentImageErr)?;
+            self.device_dropper
+                .swapchain_device
+                .queue_present(
+                    self.device_dropper.gfx_queue,
+                    &vk::PresentInfoKHR::default()
+                        .swapchains(&[self.swapchain])
+                        .image_indices(&[self.idx as _])
+                        .wait_semaphores(&[self.sem]),
+                )
+                .map_err(|e| format!("image present failed: {e}"))
+                .map_err(SwapchainErr::PresentImageErr)?;
+        }
+        Ok(())
     }
 }

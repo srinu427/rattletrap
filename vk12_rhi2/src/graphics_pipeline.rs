@@ -2,169 +2,17 @@ use std::{fs, sync::Arc};
 
 use ash::vk;
 use hashbrown::HashMap;
+use rhi2::shader::ShaderSetData;
 
 use crate::{
     buffer::Buffer,
     device::DeviceDropper,
     image::{Image, ImageView, rhi2_fmt_to_vk_fmt},
     init_helpers,
-    shader::ShaderSet,
+    shader::{DPool, ShaderSet},
 };
 
 const MAX_CACHED_FBS: usize = 128;
-
-pub struct DPool {
-    pub handle: vk::DescriptorPool,
-    pub device_dropper: Arc<DeviceDropper>,
-}
-
-impl Drop for DPool {
-    fn drop(&mut self) {
-        unsafe {
-            self.device_dropper
-                .device
-                .destroy_descriptor_pool(self.handle, None);
-        }
-    }
-}
-
-fn vk_desc_type_from_dp_size(ssi: &rhi2::shader::ShaderSetInfo) -> vk::DescriptorPoolSize {
-    match ssi {
-        rhi2::shader::ShaderSetInfo::UniformBuffer(count) => vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(*count as _),
-        rhi2::shader::ShaderSetInfo::StorageBuffer(count) => vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(*count as _),
-        rhi2::shader::ShaderSetInfo::Sampler2D(count) => vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(*count as _),
-    }
-}
-
-fn vk_ssi_to_dtype(ssi: &rhi2::shader::ShaderSetInfo) -> vk::DescriptorType {
-    match ssi {
-        rhi2::shader::ShaderSetInfo::UniformBuffer(_) => vk::DescriptorType::UNIFORM_BUFFER,
-        rhi2::shader::ShaderSetInfo::StorageBuffer(_) => vk::DescriptorType::STORAGE_BUFFER,
-        rhi2::shader::ShaderSetInfo::Sampler2D(_) => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-    }
-}
-
-fn vk_ssi_to_dcount(ssi: &rhi2::shader::ShaderSetInfo) -> u32 {
-    (match ssi {
-        rhi2::shader::ShaderSetInfo::UniformBuffer(c) => *c,
-        rhi2::shader::ShaderSetInfo::StorageBuffer(c) => *c,
-        rhi2::shader::ShaderSetInfo::Sampler2D(c) => *c,
-    }) as u32
-}
-
-pub struct DescriptorGen {
-    pub bindings: Vec<rhi2::shader::ShaderSetInfo>,
-    pub layout: vk::DescriptorSetLayout,
-    pub pool: Arc<DPool>,
-}
-
-impl DescriptorGen {
-    pub fn new(
-        device_dropper: &Arc<DeviceDropper>,
-        bindings: Vec<rhi2::shader::ShaderSetInfo>,
-    ) -> Result<Self, String> {
-        let dsl_bindings: Vec<_> = bindings
-            .iter()
-            .enumerate()
-            .map(|(i, b)| {
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(i as _)
-                    .descriptor_type(vk_ssi_to_dtype(b))
-                    .descriptor_count(vk_ssi_to_dcount(b))
-            })
-            .collect();
-        let dsl_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&dsl_bindings);
-        let layout = unsafe {
-            device_dropper
-                .device
-                .create_descriptor_set_layout(&dsl_info, None)
-                .map_err(|e| format!("error creating dsl: {e}"))?
-        };
-        let pool_sizes: Vec<_> = bindings
-            .iter()
-            .map(|b| vk_desc_type_from_dp_size(b))
-            .collect();
-        let pool_create_info = vk::DescriptorPoolCreateInfo::default()
-            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
-            .pool_sizes(&pool_sizes)
-            .max_sets(128);
-        let pool = unsafe {
-            device_dropper
-                .device
-                .create_descriptor_pool(&pool_create_info, None)
-                .map_err(|e| format!("create Desc Pool failed: {e}"))?
-        };
-        let pool = DPool {
-            handle: pool,
-            device_dropper: device_dropper.clone(),
-        };
-        Ok(DescriptorGen {
-            bindings,
-            layout,
-            pool: Arc::new(pool),
-        })
-    }
-
-    pub fn new_shader_set(&mut self) -> Result<ShaderSet, String> {
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(self.pool.handle)
-            .set_layouts(core::slice::from_ref(&self.layout));
-        let dset = unsafe {
-            match self
-                .pool
-                .device_dropper
-                .device
-                .allocate_descriptor_sets(&alloc_info)
-            {
-                Ok(mut dset) => dset.remove(0),
-                Err(e) => match e {
-                    vk::Result::ERROR_OUT_OF_POOL_MEMORY => {
-                        let pool_sizes: Vec<_> = self
-                            .bindings
-                            .iter()
-                            .map(|b| vk_desc_type_from_dp_size(b))
-                            .collect();
-                        let pool_create_info = vk::DescriptorPoolCreateInfo::default()
-                            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
-                            .pool_sizes(&pool_sizes)
-                            .max_sets(128);
-                        let pool = self
-                            .pool
-                            .device_dropper
-                            .device
-                            .create_descriptor_pool(&pool_create_info, None)
-                            .map_err(|e| format!("create Desc Pool failed: {e}"))?;
-                        let pool = DPool {
-                            handle: pool,
-                            device_dropper: self.pool.device_dropper.clone(),
-                        };
-                        self.pool = Arc::new(pool);
-                        let dset = self
-                            .pool
-                            .device_dropper
-                            .device
-                            .allocate_descriptor_sets(&alloc_info)
-                            .map_err(|e| format!("create Desc Set failed: {e}"))?
-                            .remove(0);
-                        dset
-                    }
-                    _ => return Err(format!("create Desc Set failed: {e}")),
-                },
-            }
-        };
-        let dset = ShaderSet {
-            handle: dset,
-            pool: self.pool.clone(),
-        };
-        Ok(dset)
-    }
-}
 
 fn store_op_vk(store: bool) -> vk::AttachmentStoreOp {
     if store {
@@ -222,7 +70,7 @@ pub struct GraphicsPipeline {
     pub handle: vk::Pipeline,
     pub layout_handle: vk::PipelineLayout,
     pub render_pass: vk::RenderPass,
-    pub descriptor_gens: Vec<DescriptorGen>,
+    pub descriptor_gens: Vec<DPool>,
     pub pc_size: usize,
     pub frag_output_infos: Vec<rhi2::graphics_pipeline::AttachInfo>,
     pub frag_depth_infos: Option<rhi2::graphics_pipeline::AttachInfo>,
@@ -346,7 +194,7 @@ impl GraphicsPipeline {
         let render_pass = Self::create_render_pass(device_dropper, &frag_stage_info)?;
         let descriptor_gens: Vec<_> = sets
             .into_iter()
-            .map(|s| DescriptorGen::new(device_dropper, s))
+            .map(|s| DPool::new(device_dropper, s))
             .collect::<Result<_, _>>()?;
         let dsls: Vec<_> = descriptor_gens.iter().map(|d| d.layout).collect();
         let pc_info = vk::PushConstantRange::default()
@@ -453,6 +301,10 @@ impl GraphicsPipeline {
                 .map_err(|(_, e)| format!("vk pipeline creation failed: {e}"))?
                 .remove(0)
         };
+        unsafe {
+            device_dropper.device.destroy_shader_module(vs_mod, None);
+            device_dropper.device.destroy_shader_module(fs_mod, None);
+        }
         Ok(Self {
             handle: pipeline,
             layout_handle: pipeline_layout,
@@ -468,7 +320,7 @@ impl GraphicsPipeline {
 
     pub fn create_framebuffer(
         &mut self,
-        color: &[ImageView],
+        color: &Vec<&ImageView>,
         depth: Option<&ImageView>,
     ) -> Result<vk::Framebuffer, String> {
         let hash_obj = ImagesHashable {
@@ -548,9 +400,10 @@ impl rhi2::graphics_pipeline::GraphicsPipeline for GraphicsPipeline {
     fn new_set(
         &mut self,
         set_id: usize,
+        data: Vec<ShaderSetData<Self::B, Self::IV>>,
     ) -> Result<Self::SS, rhi2::graphics_pipeline::GraphicsPipelineErr> {
         self.descriptor_gens[set_id]
-            .new_shader_set()
+            .new_ss(data)
             .map_err(rhi2::graphics_pipeline::GraphicsPipelineErr::SetCreateFailed)
     }
 }
@@ -561,6 +414,15 @@ impl Drop for GraphicsPipeline {
             for (_, fb) in self.framebuffer_cache.drain() {
                 self.device_dropper.device.destroy_framebuffer(fb, None);
             }
+            self.device_dropper
+                .device
+                .destroy_pipeline_layout(self.layout_handle, None);
+            self.device_dropper
+                .device
+                .destroy_pipeline(self.handle, None);
+            self.device_dropper
+                .device
+                .destroy_render_pass(self.render_pass, None);
         }
     }
 }

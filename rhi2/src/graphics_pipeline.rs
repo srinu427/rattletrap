@@ -1,7 +1,7 @@
 use crate::{
     buffer::Buffer,
     image::{Format, Image, ImageView},
-    shader::ShaderSet,
+    shader::{ShaderSet, ShaderSetData},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -54,5 +54,9 @@ pub trait GraphicsPipeline {
 
     fn set_count(&self) -> usize;
     fn pc_size(&self) -> usize;
-    fn new_set(&mut self, set_id: usize) -> Result<Self::SS, GraphicsPipelineErr>;
+    fn new_set(
+        &mut self,
+        set_id: usize,
+        data: Vec<ShaderSetData<Self::B, Self::IV>>,
+    ) -> Result<Self::SS, GraphicsPipelineErr>;
 }

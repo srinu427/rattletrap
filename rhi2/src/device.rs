@@ -5,7 +5,7 @@ use enumflags2::BitFlags;
 use crate::{
     HostAccess,
     buffer::{Buffer, BufferFlags},
-    command::{CommandRecorder, GraphicsCommandRecorder},
+    command::CommandRecorder,
     graphics_pipeline::{FragmentStageInfo, GraphicsPipeline, VertexStageInfo},
     image::{Format, Image, ImageFlags, ImageView},
     shader::{ShaderSet, ShaderSetInfo},
@@ -29,12 +29,20 @@ pub enum DeviceErr {
     RunCmdsFailed(String),
 }
 
+#[derive(Debug, Clone)]
+pub struct GpuInfo {
+    pub id: usize,
+    pub name: String,
+    pub dvram: u64,
+    pub is_dedicated: bool,
+}
+
 pub trait Device {
-    type SC: Swapchain;
     type B: Buffer;
     type I: Image;
     type IV: ImageView<I = Self::I>;
-    type SS: ShaderSet<B = Self::B, I = Self::I, IV = Self::IV>;
+    type SC: Swapchain<I = Self::I, IV = Self::IV, CR = Self::CR, TF = Self::TF>;
+    type SS: ShaderSet;
     type GP: GraphicsPipeline<B = Self::B, I = Self::I, IV = Self::IV, SS = Self::SS>;
     type TF: TaskFuture;
     type CR: CommandRecorder<
@@ -46,6 +54,7 @@ pub trait Device {
             TF = Self::TF,
         >;
 
+    fn gpu_info(&self) -> GpuInfo;
     fn swapchain(&self) -> &Self::SC;
     fn swapchain_mut(&mut self) -> &mut Self::SC;
     fn new_buffer(
@@ -72,4 +81,5 @@ pub trait Device {
     ) -> Result<Self::GP, DeviceErr>;
     fn new_cmd_recorder(&self) -> Result<Self::CR, DeviceErr>;
     fn run_work_graph(&self) -> Result<Self::TF, DeviceErr>;
+    fn wait_idle(&self);
 }
