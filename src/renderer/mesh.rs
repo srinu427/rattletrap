@@ -1,4 +1,11 @@
 use bytemuck::NoUninit;
+use rhi2::{
+    Capped, HostAccess,
+    buffer::{Buffer as _, BufferFlags},
+    command::CommandRecorder as _,
+    device::Device,
+    sync::TaskFuture as _,
+};
 
 #[derive(Debug, Clone, Copy, NoUninit)]
 #[repr(C)]
@@ -111,5 +118,45 @@ impl Mesh {
         ];
 
         Self::merge(name, faces)
+    }
+}
+
+pub struct GpuMesh<D: Device> {
+    mesh: Mesh,
+    vert_buffer: D::B,
+    indx_buffer: D::B,
+}
+
+impl<D: Device> GpuMesh<D> {
+    pub fn new(device: &D, mesh: Mesh) -> anyhow::Result<Self> {
+        let vb_size = mesh.verts.len() * size_of::<Vertex>();
+        let ib_size = mesh.idxs.len() * size_of::<u16>();
+        let mut stage_buffer = device.new_buffer(
+            vb_size + ib_size,
+            BufferFlags::CopySrc.into(),
+            HostAccess::Write,
+        )?;
+        stage_buffer.host_write(0, bytemuck::cast_slice(&mesh.verts))?;
+        stage_buffer.host_write(vb_size, bytemuck::cast_slice(&mesh.idxs))?;
+        let vert_buffer = device.new_buffer(
+            vb_size,
+            BufferFlags::Vertex | BufferFlags::CopyDst,
+            HostAccess::None,
+        )?;
+        let indx_buffer = device.new_buffer(
+            ib_size,
+            BufferFlags::Index | BufferFlags::CopyDst,
+            HostAccess::None,
+        )?;
+        let mut cr = device.new_cmd_recorder()?;
+        cr.copy_b2b(&stage_buffer, 0, &vert_buffer, 0, vb_size);
+        cr.copy_b2b(&stage_buffer, vb_size, &indx_buffer, 0, ib_size);
+        cr.keep_buffer_alive(Capped::Obj(stage_buffer));
+        cr.run(vec![])?.wait()?;
+        Ok(Self {
+            mesh,
+            vert_buffer,
+            indx_buffer,
+        })
     }
 }

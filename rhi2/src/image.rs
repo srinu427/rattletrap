@@ -78,3 +78,5 @@ pub trait ImageView: Sized {
     fn image(&self) -> &Capped<Self::I>;
     fn view_type(&self) -> ViewType;
 }
+
+pub trait Sampler: Sized {}

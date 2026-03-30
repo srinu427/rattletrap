@@ -1,6 +1,6 @@
 use crate::{
     buffer::Buffer,
-    image::{Format, Image, ImageView},
+    image::{Format, Image, ImageView, Sampler},
     shader::{ShaderSet, ShaderSetData},
 };
 
@@ -50,13 +50,14 @@ pub trait GraphicsPipeline {
     type B: Buffer;
     type I: Image;
     type IV: ImageView<I = Self::I>;
-    type SS: ShaderSet<B = Self::B, I = Self::I, IV = Self::IV>;
+    type S: Sampler;
+    type SS: ShaderSet<B = Self::B, I = Self::I, IV = Self::IV, S = Self::S>;
 
     fn set_count(&self) -> usize;
     fn pc_size(&self) -> usize;
     fn new_set(
         &mut self,
         set_id: usize,
-        data: Vec<ShaderSetData<Self::B, Self::IV>>,
+        data: Vec<ShaderSetData<Self::B, Self::IV, Self::S>>,
     ) -> Result<Self::SS, GraphicsPipelineErr>;
 }

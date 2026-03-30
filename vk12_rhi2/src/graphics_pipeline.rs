@@ -7,7 +7,7 @@ use rhi2::shader::ShaderSetData;
 use crate::{
     buffer::Buffer,
     device::DeviceDropper,
-    image::{Image, ImageView, rhi2_fmt_to_vk_fmt},
+    image::{Image, ImageView, Sampler, rhi2_fmt_to_vk_fmt},
     init_helpers,
     shader::{DPool, ShaderSet},
 };
@@ -387,6 +387,8 @@ impl rhi2::graphics_pipeline::GraphicsPipeline for GraphicsPipeline {
 
     type IV = ImageView;
 
+    type S = Sampler;
+
     type SS = ShaderSet;
 
     fn set_count(&self) -> usize {
@@ -400,7 +402,7 @@ impl rhi2::graphics_pipeline::GraphicsPipeline for GraphicsPipeline {
     fn new_set(
         &mut self,
         set_id: usize,
-        data: Vec<ShaderSetData<Self::B, Self::IV>>,
+        data: Vec<ShaderSetData<Self::B, Self::IV, Self::S>>,
     ) -> Result<Self::SS, rhi2::graphics_pipeline::GraphicsPipelineErr> {
         self.descriptor_gens[set_id]
             .new_ss(data)

@@ -1,482 +1,195 @@
-use std::{f32::consts::PI, sync::Arc};
+use std::sync::Arc;
 
 use hashbrown::HashMap;
-use include_bytes_aligned::include_bytes_aligned;
-use winit::window::Window;
+use rhi2::{
+    Capped, HostAccess,
+    buffer::{Buffer, BufferFlags},
+    command::{CommandRecorder, GraphicsCommandRecorder},
+    device::Device,
+    graphics_pipeline::{
+        AttachInfo, FragmentStageInfo, GraphicsPipeline, VertexAttribute, VertexStageInfo,
+    },
+    image::{Format, ImageFlags, ImageView},
+    shader::{ShaderSetData, ShaderSetInfo},
+    swapchain::{SCImageRes, Swapchain, SwapchainImage},
+    sync::TaskFuture,
+};
 
 use crate::renderer::{
     camera::Cam3d,
-    material::{Material, MaterialSet},
-    mesh::{Mesh, Vertex},
+    mesh::{GpuMesh, Mesh, Vertex},
+    texture::Texture,
 };
 
-mod asset_manager;
-pub mod camera;
-pub mod level;
-pub mod material;
-pub mod mesh;
+mod camera;
+mod mesh;
+mod texture;
 
-static VERT_SPV: &[u8] = include_bytes_aligned!(4, "shaders/triangle.vert.spv");
-static FRAG_SPV: &[u8] = include_bytes_aligned!(4, "shaders/triangle.frag.spv");
-
-#[derive(Debug, Clone)]
-pub struct MeshOffsets {
-    name: String,
-    vb_offset: usize,
-    ib_offset: usize,
-    len: usize,
+pub struct PerFrameData<D: Device> {
+    cam_stage_buffer: D::B,
+    cam_buffer: Arc<D::B>,
+    cam_sset: D::SS,
 }
 
-pub struct PerFrameData {
-    index: usize,
-    meshes: HashMap<String, (Arc<Mesh>, glam::Mat4)>,
-    mesh_offsets: HashMap<String, MeshOffsets>,
-    vb_up_to_date: u32,
-    swapchain_image_initialized: u32,
-    cmd_buffer: rhi::CommandBuffer,
-    draw_sem: rhi::Semaphore,
-    draw_sem_num: u64,
-    present_sem: rhi::Semaphore,
-    vertex_buffer: rhi::Buffer,
-    vertex_stage_buffer: rhi::Buffer,
-    index_buffer: rhi::Buffer,
-    index_stage_buffer: rhi::Buffer,
-    camera_buffer: rhi::Buffer,
-    camera_stage_buffer: rhi::Buffer,
-    camera_dset: rhi::DSet,
-}
-
-impl PerFrameData {
-    pub fn new(
-        device: &rhi::Device,
-        pipeline: &mut rhi::RenderPipeline,
-        index: usize,
-    ) -> anyhow::Result<Self> {
-        let cmd_buffer = device.graphics_queue().create_command_buffer()?;
-        let draw_sem = device.create_semaphore(false)?;
-        let present_sem = device.create_semaphore(true)?;
-        let vertex_buffer = device.create_buffer(
-            32 * 1024 * 1024,
-            rhi::BufferFlags::Vertex | rhi::BufferFlags::CopyDst,
-            rhi::MemLocation::Gpu,
+impl<D: Device> PerFrameData<D> {
+    pub fn new(device: &D, gp: &mut D::GP) -> anyhow::Result<Self> {
+        let cam_stage_buffer = device.new_buffer(
+            size_of::<Cam3d>(),
+            BufferFlags::CopySrc.into(),
+            HostAccess::Write,
         )?;
-        let vertex_stage_buffer = device.create_buffer(
-            32 * 1024 * 1024,
-            rhi::BufferFlags::CopySrc.into(),
-            rhi::MemLocation::CpuToGpu,
+        let cam_buffer = Arc::new(device.new_buffer(
+            size_of::<Cam3d>(),
+            BufferFlags::CopyDst | BufferFlags::Uniform,
+            HostAccess::None,
+        )?);
+        let cam_sset = gp.new_set(
+            0,
+            vec![ShaderSetData::UniformBuffer(vec![Capped::Arc(
+                cam_buffer.clone(),
+            )])],
         )?;
-        let index_buffer = device.create_buffer(
-            1 * 1024 * 1024,
-            rhi::BufferFlags::Index | rhi::BufferFlags::CopyDst,
-            rhi::MemLocation::Gpu,
-        )?;
-        let index_stage_buffer = device.create_buffer(
-            1 * 1024 * 1024,
-            rhi::BufferFlags::CopySrc.into(),
-            rhi::MemLocation::CpuToGpu,
-        )?;
-        let camera_buffer = device.create_buffer(
-            core::mem::size_of::<Cam3d>() as _,
-            rhi::BufferFlags::Uniform | rhi::BufferFlags::CopyDst,
-            rhi::MemLocation::Gpu,
-        )?;
-        let camera_stage_buffer = device.create_buffer(
-            core::mem::size_of::<Cam3d>() as _,
-            rhi::BufferFlags::CopySrc.into(),
-            rhi::MemLocation::CpuToGpu,
-        )?;
-        let mut camera_dset = pipeline.new_set(0)?;
-        camera_dset.write_full(vec![rhi::DBindingData::UBuffer(vec![&camera_buffer])]);
         Ok(Self {
-            index,
-            meshes: HashMap::new(),
-            mesh_offsets: HashMap::new(),
-            vb_up_to_date: 0,
-            swapchain_image_initialized: 0,
-            cmd_buffer,
-            draw_sem,
-            draw_sem_num: 0,
-            present_sem,
-            vertex_buffer,
-            vertex_stage_buffer,
-            index_buffer,
-            index_stage_buffer,
-            camera_buffer,
-            camera_stage_buffer,
-            camera_dset,
+            cam_stage_buffer,
+            cam_buffer,
+            cam_sset,
         })
     }
 
-    pub fn add_meshes(&mut self, meshes: &Vec<Arc<Mesh>>) {
-        for mesh in meshes {
-            self.meshes
-                .insert(mesh.name.clone(), (mesh.clone(), glam::Mat4::IDENTITY));
-        }
-        self.vb_up_to_date = 0;
-    }
-
-    pub fn clear_meshes(&mut self) {
-        self.meshes.clear();
-        self.vb_up_to_date = 0;
-    }
-
-    pub fn update_vb(&mut self, encoder: &mut rhi::CommandEncoder) -> anyhow::Result<()> {
-        if self.vb_up_to_date > 0 {
-            return Ok(());
-        }
-        let mut all_verts = vec![];
-        let mut all_inds = vec![];
-        self.mesh_offsets.clear();
-        for (name, (mesh_info, _transform)) in &self.meshes {
-            let vb_offset = all_verts.len();
-            let ib_offset = all_inds.len();
-            let ind_len = mesh_info.idxs.len();
-            all_verts.extend(mesh_info.verts.clone());
-            all_inds.extend(mesh_info.idxs.clone());
-            self.mesh_offsets.insert(
-                name.clone(),
-                MeshOffsets {
-                    name: name.clone(),
-                    vb_offset,
-                    ib_offset,
-                    len: ind_len,
-                },
-            );
-        }
-        let vert_bytes = bytemuck::cast_slice(&all_verts);
-        let ind_bytes = bytemuck::cast_slice(&all_inds);
-        self.vertex_stage_buffer.write_data(vert_bytes)?;
-        self.index_stage_buffer.write_data(ind_bytes)?;
-        encoder.copy_buffer_to_buffer(
-            &self.vertex_stage_buffer,
-            &self.vertex_buffer,
-            Some(vert_bytes.len() as _),
+    pub fn update_cam_cmds(&mut self, cam: &Cam3d, cr: &mut D::CR) -> anyhow::Result<()> {
+        self.cam_stage_buffer
+            .host_write(0, bytemuck::bytes_of(cam))?;
+        cr.copy_b2b(
+            &self.cam_stage_buffer,
+            0,
+            &self.cam_buffer,
+            0,
+            size_of::<Cam3d>(),
         );
-        encoder.copy_buffer_to_buffer(
-            &self.index_stage_buffer,
-            &self.index_buffer,
-            Some(ind_bytes.len() as _),
-        );
-        self.vb_up_to_date = 1;
         Ok(())
     }
 }
 
-pub struct TexMeshDraw {
-    mesh_name: String,
-    tex_id: usize,
+pub struct Renderer<D: Device> {
+    pfds: Vec<PerFrameData<D>>,
+    cam: Cam3d,
+    meshes: Vec<GpuMesh<D>>,
+    textures: HashMap<String, Texture<D>>,
+    gp: D::GP,
+    bg_image: D::I,
+    device: D,
 }
 
-#[derive(Debug, Clone, Copy, bytemuck::NoUninit)]
-#[repr(C)]
-pub struct MeshPC {
-    obj_t: glam::Mat4,
-    tex_id: u32,
-    padding: [u32; 3],
-}
-
-pub struct Renderer {
-    draws: Vec<TexMeshDraw>,
-    material_set: MaterialSet,
-    render_outputs: Vec<rhi::RenderOutput>,
-    render_depths: Vec<rhi::ImageView>,
-    pfds: Vec<PerFrameData>,
-    window: Arc<Window>,
-    swapchain: rhi::Swapchain,
-    sampler: Arc<rhi::Sampler>,
-    pipeline: rhi::RenderPipeline,
-    camera: Cam3d,
-    device: rhi::Device,
-}
-
-impl Renderer {
-    pub fn new(window: Arc<Window>) -> anyhow::Result<Self> {
-        let device = rhi::Device::new(&window)?;
-        let swapchain = device.create_swapchain()?;
-        let sampler = Arc::new(device.create_sampler()?);
-        let vert_shader = device.load_shader(VERT_SPV)?;
-        let frag_shader = device.load_shader(FRAG_SPV)?;
-        let mut pipeline = device.create_render_pipeline(
-            rhi::VertexStageInfo {
-                shader: &vert_shader,
-                entrypoint: "main",
+impl<D: Device> Renderer<D> {
+    pub fn new(device: D) -> anyhow::Result<Self> {
+        let img = image::open("data/textures/alt/albedo.png")?;
+        let bg_image = device.new_image(
+            Format::Rgba8,
+            (img.width(), img.height(), 1),
+            1,
+            ImageFlags::CopySrc | ImageFlags::CopyDst,
+            HostAccess::None,
+        )?;
+        let mut bg_image_buffer = device.new_buffer(
+            img.as_bytes().len(),
+            BufferFlags::CopySrc.into(),
+            HostAccess::Write,
+        )?;
+        bg_image_buffer.host_write(0, img.as_bytes())?;
+        let mut cmd_rec = device.new_cmd_recorder()?;
+        cmd_rec.copy_b2i(&bg_image_buffer, &bg_image);
+        cmd_rec.run(vec![])?.wait()?;
+        let mut gp = device.new_graphics_pipeline(
+            "src/renderer2/shaders/triangle.wgsl",
+            vec![vec![ShaderSetInfo::UniformBuffer(1)]],
+            0,
+            VertexStageInfo {
+                entrypoint: "vs_main",
                 attribs: vec![
-                    rhi::VertexAttribute::Vec4,
-                    rhi::VertexAttribute::Vec4,
-                    rhi::VertexAttribute::Vec4,
-                    rhi::VertexAttribute::Vec4,
-                    rhi::VertexAttribute::Vec4,
+                    VertexAttribute::Vec4,
+                    VertexAttribute::Vec4,
+                    VertexAttribute::Vec4,
+                    VertexAttribute::Vec4,
+                    VertexAttribute::Vec4,
                 ],
-                stride: core::mem::size_of::<Vertex>(),
+                stride: size_of::<Vertex>(),
             },
-            rhi::FragmentStageInfo {
-                shader: &frag_shader,
-                entrypoint: "main",
-                outputs: vec![rhi::FragmentOutputInfo {
-                    format: swapchain.images()[0].format(),
-                    clear: true,
+            FragmentStageInfo {
+                entrypoint: "fs_main",
+                outputs: vec![AttachInfo {
+                    format: device.swapchain().fmt(),
+                    clear: false,
                     store: true,
                 }],
-                depth: Some(rhi::FragmentOutputInfo {
-                    format: rhi::Format::D32Float,
-                    clear: true,
-                    store: true,
-                }),
+                depth: None,
             },
-            rhi::RasterMode::Fill(1.0),
-            vec![
-                vec![rhi::DBindingType::UBuffer(1)],
-                vec![rhi::DBindingType::Sampler2d(100)],
-            ],
-            core::mem::size_of::<MeshPC>() as _,
         )?;
-        let tex_dset = pipeline.new_set(1)?;
-        let material_set = MaterialSet::new(tex_dset, 0)?;
-        let mut camera = Cam3d::new(
-            glam::vec3(0.0, 10.0, 10.0),
-            glam::vec3(0.0, -1.0, -1.0),
-            glam::vec3(0.0, 1.0, 0.0),
-            PI * 0.25,
+        let cam = Cam3d::new(
+            glam::Vec3 {
+                x: 3.0,
+                y: 3.0,
+                z: 3.0,
+            },
+            glam::Vec3 {
+                x: -1.0,
+                y: -1.0,
+                z: -1.0,
+            },
+            glam::Vec3::Y,
+            3.0,
             1.0,
         );
-        camera.update_proj_view();
-
-        let pfds = (0..swapchain.images().len())
-            .map(|i| PerFrameData::new(&device, &mut pipeline, i))
-            .collect::<Result<_, _>>()?;
-
-        let render_depths: Vec<_> = (0..swapchain.images().len())
-            .map(|_| {
-                let img = device.create_image(
-                    rhi::Dimension::D2,
-                    rhi::Format::D32Float,
-                    swapchain.width(),
-                    swapchain.height(),
-                    1,
-                    1,
-                    rhi::ImageUsage::Attachment.into(),
-                    rhi::MemLocation::Gpu,
-                )?;
-                img.create_view(rhi::ViewDimension::D2, 0..1, 0..1)
-            })
-            .collect::<Result<_, _>>()?;
-        let render_outputs = (0..swapchain.images().len())
-            .map(|i| pipeline.new_output(vec![&swapchain.views()[i], &render_depths[i]]))
-            .collect::<Result<_, _>>()?;
+        let mut pfds = vec![];
+        for _ in 0..device.swapchain().img_count() {
+            let pfd = PerFrameData::new(&device, &mut gp)?;
+            pfds.push(pfd);
+        }
         Ok(Self {
-            draws: vec![],
-            material_set,
-            render_outputs,
-            render_depths,
             pfds,
-            window,
+            cam,
+            meshes: vec![],
+            textures: HashMap::new(),
+            gp,
+            bg_image,
             device,
-            swapchain,
-            pipeline,
-            camera,
-            sampler,
         })
     }
 
-    pub fn update_mesh_transform(&mut self, name: &str, transform: glam::Mat4) {
-        for pfd in &mut self.pfds {
-            if let Some(m_info) = pfd.meshes.get_mut(name) {
-                m_info.1 = transform;
-            }
-        }
-    }
-
-    pub fn camera_mut(&mut self) -> &mut Cam3d {
-        &mut self.camera
-    }
-
-    pub fn resize(
-        &mut self,
-        new_size: winit::dpi::PhysicalSize<u32>,
-        redraw: bool,
-    ) -> anyhow::Result<()> {
-        for idx in 0..self.swapchain.images().len() {
-            self.pfds[idx]
-                .draw_sem
-                .wait_for(self.pfds[idx].draw_sem_num, None)
-                .inspect_err(|e| eprintln!("error waiting for running draws: {e}"))
-                .ok();
-        }
-        self.render_outputs.clear();
-        if let Err(e) = self.swapchain.resize(new_size.width, new_size.height) {
-            eprintln!("resizing swapchain failed: {e}");
-        }
-        self.render_depths = (0..self.swapchain.images().len())
-            .map(|_| {
-                let img = self.device.create_image(
-                    rhi::Dimension::D2,
-                    rhi::Format::D32Float,
-                    self.swapchain.width(),
-                    self.swapchain.height(),
-                    1,
-                    1,
-                    rhi::ImageUsage::Attachment.into(),
-                    rhi::MemLocation::Gpu,
-                )?;
-                img.create_view(rhi::ViewDimension::D2, 0..1, 0..1)
-            })
-            .collect::<Result<_, _>>()?;
-        self.render_outputs = (0..self.swapchain.images().len())
-            .map(|i| {
-                self.pipeline
-                    .new_output(vec![&self.swapchain.views()[i], &self.render_depths[i]])
-            })
-            .collect::<Result<_, _>>()?;
-        for pfd in &mut self.pfds {
-            pfd.swapchain_image_initialized = 0;
-        }
-        if redraw {
-            self.render()?;
-        } else {
-            self.window.request_redraw();
-        }
+    pub fn resize(&mut self) -> anyhow::Result<()> {
+        self.device.swapchain_mut().refresh_res()?;
         Ok(())
-    }
-
-    pub fn add_meshes(&mut self, meshes: Vec<Mesh>) {
-        let meshes: Vec<_> = meshes.into_iter().map(Arc::new).collect();
-        for pfd in &mut self.pfds {
-            pfd.add_meshes(&meshes);
-        }
-    }
-
-    pub fn clear_meshes(&mut self) {
-        for pfd in &mut self.pfds {
-            pfd.clear_meshes();
-        }
-    }
-
-    pub fn add_materials(&mut self, mat_names: Vec<&str>) -> anyhow::Result<()> {
-        for mat_name in mat_names {
-            let mat = Material::new(&self.device, mat_name, &self.sampler)?;
-            self.material_set.add(mat);
-        }
-        Ok(())
-    }
-
-    pub fn add_mesh_draw_info(&mut self, mesh: String, texture: String) {
-        let Some(tex_id) = self.material_set.get_id(&texture) else {
-            eprintln!("texture {texture} is not loaded");
-            return;
-        };
-        self.draws.push(TexMeshDraw {
-            mesh_name: mesh,
-            tex_id: tex_id,
-        });
-    }
-
-    pub fn clear_mesh_draws(&mut self) {
-        self.draws.clear();
     }
 
     pub fn render(&mut self) -> anyhow::Result<()> {
-        let (mut img_idx, is_unoptimal) = self.swapchain.acquire_image()?;
-        if is_unoptimal {
-            let res = self.window.inner_size();
-            self.resize(res, false)?;
-            (img_idx, _) = self.swapchain.acquire_image()?;
-        }
-        let idx = img_idx as usize;
-        self.pfds[idx]
-            .draw_sem
-            .wait_for(self.pfds[idx].draw_sem_num, None)?;
-        if self.pfds[idx].swapchain_image_initialized == 1 {
-            self.pfds[idx].swapchain_image_initialized = 2;
-        }
-        if self.pfds[idx].vb_up_to_date == 1 {
-            self.pfds[idx].vb_up_to_date = 2;
-        }
-        let aspect_ratio = self.swapchain.images()[0].width() as f32
-            / self.swapchain.images()[0].height().max(1) as f32;
-        self.camera.set_aspect(aspect_ratio);
-        self.camera.update_proj_view();
-        self.pfds[idx]
-            .camera_stage_buffer
-            .write_data(bytemuck::bytes_of(&self.camera))?;
-        let mut encoder = self.pfds[idx].cmd_buffer.encoder()?;
-        encoder.copy_buffer_to_buffer(
-            &self.pfds[idx].camera_stage_buffer,
-            &self.pfds[idx].camera_buffer,
-            None,
-        );
-        self.pfds[idx].update_vb(&mut encoder)?;
-        if self.pfds[idx].swapchain_image_initialized == 0 {
-            encoder.set_last_image_access_view(
-                &self.swapchain.views()[idx],
-                rhi::ImageAccess::Undefined,
-            );
-            encoder
-                .set_last_image_access_view(&self.render_depths[idx], rhi::ImageAccess::Undefined);
-            self.pfds[idx].swapchain_image_initialized = 1;
-        } else {
-            encoder.set_last_image_access_view(
-                &self.swapchain.views()[idx],
-                rhi::ImageAccess::Present,
-            );
-        }
+        let mut swap_img = match self.device.swapchain_mut().next_image() {
+            SCImageRes::Success(swap) => swap,
+            SCImageRes::Unavailable => return Ok(()),
+            SCImageRes::Outdated => return Ok(()),
+            SCImageRes::Error(e) => return Err(anyhow::Error::msg(e)),
+        };
 
-        let mut render_pass = encoder.start_render_pipeline(
-            &self.pipeline,
-            &self.render_outputs[idx],
-            vec![
-                rhi::ClearValue::Colour([0.0; 4]),
-                rhi::ClearValue::Depth(1.0, 0),
-            ],
-        );
-        render_pass.bind_vbs(vec![&self.pfds[idx].vertex_buffer]);
-        render_pass.bind_ib(&self.pfds[idx].index_buffer, rhi::IndexType::U16);
-        render_pass.bind_dsets(vec![&self.pfds[idx].camera_dset, &self.material_set.dset]);
-        for draw_info in &self.draws {
-            let Some(mesh_info) = self.pfds[idx].mesh_offsets.get(&draw_info.mesh_name) else {
-                continue;
-            };
-            let Some((_, transform)) = self.pfds[idx].meshes.get(&draw_info.mesh_name) else {
-                continue;
-            };
-            let pc = MeshPC {
-                obj_t: *transform,
-                tex_id: draw_info.tex_id as u32,
-                padding: [0; 3],
-            };
-            render_pass.set_pc(bytemuck::bytes_of(&pc));
-            render_pass.draw_indexed(mesh_info.vb_offset, mesh_info.ib_offset, mesh_info.len);
-        }
+        let mut recorder = self.device.new_cmd_recorder()?;
+        recorder.blit(&self.bg_image, swap_img.view().image().as_ref());
+        let mut render_pass = recorder
+            .graphics(
+                &mut self.gp,
+                vec![&swap_img.view()],
+                vec![[0.5; 4]],
+                None,
+                None,
+            )
+            .map_err(|(e, _)| e)?;
+        let recorder = D::CR::finish_graphics(render_pass);
+        let mut draw_tf = recorder.run(vec![])?;
+        draw_tf.wait()?;
+        swap_img.present()?;
 
-        let mut encoder = render_pass.end();
-        encoder.set_last_image_access_view(&self.swapchain.views()[idx], rhi::ImageAccess::Present);
-        encoder.finalize()?;
-        self.pfds[idx].draw_sem_num += 1;
-        self.pfds[idx].cmd_buffer.submit(
-            vec![],
-            vec![
-                self.pfds[idx]
-                    .draw_sem
-                    .submit_info(self.pfds[idx].draw_sem_num),
-                self.pfds[idx].present_sem.submit_info(1),
-            ],
-        )?;
-
-        self.window.pre_present_notify();
-        self.swapchain
-            .present_image(img_idx, &self.pfds[idx].present_sem)?;
         Ok(())
     }
 }
 
-impl Drop for Renderer {
+impl<D: Device> Drop for Renderer<D> {
     fn drop(&mut self) {
-        for idx in 0..self.swapchain.images().len() {
-            self.pfds[idx]
-                .draw_sem
-                .wait_for(self.pfds[idx].draw_sem_num, None)
-                .inspect_err(|e| eprintln!("error waiting for running draws: {e}"))
-                .ok();
-        }
-        self.device.graphics_queue().wait_idle();
+        self.device.wait_idle();
     }
 }

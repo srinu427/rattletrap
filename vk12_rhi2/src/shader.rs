@@ -6,7 +6,7 @@ use rhi2::shader::{ShaderSetData, ShaderSetInfo};
 use crate::{
     buffer::Buffer,
     device::DeviceDropper,
-    image::{Image, ImageView},
+    image::{Image, ImageView, Sampler},
 };
 
 pub struct DPoolDropper {
@@ -127,7 +127,7 @@ impl DPool {
 
     pub fn new_ss(
         &mut self,
-        data: Vec<ShaderSetData<Buffer, ImageView>>,
+        data: Vec<ShaderSetData<Buffer, ImageView, Sampler>>,
     ) -> Result<ShaderSet, String> {
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.pool.handle)
@@ -200,10 +200,11 @@ impl DPool {
                 ShaderSetData::Sampler2D(cappeds) => {
                     let img_infos: Vec<_> = cappeds
                         .iter()
-                        .map(|iv| {
+                        .map(|(iv, s)| {
                             vk::DescriptorImageInfo::default()
                                 .image_view(iv.as_ref().handle)
                                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .sampler(s.as_ref().handle)
                         })
                         .collect();
                     update_infos.push((
@@ -260,7 +261,7 @@ impl Drop for DPool {
 }
 
 pub struct ShaderSet {
-    pub data: Vec<ShaderSetData<Buffer, ImageView>>,
+    pub data: Vec<ShaderSetData<Buffer, ImageView, Sampler>>,
     pub handle: vk::DescriptorSet,
     pub pool: Arc<DPoolDropper>,
 }
@@ -272,7 +273,13 @@ impl rhi2::shader::ShaderSet for ShaderSet {
 
     type IV = ImageView;
 
-    fn update_binding_data(&mut self, binding: usize, data: ShaderSetData<Self::B, Self::IV>) {
+    type S = Sampler;
+
+    fn update_binding_data(
+        &mut self,
+        binding: usize,
+        data: ShaderSetData<Self::B, Self::IV, Self::S>,
+    ) {
         let mut b_infos = None;
         let mut i_infos = None;
         let d_type = match &data {
@@ -306,10 +313,11 @@ impl rhi2::shader::ShaderSet for ShaderSet {
                 i_infos = Some(
                     cappeds
                         .iter()
-                        .map(|iv| {
+                        .map(|(iv, s)| {
                             vk::DescriptorImageInfo::default()
                                 .image_view(iv.as_ref().handle)
                                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .sampler(s.as_ref().handle)
                         })
                         .collect::<Vec<_>>(),
                 );

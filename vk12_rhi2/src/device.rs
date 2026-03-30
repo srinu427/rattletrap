@@ -8,7 +8,7 @@ use crate::{
     buffer::Buffer,
     command::{CmdBufferGen, CommandRecorder},
     graphics_pipeline::GraphicsPipeline,
-    image::{Image, ImageView},
+    image::{Image, ImageView, Sampler},
     instance::{InstanceDropper, VkGpuInfo},
     memory::MemAlloc,
     shader::ShaderSet,
@@ -127,6 +127,8 @@ impl rhi2::device::Device for Device {
 
     type IV = ImageView;
 
+    type S = Sampler;
+
     type SS = ShaderSet;
 
     type GP = GraphicsPipeline;
@@ -173,6 +175,10 @@ impl rhi2::device::Device for Device {
     ) -> Result<Self::I, DeviceErr> {
         Image::new(&self.allocator, format, res, layers, flags, host_access)
             .map_err(DeviceErr::ImageCreateFailed)
+    }
+
+    fn new_sampler(&self) -> Result<Self::S, DeviceErr> {
+        Sampler::new(&self.dropper).map_err(DeviceErr::SamplerCreateFailed)
     }
 
     fn new_graphics_pipeline(

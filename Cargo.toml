@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 winit = { version = "0.30.12", features = ["android-native-activity"] }
 physics = { path = "physics" }
-rhi = { path = "rhi" }
 rhi2 = { path = "rhi2" }
 vk12_rhi2 = { path = "vk12_rhi2" }
 anyhow = "1.0.100"

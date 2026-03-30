@@ -257,3 +257,35 @@ impl Drop for ImageView {
         }
     }
 }
+
+pub struct Sampler {
+    pub handle: vk::Sampler,
+    device_dropper: Arc<DeviceDropper>,
+}
+
+impl Sampler {
+    pub fn new(device_dropper: &Arc<DeviceDropper>) -> Result<Self, String> {
+        let handle = unsafe {
+            device_dropper
+                .device
+                .create_sampler(&vk::SamplerCreateInfo::default(), None)
+                .map_err(|e| format!("vk sampler creation failed: {e}"))?
+        };
+        Ok(Self {
+            handle,
+            device_dropper: device_dropper.clone(),
+        })
+    }
+}
+
+impl rhi2::image::Sampler for Sampler {}
+
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        unsafe {
+            self.device_dropper
+                .device
+                .destroy_sampler(self.handle, None);
+        }
+    }
+}

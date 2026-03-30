@@ -7,7 +7,7 @@ use crate::{
     buffer::{Buffer, BufferFlags},
     command::CommandRecorder,
     graphics_pipeline::{FragmentStageInfo, GraphicsPipeline, VertexStageInfo},
-    image::{Format, Image, ImageFlags, ImageView},
+    image::{Format, Image, ImageFlags, ImageView, Sampler},
     shader::{ShaderSet, ShaderSetInfo},
     swapchain::Swapchain,
     sync::TaskFuture,
@@ -21,6 +21,8 @@ pub enum DeviceErr {
     BufferCreateFailed(String),
     #[error("image creation failed: {0}")]
     ImageCreateFailed(String),
+    #[error("sampler creation failed: {0}")]
+    SamplerCreateFailed(String),
     #[error("graphics pipeline creation failed: {0}")]
     GraphicsPipelineCreateFailed(String),
     #[error("cmd recorder creation failed: {0}")]
@@ -41,8 +43,9 @@ pub trait Device {
     type B: Buffer;
     type I: Image;
     type IV: ImageView<I = Self::I>;
+    type S: Sampler;
     type SC: Swapchain<I = Self::I, IV = Self::IV, CR = Self::CR, TF = Self::TF>;
-    type SS: ShaderSet;
+    type SS: ShaderSet<B = Self::B, I = Self::I, IV = Self::IV, S = Self::S>;
     type GP: GraphicsPipeline<B = Self::B, I = Self::I, IV = Self::IV, SS = Self::SS>;
     type TF: TaskFuture;
     type CR: CommandRecorder<
@@ -71,6 +74,7 @@ pub trait Device {
         flags: BitFlags<ImageFlags>,
         host_access: HostAccess,
     ) -> Result<Self::I, DeviceErr>;
+    fn new_sampler(&self) -> Result<Self::S, DeviceErr>;
     fn new_graphics_pipeline(
         &self,
         shader: &str,

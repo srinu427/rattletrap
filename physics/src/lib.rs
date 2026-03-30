@@ -31,15 +31,44 @@ pub struct RigidBody {
     pub mass: f32,
     pub shape: Arc<CollisionShape>,
     pub orient: Orientation,
-    pub orient_shape: CollisionShape,
+    orient_shape: CollisionShape,
     pub kinematics: Kinematics,
     pub can_rotate: bool,
     pub has_gravity: bool,
     pub dont_interact_mask: u32,
-    pub stuck: bool,
+    stuck: bool,
+    contacts: Vec<ContactState>,
 }
 
 impl RigidBody {
+    pub fn new(
+        mass: f32,
+        shape: Arc<CollisionShape>,
+        initial_orient: Orientation,
+        initial_kin: Kinematics,
+        can_rotate: bool,
+        has_gravity: bool,
+        dont_interact_mask: u32,
+    ) -> Self {
+        let orient_shape = shape.with_orientation(&initial_orient);
+        Self {
+            mass,
+            shape,
+            orient: initial_orient,
+            orient_shape,
+            kinematics: initial_kin,
+            can_rotate,
+            has_gravity,
+            dont_interact_mask,
+            stuck: false,
+            contacts: vec![],
+        }
+    }
+
+    pub fn is_stuck(&self) -> bool {
+        self.stuck
+    }
+
     pub fn refresh_orient_shape(&mut self) {
         self.orient_shape = self.shape.with_orientation(&self.orient);
     }
@@ -57,7 +86,6 @@ impl RigidBody {
 pub struct PhysicsManager {
     pub objects: Vec<RigidBody>,
     pub object_ids: HashMap<String, usize>,
-    pub contacts: Vec<Vec<ContactState>>,
 }
 
 impl PhysicsManager {
@@ -65,33 +93,32 @@ impl PhysicsManager {
         Self {
             objects: Vec::new(),
             object_ids: HashMap::new(),
-            contacts: Vec::new(),
         }
     }
 
     pub fn clear(&mut self) {
         self.objects.clear();
         self.object_ids.clear();
-        self.contacts.clear();
     }
 
     pub fn add_obj(&mut self, name: &str, obj: RigidBody) {
-        self.objects.push(obj);
-        let last_obj_id = self.objects.len() - 1;
-        self.object_ids.insert(name.to_string(), last_obj_id);
-        let new_obj = &self.objects[last_obj_id];
-        let contacts: Vec<_> = (0..last_obj_id)
-            .map(|i| {
-                let o = &self.objects[i];
-                ContactState::new(&new_obj.orient_shape, &o.orient_shape)
-            })
-            .collect();
-        self.contacts.push(contacts);
-        self.contacts[last_obj_id].push(ContactState::dummy());
+        let last_obj_id = self.objects.len();
         for i in 0..last_obj_id {
-            let inv_state = self.contacts[last_obj_id][i].obj_swapped();
-            self.contacts[i].push(inv_state);
+            let contact = ContactState::new(&obj.orient_shape, &self.objects[i].orient_shape);
+            self.objects[i].contacts.push(contact);
         }
+        self.objects.push(obj);
+        self.object_ids.insert(name.to_string(), last_obj_id);
+    }
+
+    pub fn remove_obj(&mut self, name: &str) {
+        let Some(rem_id) = self.object_ids.get(name).cloned() else {
+            return;
+        };
+        for i in 0..rem_id {
+            self.objects[i].contacts.swap_remove(rem_id - i + 1);
+        }
+        self.objects.swap_remove(rem_id);
     }
 
     pub fn get_obj_mut(&mut self, name: &str) -> Option<&mut RigidBody> {
@@ -105,7 +132,11 @@ impl PhysicsManager {
     }
 
     pub fn objs_slide(&self, i: usize, j: usize) -> bool {
-        let contact = &self.contacts[i][j];
+        let contact = if i < j {
+            self.objects[i].contacts[j - i + 1].clone()
+        } else {
+            self.objects[j].contacts[i - j + 1].obj_swapped()
+        };
         if contact.min_dist != 0.0 {
             return false;
         }

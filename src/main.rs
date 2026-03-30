@@ -1,7 +1,6 @@
 mod ecs;
 mod inputs;
 mod renderer;
-mod renderer2;
 mod scene;
 use std::{sync::Arc, time};
 
@@ -19,7 +18,7 @@ use winit::{
 
 use crate::{
     inputs::Inputs,
-    renderer2::Renderer,
+    renderer::Renderer,
     // renderer::{Renderer, level},
 };
 
