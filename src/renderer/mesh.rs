@@ -1,13 +1,11 @@
-use bytemuck::NoUninit;
-use rhi2::{
-    Capped, HostAccess,
-    buffer::{Buffer as _, BufferFlags},
-    command::CommandRecorder as _,
+use avk12::{
     device::Device,
-    sync::TaskFuture as _,
+    resource::{Buffer, BufferCreateInfo, BufferUsageFlag, DataMoveDir},
 };
+use bytemuck::NoUninit;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, NoUninit)]
+#[derive(Debug, Clone, Copy, NoUninit, Serialize, Deserialize)]
 #[repr(C)]
 pub struct Vertex {
     pub pos: glam::Vec4,
@@ -17,9 +15,24 @@ pub struct Vertex {
     pub bt: glam::Vec4,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MeshCreateInfo {
+    RectCUV {
+        c: [f32; 3],
+        u: [f32; 3],
+        v: [f32; 3],
+    },
+    CubeCUVH {
+        c: [f32; 3],
+        u: [f32; 3],
+        v: [f32; 3],
+        h: f32,
+    },
+    MeshFile(String),
+}
+
+#[derive(Debug, Clone)]
 pub struct Mesh {
-    pub name: String,
     pub verts: Vec<Vertex>,
     pub idxs: Vec<u16>,
 }
@@ -51,7 +64,7 @@ impl Mesh {
         (n, t, bt)
     }
 
-    pub fn rect_cuv(name: &str, c: glam::Vec3, u: glam::Vec3, v: glam::Vec3) -> Self {
+    pub fn rect_cuv(c: glam::Vec3, u: glam::Vec3, v: glam::Vec3) -> Self {
         let ulen = u.length();
         let vlen = v.length();
         let vert_pos = [c + u + v, c - u + v, c - u - v, c + u - v];
@@ -77,25 +90,16 @@ impl Mesh {
             .flatten()
             .collect();
         let idxs = vec![0, 1, 2, 3, 4, 5];
-        Self {
-            name: name.to_string(),
-            verts,
-            idxs,
-        }
+        Self { verts, idxs }
     }
 
-    pub fn merge(name: &str, meshes: Vec<Self>) -> Self {
+    pub fn merge(meshes: Vec<Self>) -> Self {
         let mut out = Self {
-            name: name.to_string(),
             verts: vec![],
             idxs: vec![],
         };
         for mesh in meshes {
-            let Self {
-                name: _,
-                verts,
-                mut idxs,
-            } = mesh;
+            let Self { verts, mut idxs } = mesh;
             let voffset = out.verts.len();
             for idx in &mut idxs {
                 *idx += voffset as u16;
@@ -106,57 +110,80 @@ impl Mesh {
         out
     }
 
-    pub fn cube_cuvh(name: &str, c: glam::Vec3, u: glam::Vec3, v: glam::Vec3, hlen: f32) -> Self {
+    pub fn cube_cuvh(c: glam::Vec3, u: glam::Vec3, v: glam::Vec3, hlen: f32) -> Self {
         let h = (hlen / 2.0) * u.cross(v).normalize();
         let faces = vec![
-            Self::rect_cuv("f0", c + h, u, v),
-            Self::rect_cuv("f1", c - h, -u, v),
-            Self::rect_cuv("f2", c + u, v, h),
-            Self::rect_cuv("f3", c - u, -v, h),
-            Self::rect_cuv("f4", c + v, h, u),
-            Self::rect_cuv("f5", c - v, -h, u),
+            Self::rect_cuv(c + h, u, v),
+            Self::rect_cuv(c - h, -u, v),
+            Self::rect_cuv(c + u, v, h),
+            Self::rect_cuv(c - u, -v, h),
+            Self::rect_cuv(c + v, h, u),
+            Self::rect_cuv(c - v, -h, u),
         ];
 
-        Self::merge(name, faces)
+        Self::merge(faces)
+    }
+
+    pub fn new(info: MeshCreateInfo) -> anyhow::Result<Self> {
+        match info {
+            MeshCreateInfo::RectCUV { c, u, v } => Ok(Self::rect_cuv(
+                glam::Vec3::from_array(c),
+                glam::Vec3::from_array(u),
+                glam::Vec3::from_array(v),
+            )),
+            MeshCreateInfo::CubeCUVH { c, u, v, h } => Ok(Self::cube_cuvh(
+                glam::Vec3::from_array(c),
+                glam::Vec3::from_array(u),
+                glam::Vec3::from_array(v),
+                h,
+            )),
+            MeshCreateInfo::MeshFile(_) => todo!(),
+        }
     }
 }
 
-pub struct GpuMesh<D: Device> {
-    mesh: Mesh,
-    vert_buffer: D::B,
-    indx_buffer: D::B,
+pub struct GpuMesh {
+    pub(crate) vert_buffer: Buffer,
+    pub(crate) indx_buffer: Buffer,
+    pub(crate) indx_count: u32,
 }
 
-impl<D: Device> GpuMesh<D> {
-    pub fn new(device: &D, mesh: Mesh) -> anyhow::Result<Self> {
-        let vb_size = mesh.verts.len() * size_of::<Vertex>();
-        let ib_size = mesh.idxs.len() * size_of::<u16>();
-        let mut stage_buffer = device.new_buffer(
-            vb_size + ib_size,
-            BufferFlags::CopySrc.into(),
-            HostAccess::Write,
+impl GpuMesh {
+    pub fn new(device: &Device, mesh: &Mesh) -> anyhow::Result<Self> {
+        let vb_size = (mesh.verts.len() * size_of::<Vertex>()) as u64;
+        let ib_size = (mesh.idxs.len() * size_of::<u16>()) as u64;
+        let stage_buffer = device.new_buffer(
+            BufferCreateInfo::builder()
+                .size(vb_size + ib_size)
+                .used_for(BufferUsageFlag::CopySrc.into())
+                .data_move_dir(DataMoveDir::Cpu2Gpu)
+                .build(),
         )?;
-        stage_buffer.host_write(0, bytemuck::cast_slice(&mesh.verts))?;
-        stage_buffer.host_write(vb_size, bytemuck::cast_slice(&mesh.idxs))?;
+        stage_buffer.write_cpu(0, bytemuck::cast_slice(&mesh.verts))?;
+        stage_buffer.write_cpu(vb_size, bytemuck::cast_slice(&mesh.idxs))?;
         let vert_buffer = device.new_buffer(
-            vb_size,
-            BufferFlags::Vertex | BufferFlags::CopyDst,
-            HostAccess::None,
+            BufferCreateInfo::builder()
+                .size(vb_size)
+                .used_for(BufferUsageFlag::CopyDst | BufferUsageFlag::Vertex)
+                .build(),
         )?;
         let indx_buffer = device.new_buffer(
-            ib_size,
-            BufferFlags::Index | BufferFlags::CopyDst,
-            HostAccess::None,
+            BufferCreateInfo::builder()
+                .size(ib_size)
+                .used_for(BufferUsageFlag::CopyDst | BufferUsageFlag::Index)
+                .build(),
         )?;
-        let mut cr = device.new_cmd_recorder()?;
-        cr.copy_b2b(&stage_buffer, 0, &vert_buffer, 0, vb_size);
-        cr.copy_b2b(&stage_buffer, vb_size, &indx_buffer, 0, ib_size);
-        cr.keep_buffer_alive(Capped::Obj(stage_buffer));
-        cr.run(vec![])?.wait()?;
+        let mut cr = device.new_task()?;
+        cr.copy_b2b(stage_buffer.view(0..vb_size), vert_buffer.view(0..vb_size));
+        cr.copy_b2b(
+            stage_buffer.view(vb_size..(vb_size + ib_size)),
+            indx_buffer.view(0..ib_size),
+        );
+        cr.run()?.wait()?;
         Ok(Self {
-            mesh,
             vert_buffer,
             indx_buffer,
+            indx_count: mesh.idxs.len() as _,
         })
     }
 }

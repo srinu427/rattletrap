@@ -4,8 +4,7 @@ mod renderer;
 mod scene;
 use std::{sync::Arc, time};
 
-use physics::PhysicsManager;
-use vk12_rhi2::{device::Device, instance::Instance};
+// use physics::PhysicsManager;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -16,48 +15,24 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::{
-    inputs::Inputs,
-    renderer::Renderer,
-    // renderer::{Renderer, level},
-};
+use crate::{ecs::EcsMega, inputs::Inputs};
 
 struct App {
-    renderer: Option<Renderer<Device>>,
+    ecs_mega: Option<EcsMega>,
     start_time: time::Instant,
     last_frame_time_ms: u128,
     inputs: Inputs,
-    physics_manager: PhysicsManager,
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
-            renderer: None,
+            ecs_mega: None,
             start_time: time::Instant::now(),
             last_frame_time_ms: 0,
             inputs: Inputs::new(),
-            physics_manager: PhysicsManager::new(),
         }
     }
-
-    // pub fn load_level(&mut self) {
-    //     let state = self.renderer.as_mut().unwrap();
-    //     state.clear_meshes();
-    //     let level = level::parse_lvl_ron("data/levels/1.ron").unwrap();
-    //     let meshes: Vec<_> = level.geometry.iter().map(|g| g.to_mesh()).collect();
-    //     state.add_meshes(meshes);
-    //     let textures: Vec<_> = level.draws.iter().map(|d| d.material.as_str()).collect();
-    //     state.add_materials(textures).unwrap();
-    //     state.clear_mesh_draws();
-    //     for d_info in &level.draws {
-    //         state.add_mesh_draw_info(d_info.geo_name.clone(), d_info.material.clone());
-    //     }
-    //     self.physics_manager.clear();
-    //     for geo in &level.geometry {
-    //         self.physics_manager.add_obj(&geo.name, geo.to_rigid_body());
-    //     }
-    // }
 }
 
 impl App {
@@ -66,33 +41,11 @@ impl App {
         let current_time = self.start_time.elapsed().as_millis();
         self.last_frame_time_ms = current_time;
         let frame_time = current_time - last_frame_time;
-        if self
-            .inputs
-            .key_pressed_this_frame(PhysicalKey::Code(KeyCode::KeyR))
-        {
-            println!("refreshing geo");
-            // self.load_level();
-        }
-        if self
-            .inputs
-            .key_pressed_this_frame(PhysicalKey::Code(KeyCode::Space))
-        {
-            if let Some(cube_mut) = self.physics_manager.get_obj_mut("cube") {
-                cube_mut.kinematics.velocity.y = 5.0;
-            };
-        }
-        for _ in 0..frame_time {
-            self.physics_manager.forward_ms();
-        }
-        let state = self.renderer.as_mut().unwrap();
-        // for (name, id) in &self.physics_manager.object_ids {
-        //     state.update_mesh_transform(
-        //         name,
-        //         self.physics_manager.objects[*id].orient.to_transform(),
-        //     );
-        // }
 
-        state.render().inspect_err(|e| eprintln!("{e}")).ok();
+        let ecs_mut = self.ecs_mega.as_mut().unwrap();
+        if let Err(e) = ecs_mut.run(frame_time) {
+            eprintln!("failure running ECS: {e}");
+        }
         self.inputs.advance_frame();
     }
 }
@@ -107,10 +60,7 @@ impl ApplicationHandler for App {
             }))
             .map(Arc::new)
             .unwrap();
-        let inst = Instance::new(&window).unwrap();
-        let device = inst.init_device(0).unwrap();
-        let state = Renderer::new(device).unwrap();
-        self.renderer = Some(state);
+        self.ecs_mega = Some(EcsMega::new(window).unwrap());
         // self.load_level();
         // window.request_redraw();
     }
@@ -123,11 +73,15 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.draw_frame();
             }
-            WindowEvent::Resized(size) => {
-                let state = self.renderer.as_mut().unwrap();
+            WindowEvent::Resized(_size) => {
+                let Some(ecs_mut) = self.ecs_mega.as_mut() else {
+                    return;
+                };
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
-                state.resize().unwrap();
+                if let Err(e) = ecs_mut.renderer_system.resize() {
+                    eprintln!("error resizing rendering system: {e}");
+                }
             }
             WindowEvent::KeyboardInput {
                 device_id: _,
@@ -160,6 +114,7 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
+    env_logger::init();
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App::new();

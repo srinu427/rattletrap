@@ -1,195 +1,190 @@
 use std::sync::Arc;
 
-use hashbrown::HashMap;
-use rhi2::{
-    Capped, HostAccess,
-    buffer::{Buffer, BufferFlags},
-    command::{CommandRecorder, GraphicsCommandRecorder},
+use anyhow::Ok;
+use avk12::{
+    canvas::{NextImageRes, PresentableImage},
     device::Device,
-    graphics_pipeline::{
-        AttachInfo, FragmentStageInfo, GraphicsPipeline, VertexAttribute, VertexStageInfo,
+    pipeline::{
+        AttachInfo, BindInfo, DSet, DSetWriteData, FragmentConfig, GraphicsPipeline,
+        GraphicsPipelineCreateInfo, RasterConfig, RasterMode, VertexAttribute, VertexConfig,
     },
-    image::{Format, ImageFlags, ImageView},
-    shader::{ShaderSetData, ShaderSetInfo},
-    swapchain::{SCImageRes, Swapchain, SwapchainImage},
-    sync::TaskFuture,
+    resource::{
+        Buffer, BufferCreateInfo, BufferUsageFlag, DataMoveDir, Format, Image, ImageCreateInfo,
+        ImageUsageFlag, ImageView, ImageViewInfo, ImageViewType,
+    },
+    task::{ClearValue, DrawInfo, Task},
 };
+use enumflags2::BitFlags;
+use hashbrown::HashMap;
 
 use crate::renderer::{
     camera::Cam3d,
-    mesh::{GpuMesh, Mesh, Vertex},
-    texture::Texture,
+    mesh::{GpuMesh, Mesh, MeshCreateInfo, Vertex},
 };
 
-mod camera;
-mod mesh;
-mod texture;
+pub mod camera;
+pub mod mesh;
+pub mod texture;
 
-pub struct PerFrameData<D: Device> {
-    cam_stage_buffer: D::B,
-    cam_buffer: Arc<D::B>,
-    cam_sset: D::SS,
+pub struct MeshDrawInfo {
+    mesh_name: String,
+    tex_name: String,
+    mesh_gpu: GpuMesh,
+    tex_view: Arc<ImageView>,
+    transform: glam::Mat4,
+    draw: bool,
 }
 
-impl<D: Device> PerFrameData<D> {
-    pub fn new(device: &D, gp: &mut D::GP) -> anyhow::Result<Self> {
-        let cam_stage_buffer = device.new_buffer(
-            size_of::<Cam3d>(),
-            BufferFlags::CopySrc.into(),
-            HostAccess::Write,
+pub struct Renderer {
+    textures: HashMap<String, Arc<ImageView>>,
+    gp: GraphicsPipeline,
+    device: Device,
+}
+
+impl Renderer {
+    fn load_plain_image(
+        device: &mut Device,
+        path: &str,
+        usage: BitFlags<ImageUsageFlag>,
+    ) -> anyhow::Result<Image> {
+        let img = image::open(path)?;
+        let usage = usage | ImageUsageFlag::CopyDst;
+        let gpu_img = device.new_image(
+            ImageCreateInfo::builder()
+                .format(Format::Rgba8)
+                .res((img.width(), img.height(), 1))
+                .used_for(usage)
+                .build(),
         )?;
-        let cam_buffer = Arc::new(device.new_buffer(
-            size_of::<Cam3d>(),
-            BufferFlags::CopyDst | BufferFlags::Uniform,
-            HostAccess::None,
-        )?);
-        let cam_sset = gp.new_set(
-            0,
-            vec![ShaderSetData::UniformBuffer(vec![Capped::Arc(
-                cam_buffer.clone(),
-            )])],
+        let stage_buffer = device.new_buffer(
+            BufferCreateInfo::builder()
+                .size(img.as_bytes().len() as _)
+                .used_for(BufferUsageFlag::CopySrc.into())
+                .data_move_dir(DataMoveDir::Cpu2Gpu)
+                .build(),
         )?;
-        Ok(Self {
-            cam_stage_buffer,
-            cam_buffer,
-            cam_sset,
-        })
+        stage_buffer.write_cpu(0, img.as_bytes())?;
+        let mut cmd_rec = device.new_task()?;
+        cmd_rec.copy_b2i(stage_buffer.view(0..stage_buffer.len()), &gpu_img, 0, 0..1);
+        cmd_rec.run()?.wait()?;
+        Ok(gpu_img)
     }
 
-    pub fn update_cam_cmds(&mut self, cam: &Cam3d, cr: &mut D::CR) -> anyhow::Result<()> {
-        self.cam_stage_buffer
-            .host_write(0, bytemuck::bytes_of(cam))?;
-        cr.copy_b2b(
-            &self.cam_stage_buffer,
-            0,
-            &self.cam_buffer,
-            0,
-            size_of::<Cam3d>(),
-        );
-        Ok(())
-    }
-}
-
-pub struct Renderer<D: Device> {
-    pfds: Vec<PerFrameData<D>>,
-    cam: Cam3d,
-    meshes: Vec<GpuMesh<D>>,
-    textures: HashMap<String, Texture<D>>,
-    gp: D::GP,
-    bg_image: D::I,
-    device: D,
-}
-
-impl<D: Device> Renderer<D> {
-    pub fn new(device: D) -> anyhow::Result<Self> {
-        let img = image::open("data/textures/alt/albedo.png")?;
-        let bg_image = device.new_image(
-            Format::Rgba8,
-            (img.width(), img.height(), 1),
-            1,
-            ImageFlags::CopySrc | ImageFlags::CopyDst,
-            HostAccess::None,
-        )?;
-        let mut bg_image_buffer = device.new_buffer(
-            img.as_bytes().len(),
-            BufferFlags::CopySrc.into(),
-            HostAccess::Write,
-        )?;
-        bg_image_buffer.host_write(0, img.as_bytes())?;
-        let mut cmd_rec = device.new_cmd_recorder()?;
-        cmd_rec.copy_b2i(&bg_image_buffer, &bg_image);
-        cmd_rec.run(vec![])?.wait()?;
-        let mut gp = device.new_graphics_pipeline(
-            "src/renderer2/shaders/triangle.wgsl",
-            vec![vec![ShaderSetInfo::UniformBuffer(1)]],
-            0,
-            VertexStageInfo {
-                entrypoint: "vs_main",
-                attribs: vec![
-                    VertexAttribute::Vec4,
-                    VertexAttribute::Vec4,
-                    VertexAttribute::Vec4,
-                    VertexAttribute::Vec4,
-                    VertexAttribute::Vec4,
-                ],
-                stride: size_of::<Vertex>(),
-            },
-            FragmentStageInfo {
-                entrypoint: "fs_main",
-                outputs: vec![AttachInfo {
-                    format: device.swapchain().fmt(),
-                    clear: false,
-                    store: true,
-                }],
-                depth: None,
-            },
-        )?;
-        let cam = Cam3d::new(
-            glam::Vec3 {
-                x: 3.0,
-                y: 3.0,
-                z: 3.0,
-            },
-            glam::Vec3 {
-                x: -1.0,
-                y: -1.0,
-                z: -1.0,
-            },
-            glam::Vec3::Y,
-            3.0,
-            1.0,
-        );
-        let mut pfds = vec![];
-        for _ in 0..device.swapchain().img_count() {
-            let pfd = PerFrameData::new(&device, &mut gp)?;
-            pfds.push(pfd);
-        }
+    pub fn new(mut device: Device) -> anyhow::Result<Self> {
+        let gp_info = GraphicsPipelineCreateInfo::builder()
+            .shader("src/renderer/shaders/mesh.wgsl".to_string())
+            .set_layouts(vec![])
+            .vert_conf(
+                VertexConfig::builder()
+                    .attribs(vec![VertexAttribute::Vec4; 5])
+                    .fn_name("vs_main".to_string())
+                    .stride(size_of::<Vertex>())
+                    .build(),
+            )
+            .frag_conf(
+                FragmentConfig::builder()
+                    .fn_name("fs_main".to_string())
+                    .attachments(vec![AttachInfo {
+                        format: device.canvas().info().format(),
+                        clear: true,
+                        store: true,
+                    }])
+                    .build(),
+            )
+            .build();
+        let gp = device.new_graphics_pipeline(gp_info)?;
         Ok(Self {
-            pfds,
-            cam,
-            meshes: vec![],
             textures: HashMap::new(),
             gp,
-            bg_image,
             device,
         })
     }
 
     pub fn resize(&mut self) -> anyhow::Result<()> {
-        self.device.swapchain_mut().refresh_res()?;
+        self.device.canvas_mut().refresh_res()?;
         Ok(())
     }
 
-    pub fn render(&mut self) -> anyhow::Result<()> {
-        let mut swap_img = match self.device.swapchain_mut().next_image() {
-            SCImageRes::Success(swap) => swap,
-            SCImageRes::Unavailable => return Ok(()),
-            SCImageRes::Outdated => return Ok(()),
-            SCImageRes::Error(e) => return Err(anyhow::Error::msg(e)),
-        };
+    fn get_next_image(&mut self, retries: usize) -> anyhow::Result<PresentableImage> {
+        match self.device.canvas_mut().get_next_image() {
+            NextImageRes::Success(image) => Ok(image),
+            NextImageRes::NeedCanvasRefresh => {
+                if retries == 0 {
+                    return Err(anyhow::Error::msg("canvas needs refresh"));
+                }
+                self.resize()?;
+                self.get_next_image(retries - 1)
+            }
+            NextImageRes::Error(e) => Err(anyhow::Error::msg(e)),
+        }
+    }
 
-        let mut recorder = self.device.new_cmd_recorder()?;
-        recorder.blit(&self.bg_image, swap_img.view().image().as_ref());
-        let mut render_pass = recorder
-            .graphics(
-                &mut self.gp,
-                vec![&swap_img.view()],
-                vec![[0.5; 4]],
-                None,
-                None,
-            )
-            .map_err(|(e, _)| e)?;
-        let recorder = D::CR::finish_graphics(render_pass);
-        let mut draw_tf = recorder.run(vec![])?;
-        draw_tf.wait()?;
+    pub fn render(&mut self, mesh_draws: &[MeshDrawInfo]) -> anyhow::Result<()> {
+        let swap_img = self.get_next_image(2)?;
+        let swap_img_view = swap_img.image().view(&ImageViewInfo {
+            view_type: ImageViewType::E2d,
+            layer_range: 0..1,
+            level_range: 0..1,
+        })?;
+
+        let mut recorder = self.device.new_task()?;
+        // recorder.blit(&self.bg_image, swap_img.view().image().as_ref());
+        let mut render_pass = recorder.graphics(
+            &mut self.gp,
+            vec![swap_img_view],
+            vec![ClearValue::Color([1.0, 0.0, 0.0, 1.0])],
+        )?;
+        for draw_info in mesh_draws {
+            if draw_info.draw {
+                render_pass.bind_vb(&draw_info.mesh_gpu.vert_buffer);
+                render_pass.bind_ib(&draw_info.mesh_gpu.indx_buffer, true);
+                render_pass.draw(vec![DrawInfo::Indexed {
+                    vb_offset: 0,
+                    ib_offset: 0,
+                    count: draw_info.mesh_gpu.indx_count,
+                }]);
+            }
+        }
+        drop(render_pass);
+        recorder.run()?.wait()?;
         swap_img.present()?;
-
         Ok(())
     }
-}
 
-impl<D: Device> Drop for Renderer<D> {
-    fn drop(&mut self) {
-        self.device.wait_idle();
+    pub fn load_texture(&mut self, path: &str) -> anyhow::Result<Arc<ImageView>> {
+        match self.textures.get(path).cloned() {
+            Some(tex) => Ok(tex),
+            None => {
+                let image =
+                    Self::load_plain_image(&mut self.device, path, ImageUsageFlag::Sampled.into())?;
+                let image_view = Arc::new(image.view(&ImageViewInfo {
+                    view_type: ImageViewType::E2d,
+                    layer_range: 0..1,
+                    level_range: 0..1,
+                })?);
+                self.textures.insert(path.to_string(), image_view.clone());
+                Ok(image_view)
+            }
+        }
+    }
+
+    pub fn load_mesh_draw(
+        &mut self,
+        mesh_name: String,
+        mesh_create_info: MeshCreateInfo,
+        tex_name: String,
+        draw: bool,
+    ) -> anyhow::Result<MeshDrawInfo> {
+        let mesh_cpu = Mesh::new(mesh_create_info)?;
+        let mesh_gpu = GpuMesh::new(&self.device, &mesh_cpu)?;
+        let tex_view = self.load_texture(&tex_name)?;
+        Ok(MeshDrawInfo {
+            mesh_name,
+            tex_name,
+            mesh_gpu,
+            tex_view,
+            transform: glam::Mat4::IDENTITY,
+            draw,
+        })
     }
 }

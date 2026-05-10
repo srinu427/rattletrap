@@ -5,16 +5,18 @@ edition = "2024"
 
 [dependencies]
 winit = { version = "0.30.12", features = ["android-native-activity"] }
-physics = { path = "physics" }
-rhi2 = { path = "rhi2" }
-vk12_rhi2 = { path = "vk12_rhi2" }
+# physics = { path = "physics" }
+avk12 = { path = "avk12" }
 anyhow = "1.0.100"
 image = "0.25.9"
 bytemuck = "1.24.0"
 include_bytes_aligned = "0.2.0"
-glam = { version = "0.30.9", features = ["bytemuck"] }
+glam = { version = "0.30.9", features = ["bytemuck", "serde"] }
 regex = "1.12.2"
 hashbrown = "0.16.1"
 getset = "0.1.6"
 ron = "0.12.0"
 serde = { version = "1.0.228", features = ["derive"] }
+env_logger = "0.11.10"
+enumflags2 = "0.7.12"
+bitcode = "0.6.9"

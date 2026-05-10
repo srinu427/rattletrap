@@ -1,8 +1,0 @@
-[package]
-name = "rhi2"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-enumflags2 = "0.7.12"
-thiserror = { version = "2.0.18", default-features = false }

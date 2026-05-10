@@ -38,6 +38,7 @@ pub struct RigidBody {
     pub dont_interact_mask: u32,
     stuck: bool,
     contacts: Vec<ContactState>,
+    bounds: Vec<glam::Vec4>,
 }
 
 impl RigidBody {
@@ -62,6 +63,7 @@ impl RigidBody {
             dont_interact_mask,
             stuck: false,
             contacts: vec![],
+            bounds: vec![],
         }
     }
 
@@ -217,28 +219,30 @@ impl PhysicsManager {
         }
     }
 
-    pub fn update_contact_state(
-        state: &mut ContactState,
+    pub fn refreshed_contact(
+        old_state: &ContactState,
         a: &RigidBody,
         a_old: &RigidBody,
         b: &RigidBody,
         b_old: &RigidBody,
-    ) {
-        let pl_old = state.pl;
-        let (obj1, _obj2) = if state.of_first {
+    ) -> ContactState {
+        let pl_old = old_state.pl;
+        let (obj1, _obj2) = if old_state.of_first {
             (a_old, b_old)
         } else {
             (b_old, a_old)
         };
-        let (new_obj1, new_obj2) = if state.of_first { (a, b) } else { (b, a) };
+        let (new_obj1, new_obj2) = if old_state.of_first { (a, b) } else { (b, a) };
         let pl_rel = orient_plane(pl_old, &obj1.orient.reverse().to_transform());
         let pl_new = orient_plane(pl_rel, &new_obj1.orient.to_transform());
         let min_dist_new = new_obj2.orient_shape.plane_min_dist(pl_new);
-        state.min_dist = min_dist_new;
-        state.pl = pl_new;
         if min_dist_new < 0.0 {
-            let new_contact_state = ContactState::new(&a.orient_shape, &b.orient_shape);
-            *state = new_contact_state;
+            ContactState::new(&a.orient_shape, &b.orient_shape)
+        } else {
+            let mut new_contact = old_state.clone();
+            new_contact.min_dist = min_dist_new;
+            new_contact.pl = pl_new;
+            new_contact
         }
     }
 
@@ -304,7 +308,7 @@ impl PhysicsManager {
             new_pen_obj.refresh_orient_shape();
             for i in 0..self.objects.len() {
                 if i != obj_id {
-                    Self::update_contact_state(
+                    Self::refreshed_contact(
                         &mut self.contacts[obj_id][i],
                         &new_obj,
                         &self.objects[obj_id],
@@ -314,7 +318,7 @@ impl PhysicsManager {
                     self.contacts[i][obj_id] = self.contacts[obj_id][i].obj_swapped();
                 }
                 if i != pen_id {
-                    Self::update_contact_state(
+                    Self::refreshed_contact(
                         &mut self.contacts[pen_id][i],
                         &new_pen_obj,
                         &self.objects[pen_id],
@@ -341,11 +345,12 @@ impl PhysicsManager {
         for i in 0..obj_count {
             let mut touching_planes = vec![];
             // Detect sliding surfaces
-            for j in i + 1..obj_count {
-                let contact = &self.contacts[i][j];
-                if self.objs_slide(i, j) {
-                    touches[i].push(j);
-                    touches[j].push(i);
+            for j in 0..obj_count - i - 1 {
+                let sec_obj_id = i + j + 1;
+                let contact = &self.objects[i].contacts[j];
+                if self.objs_slide(i, sec_obj_id) {
+                    touches[i].push(sec_obj_id);
+                    touches[sec_obj_id].push(i);
                     let pl = if contact.of_first {
                         -contact.pl
                     } else {
@@ -370,17 +375,19 @@ impl PhysicsManager {
 
         // Update contact states
         for i in 0..obj_count {
-            for j in i + 1..obj_count {
-                Self::update_contact_state(
-                    &mut self.contacts[i][j],
+            for j in 0..obj_count - i - 1 {
+                let sec_obj_id = i + j + 1;
+                self.objects[i].contacts[j] = Self::refreshed_contact(
+                    &self.objects[i].contacts[j],
                     &new_objs[i],
                     &self.objects[i],
-                    &new_objs[j],
-                    &self.objects[j],
+                    &new_objs[sec_obj_id],
+                    &self.objects[sec_obj_id],
                 );
-                self.contacts[j][i] = self.contacts[i][j].obj_swapped();
             }
         }
+        // Detect slides
+
         self.objects = new_objs;
         for i in 0..obj_count {
             self.resolve_penetrations(i);

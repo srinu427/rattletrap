@@ -13,10 +13,9 @@ struct CamUni {
     aspect: f32,
     up: vec3f,
     padding: f32,
-    proj_view: mat4x4f
-}
+    proj_view: mat4x4f}
 
-@group(0) @binding(0) var<uniform> cam_uni : CamUni;
+@group(0) @binding(0) var<uniform> cam_uni: CamUni;
 
 @vertex
 fn vs_main(vert: Vert) -> @builtin(position) vec4f {
