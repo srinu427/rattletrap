@@ -10,7 +10,7 @@ use avk12::{
         AttachInfo, BindInfo, DSet, DSetWriteData, FragmentConfig, GraphicsPipeline,
         GraphicsPipelineCreateInfo, VertexAttribute, VertexConfig,
     },
-    resource::{BufferCreateInfo, ImageAccess, ImageCreateInfo, ImageViewInfo, ImageViewType},
+    resource::{BufferCreateInfo, ImageAccess, ImageCreateInfo, ImageViewInfo},
     task::{ClearValue, DrawInfo},
 };
 use hashbrown::HashMap;
@@ -95,7 +95,7 @@ impl Renderer {
     pub fn render(&mut self, mesh_draws: &[MeshDrawInfo]) -> anyhow::Result<()> {
         let swap_img = self.get_next_image(2)?;
         let swap_img_view = swap_img.image().view(&ImageViewInfo {
-            view_type: ImageViewType::E2d,
+            view_type: vk::ImageViewType::TYPE_2D,
             layer_range: 0..1,
             level_range: 0..1,
         })?;
@@ -159,7 +159,7 @@ impl Renderer {
                 );
                 cmd_rec.run()?.wait()?;
                 let image_view = Arc::new(gpu_img.view(&ImageViewInfo {
-                    view_type: ImageViewType::E2d,
+                    view_type: vk::ImageViewType::TYPE_2D,
                     layer_range: 0..1,
                     level_range: 0..1,
                 })?);

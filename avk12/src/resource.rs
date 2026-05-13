@@ -230,41 +230,11 @@ pub struct ImageCreateInfo {
     pub mem_location: MemoryLocation,
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum ImageViewType {
-    E2d,
-    Cube,
-}
-
-impl ImageViewType {
-    pub fn to_vk(&self) -> vk::ImageViewType {
-        match self {
-            ImageViewType::E2d => vk::ImageViewType::TYPE_2D,
-            ImageViewType::Cube => vk::ImageViewType::CUBE,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ImageViewInfo {
-    pub view_type: ImageViewType,
+    pub view_type: vk::ImageViewType,
     pub layer_range: Range<u32>,
     pub level_range: Range<u32>,
-}
-
-impl ImageViewInfo {
-    pub(crate) fn type_vk(&self) -> vk::ImageViewType {
-        match self.view_type {
-            ImageViewType::E2d => {
-                if (self.layer_range.end - self.layer_range.start) == 1 {
-                    vk::ImageViewType::TYPE_2D
-                } else {
-                    vk::ImageViewType::TYPE_2D_ARRAY
-                }
-            }
-            ImageViewType::Cube => vk::ImageViewType::CUBE,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -372,7 +342,7 @@ impl ImageRef {
                         .image(self.dropper.handle)
                         .format(self.dropper.info.format)
                         .components(vk::ComponentMapping::default())
-                        .view_type(key.type_vk())
+                        .view_type(key.view_type)
                         .subresource_range(
                             vk::ImageSubresourceRange::default()
                                 .aspect_mask(self.dropper.info.format.aspect_flag())
