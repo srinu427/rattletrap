@@ -32,24 +32,9 @@ pub fn safe_str_to_cstring(str: String) -> CString {
 }
 
 #[derive(Debug, Clone)]
-pub enum BindInfo {
-    UniformBuffer(usize),
-    StorageBuffer(usize),
-    Sampler(usize),
-    Texture(usize),
-    Sampler2D(usize),
-}
-
-impl BindInfo {
-    fn to_vk(&self) -> vk::DescriptorType {
-        match self {
-            BindInfo::UniformBuffer(_) => vk::DescriptorType::UNIFORM_BUFFER,
-            BindInfo::StorageBuffer(_) => vk::DescriptorType::STORAGE_BUFFER,
-            BindInfo::Sampler(_) => vk::DescriptorType::SAMPLER,
-            BindInfo::Texture(_) => vk::DescriptorType::SAMPLED_IMAGE,
-            BindInfo::Sampler2D(_) => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        }
-    }
+pub struct BindInfo {
+    pub type_: vk::DescriptorType,
+    pub count: u32,
 }
 
 struct DPoolDropper {
@@ -73,82 +58,26 @@ pub(crate) struct DPool {
 
 impl DPool {
     fn pool_sizes(layout: &Vec<BindInfo>) -> Vec<vk::DescriptorPoolSize> {
-        let mut uni_buf_sizes =
-            vk::DescriptorPoolSize::default().ty(vk::DescriptorType::UNIFORM_BUFFER);
-        let mut sto_buf_sizes =
-            vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER);
-        let mut samp_sizes = vk::DescriptorPoolSize::default().ty(vk::DescriptorType::SAMPLER);
-        let mut tex_sizes = vk::DescriptorPoolSize::default().ty(vk::DescriptorType::SAMPLED_IMAGE);
-        let mut samp2_sizes =
-            vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
+        let mut sizes_map = HashMap::new();
         for b_info in layout {
-            match b_info {
-                BindInfo::UniformBuffer(c) => {
-                    uni_buf_sizes.descriptor_count = *c as _;
-                }
-                BindInfo::StorageBuffer(c) => {
-                    sto_buf_sizes.descriptor_count = *c as _;
-                }
-                BindInfo::Sampler(c) => {
-                    samp_sizes.descriptor_count = *c as _;
-                }
-                BindInfo::Texture(c) => {
-                    tex_sizes.descriptor_count = *c as _;
-                }
-                BindInfo::Sampler2D(c) => {
-                    samp2_sizes.descriptor_count = *c as _;
-                }
-            }
+            let map_entry = sizes_map
+                .entry(b_info.type_)
+                .or_insert(vk::DescriptorPoolSize::default().ty(b_info.type_));
+            map_entry.descriptor_count += b_info.count;
         }
-        let mut out = vec![];
-        if uni_buf_sizes.descriptor_count > 0 {
-            out.push(uni_buf_sizes);
-        }
-        if sto_buf_sizes.descriptor_count > 0 {
-            out.push(sto_buf_sizes);
-        }
-        if samp_sizes.descriptor_count > 0 {
-            out.push(samp_sizes);
-        }
-        if tex_sizes.descriptor_count > 0 {
-            out.push(tex_sizes);
-        }
-        if samp2_sizes.descriptor_count > 0 {
-            out.push(samp2_sizes);
-        }
-        out
+        sizes_map.into_values().collect()
     }
 
     pub fn new(dd: &Arc<DeviceDropper>, layout: Vec<BindInfo>) -> anyhow::Result<Self> {
         let bindings: Vec<_> = layout
             .iter()
             .enumerate()
-            .map(|(i, b)| match b {
-                BindInfo::UniformBuffer(c) => vk::DescriptorSetLayoutBinding::default()
+            .map(|(i, b)| {
+                vk::DescriptorSetLayoutBinding::default()
                     .binding(i as _)
                     .stage_flags(vk::ShaderStageFlags::ALL)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(*c as _),
-                BindInfo::StorageBuffer(c) => vk::DescriptorSetLayoutBinding::default()
-                    .binding(i as _)
-                    .stage_flags(vk::ShaderStageFlags::ALL)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(*c as _),
-                BindInfo::Sampler(c) => vk::DescriptorSetLayoutBinding::default()
-                    .binding(i as _)
-                    .stage_flags(vk::ShaderStageFlags::ALL)
-                    .descriptor_type(vk::DescriptorType::SAMPLER)
-                    .descriptor_count(*c as _),
-                BindInfo::Texture(c) => vk::DescriptorSetLayoutBinding::default()
-                    .binding(i as _)
-                    .stage_flags(vk::ShaderStageFlags::ALL)
-                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                    .descriptor_count(*c as _),
-                BindInfo::Sampler2D(c) => vk::DescriptorSetLayoutBinding::default()
-                    .binding(i as _)
-                    .stage_flags(vk::ShaderStageFlags::ALL)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(*c as _),
+                    .descriptor_type(b.type_)
+                    .descriptor_count(b.count)
             })
             .collect();
         let dsl = unsafe {
@@ -190,12 +119,23 @@ impl DPool {
         };
         let mut captures = Vec::with_capacity(self.layout.len());
         for b_type in &self.layout {
-            match b_type {
-                BindInfo::UniformBuffer(c) => captures.push(DSetData::Buffers(vec![None; *c])),
-                BindInfo::StorageBuffer(c) => captures.push(DSetData::Buffers(vec![None; *c])),
-                BindInfo::Sampler(c) => captures.push(DSetData::Samplers(vec![None; *c])),
-                BindInfo::Texture(c) => captures.push(DSetData::ImageViews(vec![None; *c])),
-                BindInfo::Sampler2D(c) => captures.push(DSetData::Sampler2Ds(vec![None; *c])),
+            if b_type.type_ == vk::DescriptorType::UNIFORM_BUFFER
+                || b_type.type_ == vk::DescriptorType::STORAGE_BUFFER
+            {
+                captures.push(DSetData::Buffers(vec![None; b_type.count as usize]));
+            } else if b_type.type_ == vk::DescriptorType::SAMPLED_IMAGE
+                || b_type.type_ == vk::DescriptorType::STORAGE_IMAGE
+            {
+                captures.push(DSetData::ImageViews(vec![None; b_type.count as usize]));
+            } else if b_type.type_ == vk::DescriptorType::SAMPLER {
+                captures.push(DSetData::Samplers(vec![None; b_type.count as usize]));
+            } else if b_type.type_ == vk::DescriptorType::COMBINED_IMAGE_SAMPLER {
+                captures.push(DSetData::Sampler2Ds(vec![None; b_type.count as usize]));
+            } else {
+                return Err(anyhow::Error::msg(format!(
+                    "unsupported descriptor type {:?}",
+                    b_type.type_
+                )));
             }
         }
 
@@ -316,7 +256,7 @@ impl DSet {
                         self.pool_dropper.dd.device.update_descriptor_sets(
                             &[vk::WriteDescriptorSet::default()
                                 .dst_set(self.set)
-                                .descriptor_type(self.layout[binding].to_vk())
+                                .descriptor_type(self.layout[binding].type_)
                                 .descriptor_count(copy_size as _)
                                 .dst_binding(binding as _)
                                 .dst_array_element(offset as _)
@@ -345,7 +285,7 @@ impl DSet {
                         self.pool_dropper.dd.device.update_descriptor_sets(
                             &[vk::WriteDescriptorSet::default()
                                 .dst_set(self.set)
-                                .descriptor_type(self.layout[binding].to_vk())
+                                .descriptor_type(self.layout[binding].type_)
                                 .descriptor_count(copy_size as _)
                                 .dst_binding(binding as _)
                                 .dst_array_element(offset as _)
@@ -373,7 +313,7 @@ impl DSet {
                         self.pool_dropper.dd.device.update_descriptor_sets(
                             &[vk::WriteDescriptorSet::default()
                                 .dst_set(self.set)
-                                .descriptor_type(self.layout[binding].to_vk())
+                                .descriptor_type(self.layout[binding].type_)
                                 .descriptor_count(copy_size as _)
                                 .dst_binding(binding as _)
                                 .dst_array_element(offset as _)
@@ -404,7 +344,7 @@ impl DSet {
                         self.pool_dropper.dd.device.update_descriptor_sets(
                             &[vk::WriteDescriptorSet::default()
                                 .dst_set(self.set)
-                                .descriptor_type(self.layout[binding].to_vk())
+                                .descriptor_type(self.layout[binding].type_)
                                 .descriptor_count(copy_size as _)
                                 .dst_binding(binding as _)
                                 .dst_array_element(offset as _)

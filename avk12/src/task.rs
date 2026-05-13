@@ -10,7 +10,7 @@ use crate::{
     device::DeviceDropper,
     pipeline::{DSet, GraphicsPipeline, GraphicsPipelineDropper},
     resource::{
-        BufferDropper, BufferRef, BufferView, FormatMeta, ImageAccess, ImageDropper, ImageRef,
+        BufferDropper, BufferRef, BufferSlice, FormatMeta, ImageAccess, ImageDropper, ImageRef,
         ImageView,
     },
     sync::{Sem, WaitResult},
@@ -194,7 +194,7 @@ impl Task {
         Ok(GpuFuture { task: self })
     }
 
-    pub fn copy_b2b(&mut self, src: BufferView, dst: BufferView) {
+    pub fn copy_b2b(&mut self, src: BufferSlice, dst: BufferSlice) {
         let copy_size = (src.range.end - src.range.start).min(dst.range.end - dst.range.start);
         if copy_size == 0 {
             return;
@@ -254,7 +254,7 @@ impl Task {
 
     pub fn copy_b2i(
         &mut self,
-        src: BufferView,
+        src: BufferSlice,
         dst: &ImageRef,
         mip_level: u32,
         layer_range: Range<u32>,

@@ -176,10 +176,13 @@ impl GpuMesh {
                 .build(),
         )?;
         let mut cr = device.new_task()?;
-        cr.copy_b2b(stage_buffer.view(0..vb_size), vert_buffer.view(0..vb_size));
         cr.copy_b2b(
-            stage_buffer.view(vb_size..(vb_size + ib_size)),
-            indx_buffer.view(0..ib_size),
+            stage_buffer.slice(0..vb_size),
+            vert_buffer.slice(0..vb_size),
+        );
+        cr.copy_b2b(
+            stage_buffer.slice(vb_size..(vb_size + ib_size)),
+            indx_buffer.slice(0..ib_size),
         );
         cr.run()?.wait()?;
         Ok(Self {

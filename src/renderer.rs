@@ -40,7 +40,16 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(device: Device) -> anyhow::Result<Self> {
         let gp_info = GraphicsPipelineCreateInfo::builder()
-            .set_layouts(vec![vec![BindInfo::Sampler(1)], vec![BindInfo::Texture(1)]])
+            .set_layouts(vec![
+                vec![BindInfo {
+                    type_: vk::DescriptorType::SAMPLER,
+                    count: 1,
+                }],
+                vec![BindInfo {
+                    type_: vk::DescriptorType::SAMPLED_IMAGE,
+                    count: 1,
+                }],
+            ])
             .vert_conf(
                 VertexConfig::builder()
                     .shader("src/renderer/shaders/mesh.vert".to_string())
@@ -148,7 +157,7 @@ impl Renderer {
                 )?;
                 stage_buffer.write_cpu(0, img.as_bytes())?;
                 let mut cmd_rec = self.device.new_task()?;
-                cmd_rec.copy_b2i(stage_buffer.view(0..stage_buffer.len()), &gpu_img, 0, 0..1);
+                cmd_rec.copy_b2i(stage_buffer.slice(0..stage_buffer.len()), &gpu_img, 0, 0..1);
                 cmd_rec.optimize_image_for(
                     &gpu_img,
                     ImageAccess {

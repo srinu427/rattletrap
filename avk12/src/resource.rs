@@ -151,15 +151,15 @@ impl BufferRef {
         Ok(())
     }
 
-    pub fn view(&self, range: Range<u64>) -> BufferView<'_> {
-        BufferView {
+    pub fn slice(&self, range: Range<u64>) -> BufferSlice<'_> {
+        BufferSlice {
             buffer: self,
             range,
         }
     }
 }
 
-pub struct BufferView<'a> {
+pub struct BufferSlice<'a> {
     pub buffer: &'a BufferRef,
     pub range: Range<u64>,
 }
