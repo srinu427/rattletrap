@@ -15,7 +15,10 @@ use avk12::{
 };
 use hashbrown::HashMap;
 
-use crate::renderer::mesh::{GpuMesh, Mesh, MeshCreateInfo, Vertex};
+use crate::renderer::{
+    camera::Cam3d,
+    mesh::{GpuMesh, Mesh, MeshCreateInfo, Vertex},
+};
 
 pub mod camera;
 pub mod mesh;
@@ -101,7 +104,7 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self, mesh_draws: &[MeshDrawInfo]) -> anyhow::Result<()> {
+    pub fn render(&mut self, camera: &Cam3d, mesh_draws: &[MeshDrawInfo]) -> anyhow::Result<()> {
         let swap_img = self.get_next_image(2)?;
         let swap_img_view = swap_img.image().view(&ImageViewInfo {
             view_type: vk::ImageViewType::TYPE_2D,
@@ -149,11 +152,10 @@ impl Renderer {
                         .build(),
                 )?;
                 let stage_buffer = self.device.new_buffer(
-                    BufferCreateInfo::builder()
-                        .size(img.as_bytes().len() as _)
-                        .used_for(vk::BufferUsageFlags::TRANSFER_SRC)
-                        .mem_location(MemoryLocation::CpuToGpu)
-                        .build(),
+                    BufferCreateInfo::default()
+                        .with_size(img.as_bytes().len() as _)
+                        .with_used_for(vk::BufferUsageFlags::TRANSFER_SRC)
+                        .with_mem_location(MemoryLocation::CpuToGpu),
                 )?;
                 stage_buffer.write_cpu(0, img.as_bytes())?;
                 let mut cmd_rec = self.device.new_task()?;

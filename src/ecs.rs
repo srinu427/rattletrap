@@ -1,7 +1,7 @@
 use std::{hash::Hash, sync::Arc};
 
 // use physics::PhysicsManager;
-use crate::renderer::{MeshDrawInfo, Renderer, mesh::MeshCreateInfo};
+use crate::renderer::{MeshDrawInfo, Renderer, camera::Cam3d, mesh::MeshCreateInfo};
 use avk12::device::Instance;
 use enumflags2::bitflags;
 use hashbrown::HashMap;
@@ -98,6 +98,7 @@ pub struct EcsMega {
     entities: Vec<Entity>,
     pub(crate) renderer_system: Renderer,
     mesh_draw_infos: Vec<MeshDrawInfo>,
+    camera: Cam3d,
     // physics_system: PhysicsManager,
     // physics_info: Vec<PhysicsInfo>,
 }
@@ -117,15 +118,24 @@ impl EcsMega {
             "data/textures/default.png".to_string(),
             true,
         )?;
+        let camera = Cam3d::new(
+            glam::vec3(3.0, 3.0, 3.0),
+            glam::vec3(-1.0, -1.0, -1.0),
+            glam::Vec3::Y,
+            2.0,
+            1.0,
+        );
         Ok(Self {
             entities: vec![],
             renderer_system,
             mesh_draw_infos: vec![mesh_draw],
+            camera,
         })
     }
 
     pub fn run(&mut self, frame_time: u128) -> anyhow::Result<()> {
-        self.renderer_system.render(&self.mesh_draw_infos)?;
+        self.renderer_system
+            .render(&self.camera, &self.mesh_draw_infos)?;
         Ok(())
     }
 }

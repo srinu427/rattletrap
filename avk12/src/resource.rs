@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::Context;
 use ash::vk;
+use getset::{Setters, WithSetters};
 use gpu_allocator::{
     MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
@@ -61,13 +62,24 @@ impl Drop for GMem {
     }
 }
 
-#[derive(Debug, Clone, TypedBuilder)]
+#[derive(Debug, Clone, WithSetters)]
 pub struct BufferCreateInfo {
+    #[getset(set_with = "pub")]
     pub size: u64,
-    #[builder(default)]
+    #[getset(set_with = "pub")]
     pub used_for: vk::BufferUsageFlags,
-    #[builder(default=MemoryLocation::GpuOnly)]
+    #[getset(set_with = "pub")]
     pub mem_location: MemoryLocation,
+}
+
+impl Default for BufferCreateInfo {
+    fn default() -> Self {
+        Self {
+            size: Default::default(),
+            used_for: Default::default(),
+            mem_location: MemoryLocation::GpuOnly,
+        }
+    }
 }
 
 pub(crate) struct BufferDropper {

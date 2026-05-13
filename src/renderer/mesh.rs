@@ -155,25 +155,26 @@ impl GpuMesh {
         let vb_size = (mesh.verts.len() * size_of::<Vertex>()) as u64;
         let ib_size = (mesh.idxs.len() * size_of::<u16>()) as u64;
         let stage_buffer = device.new_buffer(
-            BufferCreateInfo::builder()
-                .size(vb_size + ib_size)
-                .used_for(vk::BufferUsageFlags::TRANSFER_SRC)
-                .mem_location(MemoryLocation::CpuToGpu)
-                .build(),
+            BufferCreateInfo::default()
+                .with_size(vb_size + ib_size)
+                .with_used_for(vk::BufferUsageFlags::TRANSFER_SRC)
+                .with_mem_location(MemoryLocation::CpuToGpu),
         )?;
         stage_buffer.write_cpu(0, bytemuck::cast_slice(&mesh.verts))?;
         stage_buffer.write_cpu(vb_size, bytemuck::cast_slice(&mesh.idxs))?;
         let vert_buffer = device.new_buffer(
-            BufferCreateInfo::builder()
-                .size(vb_size)
-                .used_for(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER)
-                .build(),
+            BufferCreateInfo::default()
+                .with_size(vb_size)
+                .with_used_for(
+                    vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+                ),
         )?;
         let indx_buffer = device.new_buffer(
-            BufferCreateInfo::builder()
-                .size(ib_size)
-                .used_for(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER)
-                .build(),
+            BufferCreateInfo::default()
+                .with_size(ib_size)
+                .with_used_for(
+                    vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
+                ),
         )?;
         let mut cr = device.new_task()?;
         cr.copy_b2b(
