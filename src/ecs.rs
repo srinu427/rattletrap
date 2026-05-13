@@ -111,8 +111,8 @@ impl EcsMega {
             "rect1".to_string(),
             MeshCreateInfo::RectCUV {
                 c: [0.0; 3],
-                u: [0.5, 0.0, 0.0],
-                v: [0.0, 0.5, 0.0],
+                u: [0.75, 0.0, 0.0],
+                v: [0.0, 0.75, 0.0],
             },
             "data/textures/default.png".to_string(),
             true,

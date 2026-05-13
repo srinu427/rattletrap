@@ -2,18 +2,19 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::Context;
 use ash::vk;
-use enumflags2::BitFlags;
 use getset::{CopyGetters, Getters};
 use hashbrown::HashMap;
 
 use crate::{
     device::DeviceDropper,
-    resource::{Format, Image, ImageAccess, ImageCreateInfo, ImageDropper, ImageUsageFlag},
+    resource::{ImageAccess, ImageCreateInfo, ImageDropper, ImageRef},
     sync::{Fence, FencePool, WaitResult},
 };
 
-fn sc_img_usage_flags() -> BitFlags<ImageUsageFlag> {
-    ImageUsageFlag::RenderAttach | ImageUsageFlag::CopyDst | ImageUsageFlag::Storage
+fn sc_img_usage_flags() -> vk::ImageUsageFlags {
+    vk::ImageUsageFlags::COLOR_ATTACHMENT
+        | vk::ImageUsageFlags::TRANSFER_DST
+        | vk::ImageUsageFlags::STORAGE
 }
 
 fn get_sc_formats(device: &Arc<DeviceDropper>) -> anyhow::Result<Vec<vk::SurfaceFormatKHR>> {
@@ -55,9 +56,13 @@ fn get_sc_present_modes(device: &Arc<DeviceDropper>) -> anyhow::Result<Vec<vk::P
     }
 }
 
-const HDR_FORMATS: [Format; 3] = [Format::Rgba16Float, Format::Bgra10, Format::Rgba10];
+const HDR_FORMATS: [vk::Format; 3] = [
+    vk::Format::R16G16B16A16_SFLOAT,
+    vk::Format::A2B10G10R10_UNORM_PACK32,
+    vk::Format::A2R10G10B10_UNORM_PACK32,
+];
 
-const SDR_FORMATS: [Format; 2] = [Format::Bgra8, Format::Rgba8];
+const SDR_FORMATS: [vk::Format; 2] = [vk::Format::B8G8R8A8_SRGB, vk::Format::R8G8B8A8_SRGB];
 
 const COLOR_SPACES: [vk::ColorSpaceKHR; 2] = [
     vk::ColorSpaceKHR::SRGB_NONLINEAR,
@@ -66,15 +71,15 @@ const COLOR_SPACES: [vk::ColorSpaceKHR; 2] = [
 
 fn choose_surface_format(
     surface_formats: &Vec<vk::SurfaceFormatKHR>,
-) -> anyhow::Result<(vk::SurfaceFormatKHR, Format)> {
+) -> anyhow::Result<vk::SurfaceFormatKHR> {
     let surface_formats: Vec<_> = surface_formats
         .into_iter()
         .filter(|s| COLOR_SPACES.contains(&s.color_space))
         .collect();
     let surface_format = match HDR_FORMATS.iter().find_map(|format| {
         surface_formats.iter().find_map(|s| {
-            if s.format == format.to_vk() {
-                return Some((**s, *format));
+            if s.format == *format {
+                return Some(**s);
             }
             None
         })
@@ -85,8 +90,8 @@ fn choose_surface_format(
                 .iter()
                 .find_map(|format| {
                     surface_formats.iter().find_map(|s| {
-                        if s.format == format.to_vk() {
-                            return Some((**s, *format));
+                        if s.format == *format {
+                            return Some(**s);
                         }
                         None
                     })
@@ -104,13 +109,13 @@ pub struct CanvasInfo {
     res: (u32, u32),
     present_mode: vk::PresentModeKHR,
     #[getset(get_copy = "pub")]
-    format: Format,
     surf_format: vk::SurfaceFormatKHR,
     transform: vk::SurfaceTransformFlagsKHR,
 }
 
 pub(crate) struct SwapchainDropper {
     pub(crate) handle: vk::SwapchainKHR,
+    pub(crate) sc_images: Vec<ImageRef>,
     dd: Arc<DeviceDropper>,
 }
 
@@ -125,17 +130,21 @@ impl Drop for SwapchainDropper {
 }
 
 pub struct PresentableImage {
-    image: Image,
     idx: u32,
     sc_dropper: Arc<SwapchainDropper>,
 }
 
 impl PresentableImage {
-    pub fn image(&self) -> &Image {
-        &self.image
+    pub fn image(&self) -> &ImageRef {
+        &self.sc_dropper.sc_images[self.idx as usize]
     }
 
     pub fn present(self) -> anyhow::Result<()> {
+        self.sc_dropper
+            .dd
+            .instance_dropper
+            .window
+            .pre_present_notify();
         unsafe {
             self.sc_dropper
                 .dd
@@ -162,7 +171,6 @@ pub enum NextImageRes {
 pub struct Canvas {
     #[getset(get = "pub")]
     info: CanvasInfo,
-    pub(crate) sc_images: Vec<Image>,
     pub(crate) sc_dropper: Arc<SwapchainDropper>,
     aquire_img_fence: Fence,
     _fence_pool: FencePool,
@@ -177,15 +185,14 @@ impl Canvas {
             surface_resolution.width = window_res.width;
             surface_resolution.height = window_res.height;
         }
-        let image_usage = ImageUsageFlag::flags_to_vk(&sc_img_usage_flags(), false);
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(self.sc_dropper.dd.instance_dropper.surface)
-            .min_image_count(self.sc_images.len() as _)
+            .min_image_count(self.sc_dropper.sc_images.len() as _)
             .image_format(self.info.surf_format.format)
             .image_color_space(self.info.surf_format.color_space)
             .image_extent(surface_resolution)
             .image_array_layers(1)
-            .image_usage(image_usage)
+            .image_usage(sc_img_usage_flags())
             .pre_transform(sc_caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(self.info.present_mode)
@@ -205,13 +212,13 @@ impl Canvas {
                 .get_swapchain_images(swapchain)
                 .context("get swapchain images failed")?
                 .into_iter()
-                .map(|img| Image {
-                    info: ImageCreateInfo::builder()
-                        .res((surface_resolution.width, surface_resolution.height, 1))
-                        .format(self.info.format)
-                        .used_for(sc_img_usage_flags())
-                        .build(),
+                .map(|img| ImageRef {
                     dropper: Arc::new(ImageDropper {
+                        info: ImageCreateInfo::builder()
+                            .res((surface_resolution.width, surface_resolution.height, 1))
+                            .format(self.info.surf_format.format)
+                            .used_for(sc_img_usage_flags())
+                            .build(),
                         handle: img,
                         mem: None,
                         dont_drop: true,
@@ -228,9 +235,9 @@ impl Canvas {
         };
 
         // Update new swapchain and images
-        self.sc_images = images;
         self.sc_dropper = Arc::new(SwapchainDropper {
             handle: swapchain,
+            sc_images: images,
             dd: self.sc_dropper.dd.clone(),
         });
         self.info.res = (surface_resolution.width, surface_resolution.height);
@@ -243,7 +250,7 @@ impl Canvas {
         let sc_fmts = get_sc_formats(dd)?;
         let sc_caps = get_sc_caps(dd)?;
         let sc_present_modes = get_sc_present_modes(dd)?;
-        let (surface_format, swapchain_format) = choose_surface_format(&sc_fmts)?;
+        let surface_format = choose_surface_format(&sc_fmts)?;
         let surface_present_mode = sc_present_modes
             .iter()
             .filter(|&&mode| mode == vk::PresentModeKHR::MAILBOX)
@@ -264,7 +271,6 @@ impl Canvas {
             surface_resolution.width = window_res.width;
             surface_resolution.height = window_res.height;
         }
-        let image_usage = ImageUsageFlag::flags_to_vk(&sc_img_usage_flags(), false);
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(dd.instance_dropper.surface)
             .min_image_count(swapchain_image_count)
@@ -272,7 +278,7 @@ impl Canvas {
             .image_color_space(surface_format.color_space)
             .image_extent(surface_resolution)
             .image_array_layers(1)
-            .image_usage(image_usage)
+            .image_usage(sc_img_usage_flags())
             .pre_transform(sc_caps.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(surface_present_mode)
@@ -287,13 +293,13 @@ impl Canvas {
                 .get_swapchain_images(swapchain)
                 .context("get swapchain images failed")?
                 .into_iter()
-                .map(|img| Image {
-                    info: ImageCreateInfo::builder()
-                        .res((surface_resolution.width, surface_resolution.height, 1))
-                        .format(swapchain_format)
-                        .used_for(sc_img_usage_flags())
-                        .build(),
+                .map(|img| ImageRef {
                     dropper: Arc::new(ImageDropper {
+                        info: ImageCreateInfo::builder()
+                            .res((surface_resolution.width, surface_resolution.height, 1))
+                            .format(surface_format.format)
+                            .used_for(sc_img_usage_flags())
+                            .build(),
                         handle: img,
                         mem: None,
                         dont_drop: true,
@@ -314,13 +320,12 @@ impl Canvas {
             info: CanvasInfo {
                 res: (surface_resolution.width, surface_resolution.height),
                 present_mode: surface_present_mode,
-                format: swapchain_format,
                 surf_format: surface_format,
                 transform: sc_caps.current_transform,
             },
-            sc_images: images,
             sc_dropper: Arc::new(SwapchainDropper {
                 handle: swapchain,
+                sc_images: images,
                 dd: dd.clone(),
             }),
             _fence_pool: fence_pool,
@@ -347,7 +352,6 @@ impl Canvas {
                     return NextImageRes::NeedCanvasRefresh;
                 }
                 return NextImageRes::Success(PresentableImage {
-                    image: self.sc_images[idx as usize].clone(),
                     idx: idx as _,
                     sc_dropper: self.sc_dropper.clone(),
                 });
@@ -369,6 +373,6 @@ impl Canvas {
     }
 
     pub fn image_count(&self) -> usize {
-        self.sc_images.len()
+        self.sc_dropper.sc_images.len()
     }
 }

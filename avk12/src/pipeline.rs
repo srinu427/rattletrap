@@ -11,7 +11,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     device::DeviceDropper,
-    resource::{Buffer, Format, ImageView, Sampler},
+    resource::{BufferRef, ImageView, Sampler},
 };
 
 static MAX_FB_CACHE: usize = 128;
@@ -35,6 +35,8 @@ pub fn safe_str_to_cstring(str: String) -> CString {
 pub enum BindInfo {
     UniformBuffer(usize),
     StorageBuffer(usize),
+    Sampler(usize),
+    Texture(usize),
     Sampler2D(usize),
 }
 
@@ -43,6 +45,8 @@ impl BindInfo {
         match self {
             BindInfo::UniformBuffer(_) => vk::DescriptorType::UNIFORM_BUFFER,
             BindInfo::StorageBuffer(_) => vk::DescriptorType::STORAGE_BUFFER,
+            BindInfo::Sampler(_) => vk::DescriptorType::SAMPLER,
+            BindInfo::Texture(_) => vk::DescriptorType::SAMPLED_IMAGE,
             BindInfo::Sampler2D(_) => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
         }
     }
@@ -73,6 +77,8 @@ impl DPool {
             vk::DescriptorPoolSize::default().ty(vk::DescriptorType::UNIFORM_BUFFER);
         let mut sto_buf_sizes =
             vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER);
+        let mut samp_sizes = vk::DescriptorPoolSize::default().ty(vk::DescriptorType::SAMPLER);
+        let mut tex_sizes = vk::DescriptorPoolSize::default().ty(vk::DescriptorType::SAMPLED_IMAGE);
         let mut samp2_sizes =
             vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
         for b_info in layout {
@@ -82,6 +88,12 @@ impl DPool {
                 }
                 BindInfo::StorageBuffer(c) => {
                     sto_buf_sizes.descriptor_count = *c as _;
+                }
+                BindInfo::Sampler(c) => {
+                    samp_sizes.descriptor_count = *c as _;
+                }
+                BindInfo::Texture(c) => {
+                    tex_sizes.descriptor_count = *c as _;
                 }
                 BindInfo::Sampler2D(c) => {
                     samp2_sizes.descriptor_count = *c as _;
@@ -94,6 +106,12 @@ impl DPool {
         }
         if sto_buf_sizes.descriptor_count > 0 {
             out.push(sto_buf_sizes);
+        }
+        if samp_sizes.descriptor_count > 0 {
+            out.push(samp_sizes);
+        }
+        if tex_sizes.descriptor_count > 0 {
+            out.push(tex_sizes);
         }
         if samp2_sizes.descriptor_count > 0 {
             out.push(samp2_sizes);
@@ -108,14 +126,27 @@ impl DPool {
             .map(|(i, b)| match b {
                 BindInfo::UniformBuffer(c) => vk::DescriptorSetLayoutBinding::default()
                     .binding(i as _)
+                    .stage_flags(vk::ShaderStageFlags::ALL)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .descriptor_count(*c as _),
                 BindInfo::StorageBuffer(c) => vk::DescriptorSetLayoutBinding::default()
                     .binding(i as _)
+                    .stage_flags(vk::ShaderStageFlags::ALL)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(*c as _),
+                BindInfo::Sampler(c) => vk::DescriptorSetLayoutBinding::default()
+                    .binding(i as _)
+                    .stage_flags(vk::ShaderStageFlags::ALL)
+                    .descriptor_type(vk::DescriptorType::SAMPLER)
+                    .descriptor_count(*c as _),
+                BindInfo::Texture(c) => vk::DescriptorSetLayoutBinding::default()
+                    .binding(i as _)
+                    .stage_flags(vk::ShaderStageFlags::ALL)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .descriptor_count(*c as _),
                 BindInfo::Sampler2D(c) => vk::DescriptorSetLayoutBinding::default()
                     .binding(i as _)
+                    .stage_flags(vk::ShaderStageFlags::ALL)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .descriptor_count(*c as _),
             })
@@ -162,6 +193,8 @@ impl DPool {
             match b_type {
                 BindInfo::UniformBuffer(c) => captures.push(DSetData::Buffers(vec![None; *c])),
                 BindInfo::StorageBuffer(c) => captures.push(DSetData::Buffers(vec![None; *c])),
+                BindInfo::Sampler(c) => captures.push(DSetData::Samplers(vec![None; *c])),
+                BindInfo::Texture(c) => captures.push(DSetData::ImageViews(vec![None; *c])),
                 BindInfo::Sampler2D(c) => captures.push(DSetData::Sampler2Ds(vec![None; *c])),
             }
         }
@@ -233,19 +266,23 @@ pub struct CombinedImageSampler {
     pub(crate) sampler: Sampler,
 }
 
-pub enum DSetWriteData {
-    Buffers(Vec<Buffer>),
+pub enum DSetWriteData<'a> {
+    Buffers(Vec<&'a BufferRef>),
+    Samplers(Vec<&'a Sampler>),
+    Textures(Vec<&'a ImageView>),
     Sampler2Ds(Vec<CombinedImageSampler>),
 }
 
-enum DSetData {
-    Buffers(Vec<Option<Buffer>>),
+pub(crate) enum DSetData {
+    Buffers(Vec<Option<BufferRef>>),
+    Samplers(Vec<Option<Sampler>>),
+    ImageViews(Vec<Option<ImageView>>),
     Sampler2Ds(Vec<Option<CombinedImageSampler>>),
 }
 
 pub struct DSet {
     pub(crate) set: vk::DescriptorSet,
-    captures: Vec<DSetData>,
+    pub(crate) captures: Vec<DSetData>,
     layout: Vec<BindInfo>,
     pool_dropper: Arc<DPoolDropper>,
 }
@@ -289,6 +326,65 @@ impl DSet {
                                             vk::DescriptorBufferInfo::default()
                                                 .buffer(new_bufs[i].dropper.handle)
                                                 .range(vk::WHOLE_SIZE)
+                                        })
+                                        .collect::<Vec<_>>(),
+                                )],
+                            &[],
+                        );
+                    }
+                }
+            }
+            (DSetWriteData::Samplers(new_samps), DSetData::Samplers(old_samps)) => {
+                let dst_samps = &mut old_samps[offset..];
+                let copy_size = dst_samps.len().min(dst_samps.len());
+                for i in 0..copy_size {
+                    dst_samps[i] = Some(new_samps[i].clone());
+                }
+                if copy_size != 0 {
+                    unsafe {
+                        self.pool_dropper.dd.device.update_descriptor_sets(
+                            &[vk::WriteDescriptorSet::default()
+                                .dst_set(self.set)
+                                .descriptor_type(self.layout[binding].to_vk())
+                                .descriptor_count(copy_size as _)
+                                .dst_binding(binding as _)
+                                .dst_array_element(offset as _)
+                                .image_info(
+                                    &(0..copy_size)
+                                        .map(|i| {
+                                            vk::DescriptorImageInfo::default()
+                                                .sampler(new_samps[i].dropper.handle)
+                                        })
+                                        .collect::<Vec<_>>(),
+                                )],
+                            &[],
+                        );
+                    }
+                }
+            }
+            (DSetWriteData::Textures(new_texs), DSetData::ImageViews(old_texs)) => {
+                let dst_texs = &mut old_texs[offset..];
+                let copy_size = dst_texs.len().min(dst_texs.len());
+                for i in 0..copy_size {
+                    dst_texs[i] = Some(new_texs[i].clone());
+                }
+                if copy_size != 0 {
+                    unsafe {
+                        self.pool_dropper.dd.device.update_descriptor_sets(
+                            &[vk::WriteDescriptorSet::default()
+                                .dst_set(self.set)
+                                .descriptor_type(self.layout[binding].to_vk())
+                                .descriptor_count(copy_size as _)
+                                .dst_binding(binding as _)
+                                .dst_array_element(offset as _)
+                                .image_info(
+                                    &(0..copy_size)
+                                        .map(|i| {
+                                            vk::DescriptorImageInfo::default()
+                                                .image_view(new_texs[i].handle)
+                                                .image_layout(
+                                                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                                )
                                         })
                                         .collect::<Vec<_>>(),
                                 )],
@@ -439,7 +535,7 @@ impl VertexAttribute {
 
 #[derive(Debug, Clone, Copy)]
 pub struct AttachInfo {
-    pub format: Format,
+    pub format: vk::Format,
     pub clear: bool,
     pub store: bool,
 }
@@ -464,6 +560,7 @@ impl AttachInfo {
 
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct VertexConfig {
+    pub shader: String,
     #[builder(default="vs_main".to_string())]
     pub fn_name: String,
     #[builder(default)]
@@ -474,6 +571,7 @@ pub struct VertexConfig {
 
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct FragmentConfig {
+    pub shader: String,
     #[builder(default="fs_main".to_string())]
     pub fn_name: String,
     #[builder(default)]
@@ -482,18 +580,15 @@ pub struct FragmentConfig {
 
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct GraphicsPipelineCreateInfo {
-    pub shader: String,
     pub set_layouts: Vec<Vec<BindInfo>>,
+    pub vert_conf: VertexConfig,
+    pub frag_conf: FragmentConfig,
     #[builder(default = 0)]
     pub pc_size: usize,
-    #[builder(default = VertexConfig::builder().build())]
-    pub vert_conf: VertexConfig,
     #[builder(default = RasterConfig::builder().build())]
     pub raster_conf: RasterConfig,
     #[builder(default)]
     pub depth_conf: Option<AttachInfo>,
-    #[builder(default = FragmentConfig::builder().build())]
-    pub frag_conf: FragmentConfig,
 }
 
 pub struct GraphicsPipelineDropper {
@@ -548,7 +643,7 @@ impl GraphicsPipeline {
             );
             attachments.push(
                 vk::AttachmentDescription::default()
-                    .format(a.format.to_vk())
+                    .format(a.format)
                     .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .load_op(a.load_op())
@@ -564,7 +659,7 @@ impl GraphicsPipeline {
             );
             attachments.push(
                 vk::AttachmentDescription::default()
-                    .format(a.format.to_vk())
+                    .format(a.format)
                     .initial_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                     .final_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                     .load_op(a.load_op())
@@ -587,7 +682,11 @@ impl GraphicsPipeline {
         Ok(render_pass)
     }
 
-    fn load_wgsl(path: &str, vs_main: &str, fs_main: &str) -> anyhow::Result<(Vec<u32>, Vec<u32>)> {
+    fn _load_wgsl(
+        path: &str,
+        vs_main: &str,
+        fs_main: &str,
+    ) -> anyhow::Result<(Vec<u32>, Vec<u32>)> {
         let wgsl_data = fs::read_to_string(path).context(format!("IO error at {path}"))?;
         let naga_ir = naga::front::wgsl::parse_str(&wgsl_data).context("WGSL parse failed")?;
         let mod_info: naga::valid::ModuleInfo = naga::valid::Validator::new(
@@ -625,16 +724,56 @@ impl GraphicsPipeline {
         Ok((vert_code, frag_code))
     }
 
+    fn load_glsl(
+        path: &str,
+        entry_point: &str,
+        stage: naga::ShaderStage,
+    ) -> anyhow::Result<Vec<u32>> {
+        let glsl_data = fs::read_to_string(path).context(format!("IO error at {path}"))?;
+        let mut naga_fe = naga::front::glsl::Frontend::default();
+        let options = naga::front::glsl::Options::from(stage);
+        let naga_ir = naga_fe
+            .parse(&options, &glsl_data)
+            .context("parsing GLSL failed")?;
+        let mod_info: naga::valid::ModuleInfo = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .subgroup_stages(naga::valid::ShaderStages::all())
+        .subgroup_operations(naga::valid::SubgroupOperationSet::all())
+        .validate(&naga_ir)
+        .context("WGSL validation failed")?;
+        let spv_code = naga::back::spv::write_vec(
+            &naga_ir,
+            &mod_info,
+            &naga::back::spv::Options::default(),
+            Some(&naga::back::spv::PipelineOptions {
+                shader_stage: stage,
+                entry_point: entry_point.to_string(),
+            }),
+        )
+        .context(format!(
+            "extracting shader with entry point {entry_point} failed"
+        ))?;
+        Ok(spv_code)
+    }
+
     pub(crate) fn new(
         dd: &Arc<DeviceDropper>,
         info: GraphicsPipelineCreateInfo,
     ) -> anyhow::Result<Self> {
-        let (vs_code, fs_code) = Self::load_wgsl(
-            &info.shader,
+        let vs_code = Self::load_glsl(
+            &info.vert_conf.shader,
             &info.vert_conf.fn_name,
-            &info.frag_conf.fn_name,
+            naga::ShaderStage::Vertex,
         )
-        .context(format!("loading wgsl at {} failed", &info.shader))?;
+        .context("vertex shader compile failed")?;
+        let fs_code = Self::load_glsl(
+            &info.frag_conf.shader,
+            &info.frag_conf.fn_name,
+            naga::ShaderStage::Fragment,
+        )
+        .context("fragment shader compile failed")?;
         let vs_mod = ShaderModDropper::new(dd, &vs_code)?;
         let fs_mod = ShaderModDropper::new(dd, &fs_code)?;
         let render_pass = Self::make_render_pass(dd, &info)?;
@@ -763,10 +902,10 @@ impl GraphicsPipeline {
             return Err(anyhow::Error::msg("no input views given"));
         }
         // Validate if views are of same size
-        let width = views[0].image.info.res.0;
-        let height = views[0].image.info.res.1;
+        let width = views[0].image_droppper.info.res.0;
+        let height = views[0].image_droppper.info.res.1;
         for view in &views[1..] {
-            if width != view.image.info.res.0 || height != view.image.info.res.1 {
+            if width != view.image_droppper.info.res.0 || height != view.image_droppper.info.res.1 {
                 return Err(anyhow::Error::msg(
                     "image views have a mismatch in resolution",
                 ));
@@ -790,8 +929,8 @@ impl GraphicsPipeline {
                         .create_framebuffer(
                             &vk::FramebufferCreateInfo::default()
                                 .render_pass(self.dropper.render_pass)
-                                .width(views[0].image.info.res.0)
-                                .height(views[0].image.info.res.1)
+                                .width(views[0].image_droppper.info.res.0)
+                                .height(views[0].image_droppper.info.res.1)
                                 .layers(1)
                                 .attachments(&view_handles),
                             None,

@@ -1,6 +1,8 @@
 use avk12::{
+    MemoryLocation,
+    ash::vk,
     device::Device,
-    resource::{Buffer, BufferCreateInfo, BufferUsageFlag, DataMoveDir},
+    resource::{BufferCreateInfo, BufferRef},
 };
 use bytemuck::NoUninit;
 use serde::{Deserialize, Serialize};
@@ -143,8 +145,8 @@ impl Mesh {
 }
 
 pub struct GpuMesh {
-    pub(crate) vert_buffer: Buffer,
-    pub(crate) indx_buffer: Buffer,
+    pub(crate) vert_buffer: BufferRef,
+    pub(crate) indx_buffer: BufferRef,
     pub(crate) indx_count: u32,
 }
 
@@ -155,8 +157,8 @@ impl GpuMesh {
         let stage_buffer = device.new_buffer(
             BufferCreateInfo::builder()
                 .size(vb_size + ib_size)
-                .used_for(BufferUsageFlag::CopySrc.into())
-                .data_move_dir(DataMoveDir::Cpu2Gpu)
+                .used_for(vk::BufferUsageFlags::TRANSFER_SRC)
+                .mem_location(MemoryLocation::CpuToGpu)
                 .build(),
         )?;
         stage_buffer.write_cpu(0, bytemuck::cast_slice(&mesh.verts))?;
@@ -164,13 +166,13 @@ impl GpuMesh {
         let vert_buffer = device.new_buffer(
             BufferCreateInfo::builder()
                 .size(vb_size)
-                .used_for(BufferUsageFlag::CopyDst | BufferUsageFlag::Vertex)
+                .used_for(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER)
                 .build(),
         )?;
         let indx_buffer = device.new_buffer(
             BufferCreateInfo::builder()
                 .size(ib_size)
-                .used_for(BufferUsageFlag::CopyDst | BufferUsageFlag::Index)
+                .used_for(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER)
                 .build(),
         )?;
         let mut cr = device.new_task()?;

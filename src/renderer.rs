@@ -2,25 +2,20 @@ use std::sync::Arc;
 
 use anyhow::Ok;
 use avk12::{
+    MemoryLocation,
+    ash::vk,
     canvas::{NextImageRes, PresentableImage},
     device::Device,
     pipeline::{
         AttachInfo, BindInfo, DSet, DSetWriteData, FragmentConfig, GraphicsPipeline,
-        GraphicsPipelineCreateInfo, RasterConfig, RasterMode, VertexAttribute, VertexConfig,
+        GraphicsPipelineCreateInfo, VertexAttribute, VertexConfig,
     },
-    resource::{
-        Buffer, BufferCreateInfo, BufferUsageFlag, DataMoveDir, Format, Image, ImageCreateInfo,
-        ImageUsageFlag, ImageView, ImageViewInfo, ImageViewType,
-    },
-    task::{ClearValue, DrawInfo, Task},
+    resource::{BufferCreateInfo, ImageAccess, ImageCreateInfo, ImageViewInfo, ImageViewType},
+    task::{ClearValue, DrawInfo},
 };
-use enumflags2::BitFlags;
 use hashbrown::HashMap;
 
-use crate::renderer::{
-    camera::Cam3d,
-    mesh::{GpuMesh, Mesh, MeshCreateInfo, Vertex},
-};
+use crate::renderer::mesh::{GpuMesh, Mesh, MeshCreateInfo, Vertex};
 
 pub mod camera;
 pub mod mesh;
@@ -30,62 +25,36 @@ pub struct MeshDrawInfo {
     mesh_name: String,
     tex_name: String,
     mesh_gpu: GpuMesh,
-    tex_view: Arc<ImageView>,
+    tex_dset: Arc<DSet>,
     transform: glam::Mat4,
     draw: bool,
 }
 
 pub struct Renderer {
-    textures: HashMap<String, Arc<ImageView>>,
+    textures: HashMap<String, Arc<DSet>>,
+    flat_sampler_dset: DSet,
     gp: GraphicsPipeline,
     device: Device,
 }
 
 impl Renderer {
-    fn load_plain_image(
-        device: &mut Device,
-        path: &str,
-        usage: BitFlags<ImageUsageFlag>,
-    ) -> anyhow::Result<Image> {
-        let img = image::open(path)?;
-        let usage = usage | ImageUsageFlag::CopyDst;
-        let gpu_img = device.new_image(
-            ImageCreateInfo::builder()
-                .format(Format::Rgba8)
-                .res((img.width(), img.height(), 1))
-                .used_for(usage)
-                .build(),
-        )?;
-        let stage_buffer = device.new_buffer(
-            BufferCreateInfo::builder()
-                .size(img.as_bytes().len() as _)
-                .used_for(BufferUsageFlag::CopySrc.into())
-                .data_move_dir(DataMoveDir::Cpu2Gpu)
-                .build(),
-        )?;
-        stage_buffer.write_cpu(0, img.as_bytes())?;
-        let mut cmd_rec = device.new_task()?;
-        cmd_rec.copy_b2i(stage_buffer.view(0..stage_buffer.len()), &gpu_img, 0, 0..1);
-        cmd_rec.run()?.wait()?;
-        Ok(gpu_img)
-    }
-
-    pub fn new(mut device: Device) -> anyhow::Result<Self> {
+    pub fn new(device: Device) -> anyhow::Result<Self> {
         let gp_info = GraphicsPipelineCreateInfo::builder()
-            .shader("src/renderer/shaders/mesh.wgsl".to_string())
-            .set_layouts(vec![])
+            .set_layouts(vec![vec![BindInfo::Sampler(1)], vec![BindInfo::Texture(1)]])
             .vert_conf(
                 VertexConfig::builder()
+                    .shader("src/renderer/shaders/mesh.vert".to_string())
                     .attribs(vec![VertexAttribute::Vec4; 5])
-                    .fn_name("vs_main".to_string())
+                    .fn_name("main".to_string())
                     .stride(size_of::<Vertex>())
                     .build(),
             )
             .frag_conf(
                 FragmentConfig::builder()
-                    .fn_name("fs_main".to_string())
+                    .shader("src/renderer/shaders/mesh.frag".to_string())
+                    .fn_name("main".to_string())
                     .attachments(vec![AttachInfo {
-                        format: device.canvas().info().format(),
+                        format: device.canvas().info().surf_format().format,
                         clear: true,
                         store: true,
                     }])
@@ -93,8 +62,12 @@ impl Renderer {
             )
             .build();
         let gp = device.new_graphics_pipeline(gp_info)?;
+        let flat_sampler = device.new_sampler()?;
+        let mut flat_sampler_dset = gp.new_set(0)?;
+        flat_sampler_dset.update_binding(0, 0, DSetWriteData::Samplers(vec![&flat_sampler]))?;
         Ok(Self {
             textures: HashMap::new(),
+            flat_sampler_dset,
             gp,
             device,
         })
@@ -132,12 +105,14 @@ impl Renderer {
         let mut render_pass = recorder.graphics(
             &mut self.gp,
             vec![swap_img_view],
-            vec![ClearValue::Color([1.0, 0.0, 0.0, 1.0])],
+            vec![ClearValue::Color([0.4, 0.5, 0.3, 1.0])],
         )?;
+        render_pass.bind_set(0, &self.flat_sampler_dset);
         for draw_info in mesh_draws {
             if draw_info.draw {
                 render_pass.bind_vb(&draw_info.mesh_gpu.vert_buffer);
                 render_pass.bind_ib(&draw_info.mesh_gpu.indx_buffer, true);
+                render_pass.bind_set(1, &draw_info.tex_dset);
                 render_pass.draw(vec![DrawInfo::Indexed {
                     vb_offset: 0,
                     ib_offset: 0,
@@ -151,19 +126,48 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn load_texture(&mut self, path: &str) -> anyhow::Result<Arc<ImageView>> {
+    pub fn load_texture(&mut self, path: &str) -> anyhow::Result<Arc<DSet>> {
         match self.textures.get(path).cloned() {
             Some(tex) => Ok(tex),
             None => {
-                let image =
-                    Self::load_plain_image(&mut self.device, path, ImageUsageFlag::Sampled.into())?;
-                let image_view = Arc::new(image.view(&ImageViewInfo {
+                let img = image::open(path)?;
+                let usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST;
+                let gpu_img = self.device.new_image(
+                    ImageCreateInfo::builder()
+                        .format(vk::Format::R8G8B8A8_UNORM)
+                        .res((img.width(), img.height(), 1))
+                        .used_for(usage)
+                        .build(),
+                )?;
+                let stage_buffer = self.device.new_buffer(
+                    BufferCreateInfo::builder()
+                        .size(img.as_bytes().len() as _)
+                        .used_for(vk::BufferUsageFlags::TRANSFER_SRC)
+                        .mem_location(MemoryLocation::CpuToGpu)
+                        .build(),
+                )?;
+                stage_buffer.write_cpu(0, img.as_bytes())?;
+                let mut cmd_rec = self.device.new_task()?;
+                cmd_rec.copy_b2i(stage_buffer.view(0..stage_buffer.len()), &gpu_img, 0, 0..1);
+                cmd_rec.optimize_image_for(
+                    &gpu_img,
+                    ImageAccess {
+                        layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        access_flags: vk::AccessFlags::SHADER_READ,
+                        access_stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    },
+                );
+                cmd_rec.run()?.wait()?;
+                let image_view = Arc::new(gpu_img.view(&ImageViewInfo {
                     view_type: ImageViewType::E2d,
                     layer_range: 0..1,
                     level_range: 0..1,
                 })?);
-                self.textures.insert(path.to_string(), image_view.clone());
-                Ok(image_view)
+                let mut tex_dset = self.gp.new_set(1)?;
+                tex_dset.update_binding(0, 0, DSetWriteData::Textures(vec![&image_view]))?;
+                let tex_dset = Arc::new(tex_dset);
+                self.textures.insert(path.to_string(), tex_dset.clone());
+                Ok(tex_dset)
             }
         }
     }
@@ -177,12 +181,13 @@ impl Renderer {
     ) -> anyhow::Result<MeshDrawInfo> {
         let mesh_cpu = Mesh::new(mesh_create_info)?;
         let mesh_gpu = GpuMesh::new(&self.device, &mesh_cpu)?;
-        let tex_view = self.load_texture(&tex_name)?;
+        let tex_dset = self.load_texture(&tex_name)?;
+
         Ok(MeshDrawInfo {
             mesh_name,
             tex_name,
             mesh_gpu,
-            tex_view,
+            tex_dset,
             transform: glam::Mat4::IDENTITY,
             draw,
         })

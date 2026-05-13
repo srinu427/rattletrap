@@ -12,7 +12,7 @@ getset = "0.1.6"
 gpu-allocator = { version = "0.28.0", default-features = false, features = ["hashbrown", "vulkan"] }
 hashbrown = "0.17.0"
 log = "0.4.29"
-naga = { version = "29.0.3", features = ["wgsl-in", "spv-out"] }
+naga = { version = "29.0.3", features = ["wgsl-in", "glsl-in", "spv-out"] }
 typed-builder = "0.23.2"
 winit = "0.30.13"
 yoke = "0.8.2"

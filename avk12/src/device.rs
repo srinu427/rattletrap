@@ -12,7 +12,7 @@ use winit::{
 use crate::{
     canvas::Canvas,
     pipeline::{GraphicsPipeline, GraphicsPipelineCreateInfo},
-    resource::{Buffer, BufferCreateInfo, Image, ImageCreateInfo, Sampler},
+    resource::{BufferRef, BufferCreateInfo, ImageRef, ImageCreateInfo, Sampler},
     sync::SemPool,
     task::{CmdPool, Task},
 };
@@ -310,12 +310,12 @@ impl Device {
         })
     }
 
-    pub fn new_buffer(&self, info: BufferCreateInfo) -> anyhow::Result<Buffer> {
-        Buffer::new(&self.dropper, &self.allocator, info)
+    pub fn new_buffer(&self, info: BufferCreateInfo) -> anyhow::Result<BufferRef> {
+        BufferRef::new(&self.dropper, &self.allocator, info)
     }
 
-    pub fn new_image(&self, info: ImageCreateInfo) -> anyhow::Result<Image> {
-        Image::new(&self.dropper, &self.allocator, info)
+    pub fn new_image(&self, info: ImageCreateInfo) -> anyhow::Result<ImageRef> {
+        ImageRef::new(&self.dropper, &self.allocator, info)
     }
 
     pub fn new_sampler(&self) -> anyhow::Result<Sampler> {

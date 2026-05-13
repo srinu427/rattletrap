@@ -6,8 +6,6 @@ use std::{
 
 use anyhow::Context;
 use ash::vk;
-use enumflags2::{BitFlags, bitflags};
-use getset::Getters;
 use gpu_allocator::{
     MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
@@ -26,14 +24,9 @@ impl GMem {
     pub(crate) fn new(
         allocator: &Arc<Mutex<Allocator>>,
         name: &str,
-        data_dir: DataMoveDir,
+        location: MemoryLocation,
         requirements: vk::MemoryRequirements,
     ) -> anyhow::Result<Self> {
-        let location = match data_dir {
-            DataMoveDir::None => MemoryLocation::GpuOnly,
-            DataMoveDir::Cpu2Gpu => MemoryLocation::CpuToGpu,
-            DataMoveDir::Gpu2Cpu => MemoryLocation::GpuToCpu,
-        };
         let allocation = allocator
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -68,56 +61,17 @@ impl Drop for GMem {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum DataMoveDir {
-    None,
-    Cpu2Gpu,
-    Gpu2Cpu,
-}
-
-#[bitflags]
-#[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum BufferUsageFlag {
-    CopyDst,
-    CopySrc,
-    Vertex,
-    Index,
-    Uniform,
-    Storage,
-}
-
-impl BufferUsageFlag {
-    pub(crate) fn to_vk(&self) -> vk::BufferUsageFlags {
-        match self {
-            BufferUsageFlag::CopyDst => vk::BufferUsageFlags::TRANSFER_DST,
-            BufferUsageFlag::CopySrc => vk::BufferUsageFlags::TRANSFER_SRC,
-            BufferUsageFlag::Vertex => vk::BufferUsageFlags::VERTEX_BUFFER,
-            BufferUsageFlag::Index => vk::BufferUsageFlags::INDEX_BUFFER,
-            BufferUsageFlag::Uniform => vk::BufferUsageFlags::UNIFORM_BUFFER,
-            BufferUsageFlag::Storage => vk::BufferUsageFlags::STORAGE_BUFFER,
-        }
-    }
-
-    pub(crate) fn flags_to_vk(bflags: &BitFlags<Self>) -> vk::BufferUsageFlags {
-        let mut out = vk::BufferUsageFlags::empty();
-        for fl in bflags.iter() {
-            out |= fl.to_vk();
-        }
-        out
-    }
-}
-
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct BufferCreateInfo {
     pub size: u64,
-    #[builder(default=BitFlags::empty())]
-    pub used_for: BitFlags<BufferUsageFlag>,
-    #[builder(default=DataMoveDir::None)]
-    pub data_move_dir: DataMoveDir,
+    #[builder(default)]
+    pub used_for: vk::BufferUsageFlags,
+    #[builder(default=MemoryLocation::GpuOnly)]
+    pub mem_location: MemoryLocation,
 }
 
 pub(crate) struct BufferDropper {
+    info: BufferCreateInfo,
     pub(crate) handle: vk::Buffer,
     pub(crate) mem: Mutex<GMem>,
     dd: Arc<DeviceDropper>,
@@ -131,32 +85,29 @@ impl Drop for BufferDropper {
     }
 }
 
-#[derive(Clone, Getters)]
-pub struct Buffer {
+#[derive(Clone)]
+pub struct BufferRef {
     pub(crate) dropper: Arc<BufferDropper>,
-    #[getset(get = "pub")]
-    info: BufferCreateInfo,
 }
 
-impl Buffer {
+impl BufferRef {
     pub(crate) fn new(
         dd: &Arc<DeviceDropper>,
         allocator: &Arc<Mutex<Allocator>>,
         info: BufferCreateInfo,
     ) -> anyhow::Result<Self> {
-        let usage_flags = BufferUsageFlag::flags_to_vk(&info.used_for);
         let handle = unsafe {
             dd.device
                 .create_buffer(
                     &vk::BufferCreateInfo::default()
                         .size(info.size)
-                        .usage(usage_flags),
+                        .usage(info.used_for),
                     None,
                 )
                 .context("vk buffer creation failed")?
         };
         let req = unsafe { dd.device.get_buffer_memory_requirements(handle) };
-        let mem = GMem::new(allocator, &format!("{handle:?}"), info.data_move_dir, req)?;
+        let mem = GMem::new(allocator, &format!("{handle:?}"), info.mem_location, req)?;
         unsafe {
             dd.device
                 .bind_buffer_memory(handle, mem.allocation.memory(), mem.allocation.offset())
@@ -167,18 +118,18 @@ impl Buffer {
                 handle,
                 mem: Mutex::new(mem),
                 dd: dd.clone(),
+                info,
             }),
-            info,
         })
     }
 
     pub fn len(&self) -> u64 {
-        self.info.size
+        self.dropper.info.size
     }
 
     pub fn write_cpu(&self, offset: u64, data: &[u8]) -> anyhow::Result<()> {
-        match self.info.data_move_dir {
-            DataMoveDir::Cpu2Gpu => {}
+        match self.dropper.info.mem_location {
+            MemoryLocation::CpuToGpu => {}
             _ => {
                 return Err(anyhow::Error::msg(
                     "cant write directly on buffers that are not created with DataMoveDir as Cpu2Gpu",
@@ -209,122 +160,74 @@ impl Buffer {
 }
 
 pub struct BufferView<'a> {
-    pub buffer: &'a Buffer,
+    pub buffer: &'a BufferRef,
     pub range: Range<u64>,
 }
 
-#[bitflags]
-#[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum ImageUsageFlag {
-    CopyDst,
-    CopySrc,
-    RenderAttach,
-    Sampled,
-    Storage,
+pub(crate) trait FormatMeta {
+    fn is_depth(&self) -> bool;
+    fn has_stencil(&self) -> bool;
+    fn rem_srgb(&self) -> Self;
+    fn aspect_flag(&self) -> vk::ImageAspectFlags;
 }
 
-impl ImageUsageFlag {
-    pub(crate) fn to_vk(&self, is_depth: bool) -> vk::ImageUsageFlags {
-        match self {
-            ImageUsageFlag::CopyDst => vk::ImageUsageFlags::TRANSFER_DST,
-            ImageUsageFlag::CopySrc => vk::ImageUsageFlags::TRANSFER_SRC,
-            ImageUsageFlag::RenderAttach => {
-                if is_depth {
-                    vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-                } else {
-                    vk::ImageUsageFlags::COLOR_ATTACHMENT
-                }
-            }
-            ImageUsageFlag::Sampled => vk::ImageUsageFlags::SAMPLED,
-            ImageUsageFlag::Storage => vk::ImageUsageFlags::STORAGE,
-        }
-    }
-
-    pub(crate) fn flags_to_vk(bflags: &BitFlags<Self>, is_depth: bool) -> vk::ImageUsageFlags {
-        let mut out = vk::ImageUsageFlags::empty();
-        for fl in bflags.iter() {
-            out |= fl.to_vk(is_depth);
-        }
-        out
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum Format {
-    Rgba8,
-    Bgra8,
-    Rgba8Srgb,
-    Bgra8Srgb,
-    Rgba10,
-    Bgra10,
-    Rgba16,
-    Rgba16Float,
-    D24S8,
-    D32Float,
-}
-
-impl Format {
-    pub fn is_depth(&self) -> bool {
-        match self {
-            Self::D24S8 | Self::D32Float => true,
+impl FormatMeta for vk::Format {
+    fn is_depth(&self) -> bool {
+        match *self {
+            Self::D16_UNORM
+            | Self::D16_UNORM_S8_UINT
+            | Self::D24_UNORM_S8_UINT
+            | Self::D32_SFLOAT
+            | Self::D32_SFLOAT_S8_UINT
+            | Self::X8_D24_UNORM_PACK32 => true,
             _ => false,
         }
     }
 
-    pub fn has_stencil(&self) -> bool {
-        match self {
-            Self::D24S8 => true,
+    fn has_stencil(&self) -> bool {
+        match *self {
+            Self::D16_UNORM_S8_UINT | Self::D24_UNORM_S8_UINT | Self::D32_SFLOAT_S8_UINT => true,
             _ => false,
         }
     }
 
-    pub fn rem_srgb(&self) -> Self {
-        match self {
-            Self::Rgba8Srgb => Self::Rgba8,
-            Self::Bgra8Srgb => Self::Bgra8,
+    fn rem_srgb(&self) -> Self {
+        match *self {
+            Self::R8_SRGB => Self::R8_UNORM,
+            Self::R8G8_SRGB => Self::R8G8_UINT,
+            Self::B8G8R8_SRGB => Self::B8G8R8_UINT,
+            Self::R8G8B8_SRGB => Self::R8G8B8_UINT,
+            Self::B8G8R8A8_SRGB => Self::B8G8R8A8_UINT,
+            Self::R8G8B8A8_SRGB => Self::R8G8B8A8_UINT,
+            Self::A8B8G8R8_SRGB_PACK32 => Self::A8B8G8R8_UINT_PACK32,
             _ => self.clone(),
         }
     }
-}
-
-impl Format {
-    pub fn aspect_flag(&self) -> vk::ImageAspectFlags {
-        match self {
-            Format::D24S8 => vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
-            Format::D32Float => vk::ImageAspectFlags::DEPTH,
+    fn aspect_flag(&self) -> vk::ImageAspectFlags {
+        match *self {
+            Self::D16_UNORM | Self::D32_SFLOAT | Self::X8_D24_UNORM_PACK32 => {
+                vk::ImageAspectFlags::DEPTH
+            }
+            Self::D16_UNORM_S8_UINT | Self::D24_UNORM_S8_UINT | Self::D32_SFLOAT_S8_UINT => {
+                vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+            }
             _ => vk::ImageAspectFlags::COLOR,
-        }
-    }
-
-    pub fn to_vk(&self) -> vk::Format {
-        match self {
-            Format::Rgba8 => vk::Format::R8G8B8A8_UNORM,
-            Format::Bgra8 => vk::Format::B8G8R8A8_UNORM,
-            Format::Rgba8Srgb => vk::Format::R8G8B8A8_SRGB,
-            Format::Bgra8Srgb => vk::Format::B8G8R8A8_SRGB,
-            Format::Rgba10 => vk::Format::A2R10G10B10_UNORM_PACK32,
-            Format::Bgra10 => vk::Format::A2B10G10R10_UNORM_PACK32,
-            Format::Rgba16 => vk::Format::R16G16B16A16_UNORM,
-            Format::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
-            Format::D24S8 => vk::Format::D24_UNORM_S8_UINT,
-            Format::D32Float => vk::Format::D32_SFLOAT,
         }
     }
 }
 
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ImageCreateInfo {
-    pub format: Format,
+    pub format: vk::Format,
     pub res: (u32, u32, u32),
     #[builder(default = 1)]
     pub layers: u32,
     #[builder(default = 1)]
     pub mip_levels: u32,
-    #[builder(default=BitFlags::empty())]
-    pub used_for: BitFlags<ImageUsageFlag>,
-    #[builder(default=DataMoveDir::None)]
-    pub data_move_dir: DataMoveDir,
+    #[builder(default)]
+    pub used_for: vk::ImageUsageFlags,
+    #[builder(default=MemoryLocation::GpuOnly)]
+    pub mem_location: MemoryLocation,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -365,13 +268,14 @@ impl ImageViewInfo {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ImageAccess {
-    pub(crate) layout: vk::ImageLayout,
-    pub(crate) access_flags: vk::AccessFlags,
-    pub(crate) access_stage: vk::PipelineStageFlags,
+pub struct ImageAccess {
+    pub layout: vk::ImageLayout,
+    pub access_flags: vk::AccessFlags,
+    pub access_stage: vk::PipelineStageFlags,
 }
 
 pub(crate) struct ImageDropper {
+    pub(crate) info: ImageCreateInfo,
     pub(crate) handle: vk::Image,
     pub(crate) mem: Option<GMem>,
     pub(crate) dont_drop: bool,
@@ -398,14 +302,12 @@ impl Drop for ImageDropper {
     }
 }
 
-#[derive(Clone, Getters)]
-pub struct Image {
-    #[getset(get = "pub")]
-    pub(crate) info: ImageCreateInfo,
+#[derive(Clone)]
+pub struct ImageRef {
     pub(crate) dropper: Arc<ImageDropper>,
 }
 
-impl Image {
+impl ImageRef {
     pub(crate) fn new(
         dd: &Arc<DeviceDropper>,
         allocator: &Arc<Mutex<Allocator>>,
@@ -416,13 +318,12 @@ impl Image {
         } else {
             vk::ImageType::TYPE_3D
         };
-        let image_usage = ImageUsageFlag::flags_to_vk(&info.used_for, info.format.is_depth());
         let handle = unsafe {
             dd.device
                 .create_image(
                     &vk::ImageCreateInfo::default()
                         .image_type(image_type)
-                        .format(info.format.to_vk())
+                        .format(info.format)
                         .extent(vk::Extent3D {
                             width: info.res.0,
                             height: info.res.1,
@@ -432,21 +333,21 @@ impl Image {
                         .mip_levels(info.mip_levels)
                         .array_layers(info.layers)
                         .samples(vk::SampleCountFlags::TYPE_1)
-                        .usage(image_usage),
+                        .usage(info.used_for),
                     None,
                 )
                 .context("image creation failed")?
         };
         let req = unsafe { dd.device.get_image_memory_requirements(handle) };
-        let mem = GMem::new(allocator, &format!("{handle:?}"), info.data_move_dir, req)?;
+        let mem = GMem::new(allocator, &format!("{handle:?}"), info.mem_location, req)?;
         unsafe {
             dd.device
                 .bind_image_memory(handle, mem.allocation.memory(), mem.allocation.offset())
                 .context("binding buffer to memory failed")?
         }
         Ok(Self {
-            info,
             dropper: Arc::new(ImageDropper {
+                info,
                 handle,
                 mem: Some(mem),
                 dont_drop: false,
@@ -469,12 +370,12 @@ impl Image {
                 .create_image_view(
                     &vk::ImageViewCreateInfo::default()
                         .image(self.dropper.handle)
-                        .format(self.info.format.to_vk())
+                        .format(self.dropper.info.format)
                         .components(vk::ComponentMapping::default())
                         .view_type(key.type_vk())
                         .subresource_range(
                             vk::ImageSubresourceRange::default()
-                                .aspect_mask(self.info.format.aspect_flag())
+                                .aspect_mask(self.dropper.info.format.aspect_flag())
                                 .base_array_layer(key.layer_range.start)
                                 .base_mip_level(key.level_range.start)
                                 .layer_count(key.layer_range.end - key.layer_range.start)
@@ -508,7 +409,7 @@ impl Image {
             }
         };
         Ok(ImageView {
-            image: self.clone(),
+            image_droppper: self.dropper.clone(),
             handle,
             info: info.clone(),
         })
@@ -517,7 +418,7 @@ impl Image {
 
 #[derive(Clone)]
 pub struct ImageView {
-    pub(crate) image: Image,
+    pub(crate) image_droppper: Arc<ImageDropper>,
     pub(crate) handle: vk::ImageView,
     pub info: ImageViewInfo,
 }

@@ -9,7 +9,10 @@ use ash::vk;
 use crate::{
     device::DeviceDropper,
     pipeline::{DSet, GraphicsPipeline, GraphicsPipelineDropper},
-    resource::{Buffer, BufferView, Image, ImageAccess, ImageView},
+    resource::{
+        BufferDropper, BufferRef, BufferView, FormatMeta, ImageAccess, ImageDropper, ImageRef,
+        ImageView,
+    },
     sync::{Sem, WaitResult},
 };
 
@@ -149,11 +152,11 @@ pub struct Task {
     pub(crate) cb: CmdBuf,
     pub(crate) sem: Sem,
     // store resources so they dont get deleted
-    pub(crate) preserve_bufs: Vec<Buffer>,
-    pub(crate) preserve_imgs: Vec<Image>,
+    pub(crate) preserve_bufs: Vec<Arc<BufferDropper>>,
+    pub(crate) preserve_imgs: Vec<Arc<ImageDropper>>,
     pub(crate) preserve_views: Vec<ImageView>,
     pub(crate) preserve_gps: Vec<Arc<GraphicsPipelineDropper>>,
-    pub(crate) swapchain_image: Option<Image>,
+    pub(crate) swapchain_image: Option<Arc<ImageDropper>>,
 }
 
 impl Task {
@@ -207,13 +210,12 @@ impl Task {
                     .size(copy_size)],
             );
         }
-        self.preserve_bufs.push(src.buffer.clone());
-        self.preserve_bufs.push(dst.buffer.clone());
+        self.preserve_bufs.push(src.buffer.dropper.clone());
+        self.preserve_bufs.push(dst.buffer.dropper.clone());
     }
 
-    fn update_image_accesses(&mut self, image: &Image, new_access: ImageAccess) {
+    fn update_image_accesses(&self, image: &ImageDropper, new_access: ImageAccess) {
         let old_access = image
-            .dropper
             .last_access
             .read()
             .unwrap_or_else(PoisonError::into_inner)
@@ -227,7 +229,7 @@ impl Task {
                 &[],
                 &[],
                 &[vk::ImageMemoryBarrier::default()
-                    .image(image.dropper.handle)
+                    .image(image.handle)
                     .src_access_mask(old_access.access_flags)
                     .old_layout(old_access.layout)
                     .src_queue_family_index(self.cb.dropper.dd.gpu_info.gfx_qf as _)
@@ -244,28 +246,28 @@ impl Task {
         }
     }
 
-    fn check_and_store_sw_img(&mut self, image: &Image) {
-        if image.dropper.mem.is_none() && self.swapchain_image.is_none() {
-            self.swapchain_image.replace(image.clone());
+    fn check_and_store_sw_img(&mut self, image_dropper: &Arc<ImageDropper>) {
+        if image_dropper.mem.is_none() && self.swapchain_image.is_none() {
+            self.swapchain_image.replace(image_dropper.clone());
         }
     }
 
     pub fn copy_b2i(
         &mut self,
         src: BufferView,
-        dst: &Image,
+        dst: &ImageRef,
         mip_level: u32,
         layer_range: Range<u32>,
     ) {
         self.update_image_accesses(
-            dst,
+            &dst.dropper,
             ImageAccess {
                 layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 access_flags: vk::AccessFlags::TRANSFER_WRITE,
                 access_stage: vk::PipelineStageFlags::TRANSFER,
             },
         );
-        self.check_and_store_sw_img(dst);
+        self.check_and_store_sw_img(&dst.dropper);
         unsafe {
             self.cb.dropper.dd.device.cmd_copy_buffer_to_image(
                 self.cb.handle,
@@ -276,27 +278,26 @@ impl Task {
                     .buffer_offset(src.range.start)
                     .image_offset(vk::Offset3D::default())
                     .image_extent(vk::Extent3D {
-                        width: dst.info.res.0,
-                        height: dst.info.res.1,
-                        depth: dst.info.res.2,
+                        width: dst.dropper.info.res.0,
+                        height: dst.dropper.info.res.1,
+                        depth: dst.dropper.info.res.2,
                     })
                     .image_subresource(
                         vk::ImageSubresourceLayers::default()
-                            .aspect_mask(dst.info.format.aspect_flag())
+                            .aspect_mask(dst.dropper.info.format.aspect_flag())
                             .mip_level(mip_level)
                             .base_array_layer(layer_range.start)
                             .layer_count(layer_range.end - layer_range.start),
                     )],
             );
         }
-        self.preserve_bufs.push(src.buffer.clone());
-        self.preserve_imgs.push(dst.clone());
+        self.preserve_bufs.push(src.buffer.dropper.clone());
+        self.preserve_imgs.push(dst.dropper.clone());
     }
 
     fn update_image_view_accesses(&self, view: &ImageView, new_access: ImageAccess) {
         let old_access = view
-            .image
-            .dropper
+            .image_droppper
             .last_access
             .read()
             .unwrap_or_else(PoisonError::into_inner)
@@ -310,7 +311,7 @@ impl Task {
                 &[],
                 &[],
                 &[vk::ImageMemoryBarrier::default()
-                    .image(view.image.dropper.handle)
+                    .image(view.image_droppper.handle)
                     .src_access_mask(old_access.access_flags)
                     .old_layout(old_access.layout)
                     .src_queue_family_index(self.cb.dropper.dd.gpu_info.gfx_qf as _)
@@ -319,9 +320,9 @@ impl Task {
                     .dst_queue_family_index(self.cb.dropper.dd.gpu_info.gfx_qf as _)
                     .subresource_range(
                         vk::ImageSubresourceRange::default()
-                            .aspect_mask(view.image.info.format.aspect_flag())
-                            .layer_count(view.image.info.layers)
-                            .level_count(view.image.info.mip_levels),
+                            .aspect_mask(view.image_droppper.info.format.aspect_flag())
+                            .layer_count(view.image_droppper.info.layers)
+                            .level_count(view.image_droppper.info.mip_levels),
                     )],
             );
         }
@@ -341,7 +342,7 @@ impl Task {
             ));
         }
         for a in &attachments {
-            let new_access = if a.image.info.format.is_depth() {
+            let new_access = if a.image_droppper.info.format.is_depth() {
                 ImageAccess {
                     layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
                     access_flags: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
@@ -356,10 +357,10 @@ impl Task {
                 }
             };
             self.update_image_view_accesses(a, new_access);
-            self.check_and_store_sw_img(&a.image);
+            self.check_and_store_sw_img(&a.image_droppper);
         }
-        let width = attachments[0].image.info.res.0;
-        let height = attachments[0].image.info.res.1;
+        let width = attachments[0].image_droppper.info.res.0;
+        let height = attachments[0].image_droppper.info.res.1;
         unsafe {
             self.cb.dropper.dd.device.cmd_begin_render_pass(
                 self.cb.handle,
@@ -411,6 +412,10 @@ impl Task {
             attachments,
         })
     }
+
+    pub fn optimize_image_for(&self, image: &ImageRef, access: ImageAccess) {
+        self.update_image_accesses(&image.dropper, access);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -455,7 +460,7 @@ pub struct GraphicsTask<'a> {
 }
 
 impl<'a> GraphicsTask<'a> {
-    pub fn bind_vb(&mut self, vb: &Buffer) {
+    pub fn bind_vb(&mut self, vb: &BufferRef) {
         unsafe {
             self.task.cb.dropper.dd.device.cmd_bind_vertex_buffers(
                 self.task.cb.handle,
@@ -466,7 +471,7 @@ impl<'a> GraphicsTask<'a> {
         }
     }
 
-    pub fn bind_ib(&mut self, ib: &Buffer, is_16bit: bool) {
+    pub fn bind_ib(&mut self, ib: &BufferRef, is_16bit: bool) {
         unsafe {
             self.task.cb.dropper.dd.device.cmd_bind_index_buffer(
                 self.task.cb.handle,
