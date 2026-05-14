@@ -234,6 +234,18 @@ impl Canvas {
                 .collect()
         };
 
+        // Wait for queue to be idle before destroying old swapchain
+        // TODO: Make use of swapchain maintenance 1 extention when MacOS/MoltenVK support arrives
+        unsafe {
+            if let Err(e) = self
+                .sc_dropper
+                .dd
+                .device
+                .queue_wait_idle(self.sc_dropper.dd.gfx_queue)
+            {
+                log::warn!("failed waiting for queue to be idle before dropping old swapchain: {e}")
+            }
+        };
         // Update new swapchain and images
         self.sc_dropper = Arc::new(SwapchainDropper {
             handle: swapchain,
@@ -374,5 +386,21 @@ impl Canvas {
 
     pub fn image_count(&self) -> usize {
         self.sc_dropper.sc_images.len()
+    }
+}
+
+impl Drop for Canvas {
+    fn drop(&mut self) {
+        // TODO: Make use of swapchain maintenance 1 extention when MacOS/MoltenVK support arrives
+        unsafe {
+            if let Err(e) = self
+                .sc_dropper
+                .dd
+                .device
+                .queue_wait_idle(self.sc_dropper.dd.gfx_queue)
+            {
+                log::warn!("failed waiting for queue to be idle before dropping swapchain: {e}")
+            }
+        };
     }
 }

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use anyhow::Ok;
 use avk12::{
     MemoryLocation,
     ash::vk,
