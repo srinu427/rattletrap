@@ -20,7 +20,7 @@ pub struct Cam3d {
 
 impl Cam3d {
     pub fn new(eye: glam::Vec3, dir: glam::Vec3, up: glam::Vec3, fov: f32, aspect: f32) -> Self {
-        Self {
+        let mut out = Self {
             eye,
             fov,
             dir,
@@ -28,7 +28,9 @@ impl Cam3d {
             up,
             padding: 0,
             proj_view: glam::Mat4::IDENTITY,
-        }
+        };
+        out.update_proj_view();
+        out
     }
 
     pub fn update_proj_view(&mut self) {

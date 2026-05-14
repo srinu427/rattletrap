@@ -111,9 +111,9 @@ impl EcsMega {
         let mesh_draw = renderer_system.load_mesh_draw(
             "rect1".to_string(),
             MeshCreateInfo::RectCUV {
-                c: [0.0; 3],
-                u: [0.75, 0.0, 0.0],
-                v: [0.0, 0.75, 0.0],
+                c: [0.; 3],
+                u: [3., 0., 0.],
+                v: [0., 3., 0.],
             },
             "data/textures/default.png".to_string(),
             true,
@@ -135,7 +135,7 @@ impl EcsMega {
 
     pub fn run(&mut self, frame_time: u128) -> anyhow::Result<()> {
         self.renderer_system
-            .render(&self.camera, &self.mesh_draw_infos)?;
+            .render(&mut self.camera, &self.mesh_draw_infos)?;
         Ok(())
     }
 }

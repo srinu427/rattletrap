@@ -135,6 +135,10 @@ pub struct PresentableImage {
 }
 
 impl PresentableImage {
+    pub fn idx(&self) -> u32 {
+        self.idx
+    }
+
     pub fn image(&self) -> &ImageRef {
         &self.sc_dropper.sc_images[self.idx as usize]
     }

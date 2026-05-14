@@ -163,6 +163,16 @@ impl BufferRef {
         Ok(())
     }
 
+    pub fn full_slice(&self) -> BufferSlice<'_> {
+        BufferSlice {
+            buffer: self,
+            range: Range {
+                start: 0,
+                end: self.len(),
+            },
+        }
+    }
+
     pub fn slice(&self, range: Range<u64>) -> BufferSlice<'_> {
         BufferSlice {
             buffer: self,
