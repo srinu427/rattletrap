@@ -1,7 +1,10 @@
 use std::{hash::Hash, sync::Arc};
 
 // use physics::PhysicsManager;
-use crate::renderer::{MeshDrawInfo, Renderer, camera::Cam3d, mesh::MeshCreateInfo};
+use crate::{
+    inputs::Inputs,
+    renderer::{MeshDrawInfo, Renderer, camera::Cam3d, mesh::MeshCreateInfo},
+};
 use avk12::device::Instance;
 use enumflags2::bitflags;
 use hashbrown::HashMap;
@@ -133,9 +136,15 @@ impl EcsMega {
         })
     }
 
-    pub fn run(&mut self, frame_time: u128) -> anyhow::Result<()> {
+    pub fn run(&mut self, frame_time: u128, inputs: &mut Inputs) -> anyhow::Result<()> {
+        let mouse_move = inputs.mouse_delta();
+        self.camera
+            .move_up_down(glam::Vec3::Y, 0.01 * mouse_move.1 as f32);
+        self.camera
+            .move_left_right(glam::Vec3::Y, 0.01 * mouse_move.0 as f32);
         self.renderer_system
             .render(&mut self.camera, &self.mesh_draw_infos)?;
+        inputs.advance_frame();
         Ok(())
     }
 }

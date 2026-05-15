@@ -10,9 +10,8 @@ use winit::{
     dpi::LogicalSize,
     event::{DeviceEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::KeyCode,
-    keyboard::PhysicalKey,
-    window::{Window, WindowId},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{CursorGrabMode, Window, WindowId},
 };
 
 use crate::{ecs::EcsMega, inputs::Inputs};
@@ -43,10 +42,9 @@ impl App {
         let frame_time = current_time - last_frame_time;
 
         let ecs_mut = self.ecs_mega.as_mut().unwrap();
-        if let Err(e) = ecs_mut.run(frame_time) {
+        if let Err(e) = ecs_mut.run(frame_time, &mut self.inputs) {
             eprintln!("failure running ECS: {e}");
         }
-        self.inputs.advance_frame();
     }
 }
 
@@ -60,6 +58,9 @@ impl ApplicationHandler for App {
             }))
             .map(Arc::new)
             .unwrap();
+        let _ = window
+            .set_cursor_grab(CursorGrabMode::Confined)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked));
         self.ecs_mega = Some(EcsMega::new(window).unwrap());
         // self.load_level();
         // window.request_redraw();
