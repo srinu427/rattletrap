@@ -1,4 +1,4 @@
-mod ecs;
+mod game;
 mod inputs;
 mod renderer;
 mod scene;
@@ -10,14 +10,13 @@ use winit::{
     dpi::LogicalSize,
     event::{DeviceEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
 };
 
-use crate::{ecs::EcsMega, inputs::Inputs};
+use crate::{game::Game, inputs::Inputs};
 
 struct App {
-    ecs_mega: Option<EcsMega>,
+    ecs_mega: Option<Game>,
     start_time: time::Instant,
     last_frame_time_ms: u128,
     inputs: Inputs,
@@ -61,7 +60,7 @@ impl ApplicationHandler for App {
         let _ = window
             .set_cursor_grab(CursorGrabMode::Confined)
             .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked));
-        self.ecs_mega = Some(EcsMega::new(window).unwrap());
+        self.ecs_mega = Some(Game::new(window).unwrap());
         // self.load_level();
         // window.request_redraw();
     }

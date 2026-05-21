@@ -6,7 +6,6 @@ use crate::{
     renderer::{MeshDrawInfo, Renderer, camera::Cam3d, mesh::MeshCreateInfo},
 };
 use avk12::device::Instance;
-use enumflags2::bitflags;
 use hashbrown::HashMap;
 use winit::window::Window;
 
@@ -17,13 +16,6 @@ pub struct Node {
     name: String,
     entity: Entity,
     children: Vec<Self>,
-}
-
-#[bitflags]
-#[repr(u32)]
-#[derive(Debug, Clone, Copy)]
-pub enum Component {
-    Renderer,
 }
 
 pub struct VBMap<K: Hash + Eq, T> {
@@ -81,13 +73,6 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct RenderInfo {
-    mesh: usize,
-    texture: String,
-    drawable_id: usize,
-}
-
-#[derive(Debug, Clone)]
 pub struct PhysicsInfo {
     pos: glam::Vec3,
     rot: glam::Mat4,
@@ -96,7 +81,7 @@ pub struct PhysicsInfo {
     acc: glam::Vec3,
 }
 
-pub struct EcsMega {
+pub struct Game {
     // scene_root: Node,
     entities: Vec<Entity>,
     pub(crate) renderer_system: Renderer,
@@ -106,7 +91,7 @@ pub struct EcsMega {
     // physics_info: Vec<PhysicsInfo>,
 }
 
-impl EcsMega {
+impl Game {
     pub fn new(window: Arc<Window>) -> anyhow::Result<Self> {
         let inst = Instance::new(&window)?;
         let device = inst.init_device(0)?;
@@ -122,11 +107,11 @@ impl EcsMega {
             true,
         )?;
         let camera = Cam3d::new(
-            glam::vec3(3.0, 3.0, 3.0),
-            glam::vec3(-1.0, -1.0, -1.0),
+            glam::vec3(3., 3., 3.),
+            glam::vec3(-1., -1., -1.),
             glam::Vec3::Y,
-            2.0,
-            1.0,
+            2.,
+            1.,
         );
         Ok(Self {
             entities: vec![],
@@ -139,9 +124,9 @@ impl EcsMega {
     pub fn run(&mut self, frame_time: u128, inputs: &mut Inputs) -> anyhow::Result<()> {
         let mouse_move = inputs.mouse_delta();
         self.camera
-            .move_up_down(glam::Vec3::Y, 0.01 * mouse_move.1 as f32);
-        self.camera
             .move_left_right(glam::Vec3::Y, 0.01 * mouse_move.0 as f32);
+        self.camera
+            .move_up_down(glam::Vec3::Y, 0.01 * mouse_move.1 as f32);
         self.renderer_system
             .render(&mut self.camera, &self.mesh_draw_infos)?;
         inputs.advance_frame();

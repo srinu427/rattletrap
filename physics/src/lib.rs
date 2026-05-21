@@ -4,11 +4,13 @@ use glam::Vec4Swizzles;
 use hashbrown::HashMap;
 
 use crate::{
-    collision_shape::{CollisionShape, ContactState, Orientation, Separation},
+    collision_shape::CollisionShape,
     utils::{dir_vec4, new_plane, orient_plane, point_vec4, remove_component},
 };
 
+pub mod closest_info;
 pub mod collision_shape;
+pub mod orient;
 mod utils;
 
 #[derive(Debug, Clone)]
@@ -37,7 +39,7 @@ pub struct RigidBody {
     pub has_gravity: bool,
     pub dont_interact_mask: u32,
     stuck: bool,
-    contacts: Vec<ContactState>,
+    contacts: Vec<ClosestInfo>,
     bounds: Vec<glam::Vec4>,
 }
 
@@ -106,7 +108,7 @@ impl PhysicsManager {
     pub fn add_obj(&mut self, name: &str, obj: RigidBody) {
         let last_obj_id = self.objects.len();
         for i in 0..last_obj_id {
-            let contact = ContactState::new(&obj.orient_shape, &self.objects[i].orient_shape);
+            let contact = ClosestInfo::new(&obj.orient_shape, &self.objects[i].orient_shape);
             self.objects[i].contacts.push(contact);
         }
         self.objects.push(obj);
@@ -189,10 +191,9 @@ impl PhysicsManager {
                 } else {
                     (&self.objects[j], &self.objects[i])
                 };
-                let CollisionShape::Mesh(cm1) = &obj1.orient_shape else {
-                    return false;
-                };
-                let CollisionShape::Mesh(cm2) = &obj2.orient_shape else {
+                let (CollisionShape::Mesh(cm1), CollisionShape::Mesh(cm2)) =
+                    (&obj1.orient_shape, &obj2.orient_shape)
+                else {
                     return false;
                 };
                 let a1 = cm1.points[cm1.edges[*idx1].0].xyz();
@@ -220,12 +221,12 @@ impl PhysicsManager {
     }
 
     pub fn refreshed_contact(
-        old_state: &ContactState,
+        old_state: &ClosestInfo,
         a: &RigidBody,
         a_old: &RigidBody,
         b: &RigidBody,
         b_old: &RigidBody,
-    ) -> ContactState {
+    ) -> ClosestInfo {
         let pl_old = old_state.pl;
         let (obj1, _obj2) = if old_state.of_first {
             (a_old, b_old)
@@ -237,7 +238,7 @@ impl PhysicsManager {
         let pl_new = orient_plane(pl_rel, &new_obj1.orient.to_transform());
         let min_dist_new = new_obj2.orient_shape.plane_min_dist(pl_new);
         if min_dist_new < 0.0 {
-            ContactState::new(&a.orient_shape, &b.orient_shape)
+            ClosestInfo::new(&a.orient_shape, &b.orient_shape)
         } else {
             let mut new_contact = old_state.clone();
             new_contact.min_dist = min_dist_new;
