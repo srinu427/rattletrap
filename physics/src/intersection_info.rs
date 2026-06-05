@@ -123,6 +123,7 @@ impl IntersectionInfo {
 
     pub fn obj_swapped(mut self) -> Self {
         self.dir = -self.dir;
+        (self.point_1, self.point_2) = (self.point_2, self.point_1);
         self
     }
 }

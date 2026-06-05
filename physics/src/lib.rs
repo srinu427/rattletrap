@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hashbrown::HashMap;
+use glam::Mat4;
 
 use crate::{
     collision_shape::CollisionShape, intersection_info::IntersectionInfo, orient::Orientation,
@@ -67,36 +67,98 @@ impl RigidBody {
         self.stuck
     }
 
-    pub fn refresh_orient_shape(&mut self) {
+    pub fn fwd_ms(&mut self) {
+        self.orient.translation +=
+            self.kinematics.velocity * 0.001 + 0.5 * self.kinematics.acceleration * 0.001 * 0.001;
+        self.kinematics.velocity += self.kinematics.acceleration * 0.001;
+        self.refresh_orient_shape();
+    }
+
+    fn refresh_orient_shape(&mut self) {
         self.orient_shape = self.shape.with_orientation(&self.orient);
     }
 
-    pub fn make_fut_ms(&self) -> Self {
-        let mut out = self.clone();
-        out.orient.translation +=
-            out.kinematics.velocity * 0.001 + 0.5 * out.kinematics.acceleration * 0.001 * 0.001;
-        out.kinematics.velocity += out.kinematics.acceleration * 0.001;
-        out.refresh_orient_shape();
-        out
+    fn apply_orient(&mut self, orientation: &Orientation) {
+        self.orient.translation += orientation.translation;
+        self.orient.rotation *= orientation.rotation;
+        self.refresh_orient_shape();
     }
 }
 
 pub struct PhysicsManager {}
 
 impl PhysicsManager {
-    pub fn run(&mut self, rigid_bodies: &mut [RigidBody]) {
+    fn resolve_penetrations(&mut self, rigid_bodies: &mut [RigidBody]) {
         let rb_count = rigid_bodies.len();
-        let mut old_inter_map = HashMap::new();
+        // Find penetrations
+        let mut touch_dirs = vec![vec![]; rb_count];
         for i in 0..rb_count {
             for j in i + 1..rb_count {
-                let Some(before_inter) = IntersectionInfo::new(
+                let Some(touch_info) = IntersectionInfo::new(
                     &rigid_bodies[i].orient_shape,
                     &rigid_bodies[j].orient_shape,
                 ) else {
                     continue;
                 };
-                old_inter_map.insert((i, j), before_inter);
+                touch_dirs[i].push((j, touch_info));
             }
         }
+        // Resolve Penetrations
+        for a in 0..rb_count {
+            for (b, inter) in &touch_dirs[a] {
+                if inter.dist >= 0.0 {
+                    continue;
+                }
+                let total_mass = rigid_bodies[a].mass + rigid_bodies[*b].mass;
+                let a_move_dist = inter.dist * (rigid_bodies[a].mass / total_mass);
+                let b_move_dist = -inter.dist * (rigid_bodies[*b].mass / total_mass);
+                rigid_bodies[a].apply_orient(&Orientation {
+                    translation: a_move_dist * inter.dir,
+                    rotation: Mat4::IDENTITY,
+                });
+                rigid_bodies[*b].apply_orient(&Orientation {
+                    translation: b_move_dist * inter.dir,
+                    rotation: Mat4::IDENTITY,
+                });
+            }
+        }
+    }
+
+    pub fn run_ms(&mut self, rigid_bodies: &mut [RigidBody]) {
+        // resolve existing penetrations
+        self.resolve_penetrations(rigid_bodies);
+        // Find touches
+        let rb_count = rigid_bodies.len();
+        let mut touch_dirs = vec![vec![]; rb_count];
+        for i in 0..rb_count {
+            for j in i + 1..rb_count {
+                let Some(touch_info) = IntersectionInfo::new(
+                    &rigid_bodies[i].orient_shape,
+                    &rigid_bodies[j].orient_shape,
+                ) else {
+                    continue;
+                };
+                touch_dirs[i].push((j, touch_info.clone()));
+                touch_dirs[j].push((i, touch_info.obj_swapped()));
+            }
+        }
+        // Normalize velocities
+        for i in 0..rb_count {
+            for (j, touch_info) in &touch_dirs[i] {
+                let rel_vel =
+                    rigid_bodies[i].kinematics.velocity - rigid_bodies[*j].kinematics.velocity;
+                let vel_component = rel_vel.dot(touch_info.dir);
+                if vel_component < 0.0 {
+                    let blocked_vel = rel_vel - vel_component * touch_info.dir;
+                    rigid_bodies[i].kinematics.velocity =
+                        blocked_vel + rigid_bodies[*j].kinematics.velocity;
+                }
+            }
+        }
+        for rb in rigid_bodies.iter_mut() {
+            rb.fwd_ms();
+        }
+        // resolve existing penetrations
+        self.resolve_penetrations(rigid_bodies);
     }
 }

@@ -1,11 +1,10 @@
-use crate::{
-    orient::Orientation,
-    utils::{new_plane, orient_plane, points_min_dist, points_min_max_dist, points_on_side},
-};
+use glam::{Vec3, Vec4Swizzles};
+
+use crate::{orient::Orientation, utils::point_vec4};
 
 pub trait CollisionShape {
-    fn center_hint(&self) -> glam::Vec3;
-    fn farthest_point_along(&self, dir: glam::Vec3) -> glam::Vec3;
+    fn center_hint(&self) -> Vec3;
+    fn farthest_point_along(&self, dir: Vec3) -> Vec3;
     fn clone_boxed(&self) -> Box<dyn CollisionShape>;
     fn with_orientation(&self, orientation: &Orientation) -> Box<dyn CollisionShape>;
 }
@@ -18,12 +17,12 @@ impl Clone for Box<dyn CollisionShape> {
 
 #[derive(Debug, Clone)]
 pub struct Sphere {
-    center: glam::Vec3,
+    center: Vec3,
     radius: f32,
 }
 
 impl CollisionShape for Sphere {
-    fn center_hint(&self) -> glam::Vec3 {
+    fn center_hint(&self) -> Vec3 {
         self.center
     }
 
@@ -38,7 +37,47 @@ impl CollisionShape for Sphere {
         })
     }
 
-    fn farthest_point_along(&self, dir: glam::Vec3) -> glam::Vec3 {
+    fn farthest_point_along(&self, dir: Vec3) -> Vec3 {
         self.center + (dir * self.radius)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Mesh {
+    points: Vec<Vec3>,
+    center: Vec3,
+}
+
+impl CollisionShape for Mesh {
+    fn center_hint(&self) -> Vec3 {
+        self.center
+    }
+
+    fn farthest_point_along(&self, dir: Vec3) -> Vec3 {
+        let mut max_dist = self.points[0].dot(dir);
+        let mut max_dist_point = self.points[0];
+        for &p in &self.points[1..] {
+            let dist = p.dot(dir);
+            if dist > max_dist {
+                max_dist = dist;
+                max_dist_point = p;
+            }
+        }
+        max_dist_point
+    }
+
+    fn clone_boxed(&self) -> Box<dyn CollisionShape> {
+        Box::new(self.clone())
+    }
+
+    fn with_orientation(&self, orientation: &Orientation) -> Box<dyn CollisionShape> {
+        let mut out = self.clone();
+        for p in out.points.iter_mut() {
+            *p = (orientation.rotation * point_vec4(*p)).xyz();
+            *p += orientation.translation;
+        }
+        out.center = (orientation.rotation * point_vec4(out.center)).xyz();
+        out.center += orientation.translation;
+        Box::new(out)
     }
 }
