@@ -7,6 +7,7 @@ use crate::{
 };
 use avk12::device::Instance;
 use hashbrown::HashMap;
+use physics::{PhysicsManager, RigidBody};
 use winit::window::Window;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -19,7 +20,7 @@ pub struct Node {
 }
 
 pub struct VBMap<K: Hash + Eq, T> {
-    entity_id_map: HashMap<K, usize>,
+    id_map: HashMap<K, usize>,
     data: Vec<T>,
 }
 
@@ -29,36 +30,36 @@ where
 {
     pub fn new() -> Self {
         Self {
-            entity_id_map: HashMap::new(),
+            id_map: HashMap::new(),
             data: Vec::new(),
         }
     }
 
     pub fn add(&mut self, key: K, data: T) {
-        match self.entity_id_map.get(&key) {
+        match self.id_map.get(&key) {
             Some(&id) => {
                 self.data[id] = data;
             }
             None => {
                 let ins_idx = self.data.len();
                 self.data.push(data);
-                self.entity_id_map.insert(key, ins_idx);
+                self.id_map.insert(key, ins_idx);
             }
         }
     }
 
     pub fn get(&self, key: &K) -> Option<&T> {
-        let idx = self.entity_id_map.get(key)?.clone();
+        let idx = self.id_map.get(key)?.clone();
         self.data.get(idx)
     }
 
     pub fn get_mut(&mut self, key: &K) -> Option<&mut T> {
-        let idx = self.entity_id_map.get(key)?.clone();
+        let idx = self.id_map.get(key)?.clone();
         self.data.get_mut(idx)
     }
 
     pub fn remove(&mut self, key: K) {
-        if let Some(idx) = self.entity_id_map.get(&key).cloned() {
+        if let Some(idx) = self.id_map.get(&key).cloned() {
             let last_idx = self.data.len() - 1;
             if idx != last_idx {
                 self.data.swap(idx, last_idx);
@@ -82,13 +83,12 @@ pub struct PhysicsInfo {
 }
 
 pub struct Game {
-    // scene_root: Node,
-    entities: Vec<Entity>,
     pub(crate) renderer_system: Renderer,
-    mesh_draw_infos: Vec<MeshDrawInfo>,
+    physics_system: PhysicsManager,
+    entities: Vec<Entity>,
+    mesh_draw_infos: VBMap<Entity, MeshDrawInfo>,
     camera: Cam3d,
-    // physics_system: PhysicsManager,
-    // physics_info: Vec<PhysicsInfo>,
+    rigid_bodies: VBMap<Entity, RigidBody>,
 }
 
 impl Game {
@@ -113,22 +113,28 @@ impl Game {
             2.,
             1.,
         );
+        let entity = Entity(0);
+        let mut mesh_draw_infos = VBMap::new();
+        mesh_draw_infos.add(entity, mesh_draw);
+        let physics_system = PhysicsManager::new();
         Ok(Self {
-            entities: vec![],
             renderer_system,
-            mesh_draw_infos: vec![mesh_draw],
+            physics_system,
+            entities: vec![entity],
+            mesh_draw_infos,
             camera,
+            rigid_bodies: VBMap::new(),
         })
     }
 
     pub fn run(&mut self, frame_time: u128, inputs: &mut Inputs) -> anyhow::Result<()> {
         let mouse_move = inputs.mouse_delta();
         self.camera
-            .move_left_right(glam::Vec3::Y, 0.01 * mouse_move.0 as f32);
+            .move_left_right(glam::Vec3::Y, -0.01 * mouse_move.0 as f32);
         self.camera
             .move_up_down(glam::Vec3::Y, 0.01 * mouse_move.1 as f32);
         self.renderer_system
-            .render(&mut self.camera, &self.mesh_draw_infos)?;
+            .render(&mut self.camera, &self.mesh_draw_infos.raw_data())?;
         inputs.advance_frame();
         Ok(())
     }

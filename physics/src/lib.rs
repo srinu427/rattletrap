@@ -88,6 +88,10 @@ impl RigidBody {
 pub struct PhysicsManager {}
 
 impl PhysicsManager {
+    pub fn new() -> Self {
+        Self {}
+    }
+
     fn resolve_penetrations(&mut self, rigid_bodies: &mut [RigidBody]) {
         let rb_count = rigid_bodies.len();
         // Find penetrations
