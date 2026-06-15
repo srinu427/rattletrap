@@ -31,6 +31,25 @@ pub fn safe_str_to_cstring(str: String) -> CString {
     cstr
 }
 
+struct SparseDataBlock<T> {
+    offset: usize,
+    data: Vec<T>,
+}
+
+struct SparseVec<T> {
+    blocks: Vec<SparseDataBlock<T>>,
+}
+
+impl<T> SparseVec<T> {
+    pub fn new() -> Self {
+        Self { blocks: vec![] }
+    }
+
+    pub fn add_block(&mut self, offset: usize, block: Vec<T>) {
+        todo!()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BindInfo {
     pub type_: vk::DescriptorType,

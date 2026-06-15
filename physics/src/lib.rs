@@ -29,9 +29,9 @@ impl Kinematics {
 #[derive(Clone)]
 pub struct RigidBody {
     pub mass: f32,
-    pub shape: Arc<Box<dyn CollisionShape>>,
+    pub shape: Arc<CollisionShape>,
     pub orient: Orientation,
-    orient_shape: Box<dyn CollisionShape>,
+    orient_shape: CollisionShape,
     pub kinematics: Kinematics,
     pub can_rotate: bool,
     pub has_gravity: bool,
@@ -42,7 +42,7 @@ pub struct RigidBody {
 impl RigidBody {
     pub fn new(
         mass: f32,
-        shape: Arc<Box<dyn CollisionShape>>,
+        shape: Arc<CollisionShape>,
         initial_orient: Orientation,
         initial_kin: Kinematics,
         can_rotate: bool,

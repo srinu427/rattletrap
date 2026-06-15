@@ -9,6 +9,7 @@ use avk12::device::Instance;
 use hashbrown::HashMap;
 use physics::{PhysicsManager, RigidBody};
 use winit::window::Window;
+mod game_object;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Entity(u64);

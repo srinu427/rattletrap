@@ -4,15 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = { workspace = true }
+enumflags2 = { workspace = true }
+getset = { workspace = true }
+hashbrown = { workspace = true }
+log = { workspace = true }
+winit = { workspace = true }
 ash = "0.38.0"
 ash-window = "0.13.0"
-enumflags2 = "0.7.12"
-getset = "0.1.6"
 gpu-allocator = { version = "0.28.0", default-features = false, features = ["hashbrown", "vulkan"] }
-hashbrown = "0.17.0"
-log = "0.4.29"
 naga = { version = "29.0.3", features = ["wgsl-in", "glsl-in", "spv-out"] }
 typed-builder = "0.23.2"
-winit = "0.30.13"
-yoke = "0.8.2"

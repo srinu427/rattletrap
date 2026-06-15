@@ -2,82 +2,58 @@ use glam::{Vec3, Vec4Swizzles};
 
 use crate::{orient::Orientation, utils::point_vec4};
 
-pub trait CollisionShape {
-    fn center_hint(&self) -> Vec3;
-    fn farthest_point_along(&self, dir: Vec3) -> Vec3;
-    fn clone_boxed(&self) -> Box<dyn CollisionShape>;
-    fn with_orientation(&self, orientation: &Orientation) -> Box<dyn CollisionShape>;
-}
-
-impl Clone for Box<dyn CollisionShape> {
-    fn clone(&self) -> Self {
-        self.clone_boxed()
-    }
-}
-
 #[derive(Debug, Clone)]
-pub struct Sphere {
-    center: Vec3,
-    radius: f32,
+pub enum CollisionShape {
+    Sphere { center: Vec3, radius: f32 },
+    Mesh { points: Vec<Vec3>, center: Vec3 },
 }
 
-impl CollisionShape for Sphere {
-    fn center_hint(&self) -> Vec3 {
-        self.center
+impl CollisionShape {
+    pub fn center_hint(&self) -> Vec3 {
+        match self {
+            Self::Sphere { center, .. } => *center,
+            Self::Mesh { center, .. } => *center,
+        }
     }
 
-    fn clone_boxed(&self) -> Box<dyn CollisionShape> {
-        Box::new(self.clone())
-    }
-
-    fn with_orientation(&self, orientation: &Orientation) -> Box<dyn CollisionShape> {
-        Box::new(Self {
-            center: self.center + orientation.translation,
-            radius: self.radius,
-        })
-    }
-
-    fn farthest_point_along(&self, dir: Vec3) -> Vec3 {
-        self.center + (dir * self.radius)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Mesh {
-    points: Vec<Vec3>,
-    center: Vec3,
-}
-
-impl CollisionShape for Mesh {
-    fn center_hint(&self) -> Vec3 {
-        self.center
-    }
-
-    fn farthest_point_along(&self, dir: Vec3) -> Vec3 {
-        let mut max_dist = self.points[0].dot(dir);
-        let mut max_dist_point = self.points[0];
-        for &p in &self.points[1..] {
-            let dist = p.dot(dir);
-            if dist > max_dist {
-                max_dist = dist;
-                max_dist_point = p;
+    pub fn with_orientation(&self, orientation: &Orientation) -> Self {
+        match self {
+            Self::Sphere { center, radius } => Self::Sphere {
+                center: *center + orientation.translation,
+                radius: *radius,
+            },
+            Self::Mesh { points, center } => {
+                let mut new_points = points.clone();
+                for p in new_points.iter_mut() {
+                    *p = (orientation.rotation * point_vec4(*p)).xyz();
+                    *p += orientation.translation;
+                }
+                let mut new_center = *center;
+                new_center = (orientation.rotation * point_vec4(new_center)).xyz();
+                new_center += orientation.translation;
+                Self::Mesh {
+                    points: new_points,
+                    center: new_center,
+                }
             }
         }
-        max_dist_point
     }
 
-    fn clone_boxed(&self) -> Box<dyn CollisionShape> {
-        Box::new(self.clone())
-    }
-
-    fn with_orientation(&self, orientation: &Orientation) -> Box<dyn CollisionShape> {
-        let mut out = self.clone();
-        for p in out.points.iter_mut() {
-            *p = (orientation.rotation * point_vec4(*p)).xyz();
-            *p += orientation.translation;
+    pub fn farthest_point_along(&self, dir: Vec3) -> Vec3 {
+        match self {
+            Self::Sphere { center, radius } => center + (dir * radius),
+            Self::Mesh { points, .. } => {
+                let mut max_dist = points[0].dot(dir);
+                let mut max_dist_point = points[0];
+                for &p in &points[1..] {
+                    let dist = p.dot(dir);
+                    if dist > max_dist {
+                        max_dist = dist;
+                        max_dist_point = p;
+                    }
+                }
+                max_dist_point
+            }
         }
-        out.center = (orientation.rotation * point_vec4(out.center)).xyz();
-        out.center += orientation.translation;
-        Box::new(out)
     }
 }

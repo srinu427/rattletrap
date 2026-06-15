@@ -13,10 +13,7 @@ pub struct IntersectionInfo {
 }
 
 impl IntersectionInfo {
-    pub fn new(
-        a: &Box<dyn CollisionShape>,
-        b: &Box<dyn CollisionShape>,
-    ) -> Option<IntersectionInfo> {
+    pub fn new(a: &CollisionShape, b: &CollisionShape) -> Option<IntersectionInfo> {
         let mut supp_points: Vec<Vec3> = vec![];
         loop {
             let check_dir = if supp_points.len() == 0 {
