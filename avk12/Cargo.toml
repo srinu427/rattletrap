@@ -13,5 +13,5 @@ winit = { workspace = true }
 ash = "0.38.0"
 ash-window = "0.13.0"
 gpu-allocator = { version = "0.28.0", default-features = false, features = ["hashbrown", "vulkan"] }
-naga = { version = "29.0.3", features = ["wgsl-in", "glsl-in", "spv-out"] }
+naga = { workspace = true }
 typed-builder = "0.23.2"

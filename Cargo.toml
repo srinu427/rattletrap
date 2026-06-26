@@ -1,11 +1,6 @@
-[package]
-name = "rattletrap"
-version = "0.1.0"
-edition = "2024"
-
 [workspace]
 resolver = "3"
-members = ["avk12", "game", "physics"]
+members = ["avk12", "game", "physics", "shader_info"]
 
 [workspace.dependencies]
 winit = { version = "0.30.12", features = ["android-native-activity"] }
@@ -19,7 +14,5 @@ bytemuck = "1.24.0"
 serde = { version = "1.0.228", features = ["derive"] }
 glam = { version = "0.30.9", features = ["bytemuck", "serde"] }
 env_logger = "0.11.10"
-
-[dependencies]
-avk12 = { path = "avk12" }
 image = "0.25.9"
+naga = { version = "29.0.3", features = ["wgsl-in", "glsl-in", "spv-out"] }
