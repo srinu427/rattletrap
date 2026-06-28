@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
+use common::Entity;
 use glam::Mat4;
+use indexmap::IndexMap;
 
 use crate::{
     collision_shape::CollisionShape, intersection_info::IntersectionInfo, orient::Orientation,
@@ -92,7 +94,7 @@ impl PhysicsManager {
         Self {}
     }
 
-    fn resolve_penetrations(&mut self, rigid_bodies: &mut [RigidBody]) {
+    fn resolve_penetrations(&mut self, rigid_bodies: &mut IndexMap<Entity, RigidBody>) {
         let rb_count = rigid_bodies.len();
         // Find penetrations
         let mut touch_dirs = vec![vec![]; rb_count];
@@ -128,7 +130,7 @@ impl PhysicsManager {
         }
     }
 
-    pub fn run_ms(&mut self, rigid_bodies: &mut [RigidBody]) {
+    pub fn run_ms(&mut self, rigid_bodies: &mut IndexMap<Entity, RigidBody>) {
         // resolve existing penetrations
         self.resolve_penetrations(rigid_bodies);
         // Find touches
@@ -160,7 +162,7 @@ impl PhysicsManager {
             }
         }
         for rb in rigid_bodies.iter_mut() {
-            rb.fwd_ms();
+            rb.1.fwd_ms();
         }
         // resolve existing penetrations
         self.resolve_penetrations(rigid_bodies);

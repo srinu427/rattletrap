@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.101"
+common = { version = "0.1.0", path = "../common" }
 getset = "0.1.6"
 glam = "0.30.5"
 hashbrown = "0.16.0"
+indexmap.workspace = true

@@ -13,9 +13,12 @@ use avk12::{
     resource::{BufferCreateInfo, BufferRef, ImageAccess, ImageCreateInfo, ImageViewInfo},
     task::{ClearValue, DrawInfo},
 };
+use common::Entity;
+use getset::Setters;
 use hashbrown::HashMap;
+use indexmap::IndexMap;
 
-use crate::renderer::{
+use crate::{
     camera::Cam3d,
     mesh::{GpuMesh, Mesh, MeshCreateInfo, Vertex},
 };
@@ -24,12 +27,15 @@ pub mod camera;
 pub mod mesh;
 pub mod texture;
 
+#[derive(Setters)]
 pub struct MeshDrawInfo {
     mesh_name: String,
     tex_name: String,
     mesh_gpu: GpuMesh,
     tex_dset: Arc<DSet>,
+    #[getset(set = "pub")]
     transform: glam::Mat4,
+    #[getset(set = "pub")]
     draw: bool,
 }
 
@@ -37,6 +43,9 @@ pub struct PerFrameData {
     camera_stage_buffer: BufferRef,
     camera_buffer: BufferRef,
     camera_dset: DSet,
+    mesh_transform_buffer: BufferRef,
+    mesh_transform_stage_buffer: BufferRef,
+    mesh_transform_dset: DSet,
 }
 
 impl PerFrameData {
@@ -61,10 +70,35 @@ impl PerFrameData {
         camera_dset
             .update_binding(0, 0, DSetWriteData::Buffers(vec![&camera_buffer]))
             .context("updating camera descriptor set data failed")?;
+        let mesh_transform_stage_buffer = device
+            .new_buffer(BufferCreateInfo {
+                size: 128 * size_of::<glam::Mat4>() as u64,
+                used_for: vk::BufferUsageFlags::TRANSFER_SRC,
+                mem_location: MemoryLocation::CpuToGpu,
+            })
+            .context("mesh transform stage buffer creation failed")?;
+        let mesh_transform_buffer = device
+            .new_buffer(BufferCreateInfo {
+                size: 128 * size_of::<glam::Mat4>() as u64,
+                used_for: vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                mem_location: MemoryLocation::GpuOnly,
+            })
+            .context("mesh transform buffer creation failed")?;
+        let mut mesh_transform_dset = graphics_pipeline
+            .new_set(1)
+            .context("mesh transform descriptor set creation failed")?;
+        mesh_transform_dset.update_binding(
+            0,
+            0,
+            DSetWriteData::Buffers(vec![&mesh_transform_buffer]),
+        )?;
         Ok(Self {
             camera_dset,
             camera_stage_buffer,
             camera_buffer,
+            mesh_transform_stage_buffer,
+            mesh_transform_buffer,
+            mesh_transform_dset,
         })
     }
 }
@@ -81,6 +115,10 @@ impl Renderer {
     pub fn new(device: Device) -> anyhow::Result<Self> {
         let gp_info = GraphicsPipelineCreateInfo::builder()
             .set_layouts(vec![
+                vec![BindInfo {
+                    type_: vk::DescriptorType::UNIFORM_BUFFER,
+                    count: 1,
+                }],
                 vec![BindInfo {
                     type_: vk::DescriptorType::UNIFORM_BUFFER,
                     count: 1,
@@ -153,7 +191,7 @@ impl Renderer {
     pub fn render(
         &mut self,
         camera: &mut Cam3d,
-        mesh_draws: &[MeshDrawInfo],
+        mesh_draws: &IndexMap<Entity, MeshDrawInfo>,
     ) -> anyhow::Result<()> {
         let swap_img = self.get_next_image(2)?;
         let swap_img_view = swap_img.image().view(&ImageViewInfo {
@@ -172,6 +210,7 @@ impl Renderer {
             .camera_stage_buffer
             .write_cpu(0, bytemuck::bytes_of(camera))
             .context("writing camera info to buffer failed")?;
+        // Update object transforms
 
         let mut recorder = self.device.new_task()?;
         // Copy camera info to gpu
@@ -189,7 +228,7 @@ impl Renderer {
         )?;
         render_pass.bind_set(0, &self.per_frame_datas[frame_idx].camera_dset);
         render_pass.bind_set(1, &self.flat_sampler_dset);
-        for draw_info in mesh_draws {
+        for (_, draw_info) in mesh_draws {
             if draw_info.draw {
                 render_pass.bind_vb(&draw_info.mesh_gpu.vert_buffer);
                 render_pass.bind_ib(&draw_info.mesh_gpu.indx_buffer, true);

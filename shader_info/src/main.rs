@@ -20,6 +20,6 @@ fn main() -> anyhow::Result<()> {
     let naga_ir = naga_fe
         .parse(&options, &glsl_data)
         .context("parsing GLSL failed")?;
-    println!("{:#?}", naga_ir.entry_points);
+    println!("{:#?}", naga_ir);
     Ok(())
 }

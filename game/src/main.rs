@@ -1,6 +1,5 @@
 mod game;
 mod inputs;
-mod renderer;
 mod scene;
 use std::{sync::Arc, time};
 

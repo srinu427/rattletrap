@@ -56,4 +56,9 @@ impl CollisionShape {
             }
         }
     }
+
+    pub fn new_rect(c: Vec3, u: Vec3, v: Vec3) -> Self {
+        let points = vec![c + u + v, c - u + v, c - u - v, c + u - v];
+        Self::Mesh { points, center: c }
+    }
 }
