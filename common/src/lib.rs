@@ -53,6 +53,8 @@ pub struct NodeInfoDisk {
     transform: Option<[[f32; 4]; 4]>,
 }
 
+pub struct RigidBody {}
+
 pub struct GameData {
     names: IndexMap<Entity, String>,
 }
