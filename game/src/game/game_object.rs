@@ -1,3 +1,3 @@
 use physics::collision_shape::CollisionShape;
 
-pub enum DrawableDisk {}
+pub enum GameObject {}

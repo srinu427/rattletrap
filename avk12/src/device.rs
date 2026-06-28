@@ -12,7 +12,7 @@ use winit::{
 use crate::{
     canvas::Canvas,
     pipeline::{GraphicsPipeline, GraphicsPipelineCreateInfo},
-    resource::{BufferRef, BufferCreateInfo, ImageRef, ImageCreateInfo, Sampler},
+    resource::{BufferCreateInfo, BufferRef, ImageCreateInfo, ImageRef, Sampler},
     sync::SemPool,
     task::{CmdPool, Task},
 };

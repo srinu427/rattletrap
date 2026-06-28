@@ -61,4 +61,19 @@ impl CollisionShape {
         let points = vec![c + u + v, c - u + v, c - u - v, c + u - v];
         Self::Mesh { points, center: c }
     }
+
+    pub fn new_cube(c: Vec3, u: Vec3, v: Vec3, hlen: f32) -> Self {
+        let h = u.cross(v).normalize() * hlen;
+        let points = vec![
+            c + u + v + h,
+            c - u + v + h,
+            c - u - v + h,
+            c + u - v + h,
+            c + u + v - h,
+            c - u + v - h,
+            c - u - v - h,
+            c + u - v - h,
+        ];
+        Self::Mesh { points, center: c }
+    }
 }

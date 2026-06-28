@@ -100,7 +100,6 @@ impl Game {
 
         for (ent, rb) in &self.rigid_bodies {
             if let Some(mdi) = self.mesh_draw_infos.get_mut(ent) {
-                println!("orient: {:?}", rb.orient);
                 mdi.set_transform(rb.orient.to_transform());
             }
         }

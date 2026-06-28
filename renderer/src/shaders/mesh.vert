@@ -16,10 +16,14 @@ struct Cam3d {
 };
 
 layout(set = 0, binding = 0) uniform CamUni { Cam3d cam; } cam_data;
-layout(set = 1, binding = 0) uniform ModelTransform { mat4 mat; } model_transform;
+layout(set = 1, binding = 0) readonly buffer ModelTransform { mat4 mat; } model_transforms[];
+
+layout(std430, push_constant) uniform PCData {
+    uint objId;
+} pushData;
 
 void main()
 {
     outUV = inUV.xy;
-    gl_Position = cam_data.cam.proj_view * model_transform.mat * inPos;
+    gl_Position = cam_data.cam.proj_view * model_transforms[pushData.objId].mat * inPos;
 }
