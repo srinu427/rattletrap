@@ -112,12 +112,25 @@ impl PhysicsManager {
         // Resolve Penetrations
         for a in 0..rb_count {
             for (b, inter) in &touch_dirs[a] {
-                if inter.dist >= 0.0 {
+                if inter.dist <= 0.0 {
                     continue;
                 }
                 let total_mass = rigid_bodies[a].mass + rigid_bodies[*b].mass;
-                let a_move_dist = inter.dist * (rigid_bodies[a].mass / total_mass);
-                let b_move_dist = -inter.dist * (rigid_bodies[*b].mass / total_mass);
+                let (a_move_dist, b_move_dist) = if total_mass != f32::INFINITY {
+                    let a_move_dist = inter.dist * (rigid_bodies[a].mass / total_mass);
+                    let b_move_dist = -inter.dist * (rigid_bodies[*b].mass / total_mass);
+                    (a_move_dist, b_move_dist)
+                } else {
+                    if rigid_bodies[a].mass == f32::INFINITY {
+                        (0., -inter.dist)
+                    } else {
+                        (inter.dist, 0.)
+                    }
+                };
+                println!(
+                    "moves a: {a_move_dist}, b: {b_move_dist} in dir: {:?}",
+                    inter.dir
+                );
                 rigid_bodies[a].apply_orient(&Orientation {
                     translation: a_move_dist * inter.dir,
                     rotation: Mat4::IDENTITY,
@@ -126,6 +139,10 @@ impl PhysicsManager {
                     translation: b_move_dist * inter.dir,
                     rotation: Mat4::IDENTITY,
                 });
+                println!(
+                    "final orients. a: {:?}, b: {:?}",
+                    &rigid_bodies[a].orient, &rigid_bodies[*b].orient
+                );
             }
         }
     }
@@ -151,6 +168,7 @@ impl PhysicsManager {
         // Normalize velocities
         for i in 0..rb_count {
             for (j, touch_info) in &touch_dirs[i] {
+                println!("touch_info: {:?}", touch_info);
                 let rel_vel =
                     rigid_bodies[i].kinematics.velocity - rigid_bodies[*j].kinematics.velocity;
                 let vel_component = rel_vel.dot(touch_info.dir);

@@ -21,7 +21,16 @@ pub fn new_plane(n: glam::Vec3, p: glam::Vec3) -> glam::Vec4 {
 pub fn get_triangle_normal(a: glam::Vec3, b: glam::Vec3, c: glam::Vec3) -> glam::Vec3 {
     let e1 = b - a;
     let e2 = c - b;
-    e1.cross(e2).normalize()
+    let n = e1.cross(e2).normalize();
+    if n.x.is_nan() {
+        println!("a: {}", a);
+        println!("b: {}", b);
+        println!("c: {}", c);
+        println!("e1: {}", e1);
+        println!("e2: {}", e2);
+        println!("e1 x e2: {}", e1.cross(e2));
+    }
+    n
 }
 
 pub fn get_triangle_plane(a: glam::Vec3, b: glam::Vec3, c: glam::Vec3) -> glam::Vec4 {

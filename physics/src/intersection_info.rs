@@ -1,6 +1,9 @@
 use glam::{Vec3, Vec4Swizzles};
 
-use crate::{collision_shape::CollisionShape, utils::get_triangle_plane};
+use crate::{
+    collision_shape::CollisionShape,
+    utils::{get_triangle_plane, point_vec4},
+};
 
 const EPA_PROGRESS_EPSILON: f32 = 0.0001;
 
@@ -41,11 +44,15 @@ impl IntersectionInfo {
             let farth_point_a = a.farthest_point_along(check_dir);
             let farth_point_b = b.farthest_point_along(-check_dir);
             let supp_point = farth_point_a - farth_point_b;
-            supp_points.push(supp_point);
             // Check if new point crossed origin
-            if check_dir.dot(supp_point) < 0.0 {
+            if check_dir.dot(supp_point) <= 0.0 {
                 return None;
             }
+            supp_points.push(supp_point);
+            println!("check_dir: {:?}", &check_dir);
+            println!("farth_point_a: {:?}", &farth_point_a);
+            println!("farth_point_b: {:?}", &farth_point_b);
+            println!("supp_points: {:?}", &supp_points);
             if supp_point == Vec3::ZERO {
                 return Some(Self {
                     dir: check_dir,
@@ -64,11 +71,13 @@ impl IntersectionInfo {
             let mut pen_point_b = Vec3::ZERO;
             let mut max_face_dist = f32::NEG_INFINITY;
 
+            println!("a: {:?}, b:{:?}", a, b);
             loop {
                 // Calculate tetrahedron faces
                 let mut faces = vec![];
-                for i in 0..4 {
-                    let mut tri_ids = [i, (i + 1) % 4, (i + 2) % 4];
+                let points_len = points.len();
+                for i in 0..points_len {
+                    let mut tri_ids = [i, (i + 1) % points_len, (i + 2) % points_len];
                     let mut tri_plane = get_triangle_plane(
                         points[tri_ids[0]],
                         points[tri_ids[1]],
@@ -87,19 +96,25 @@ impl IntersectionInfo {
                         c_min_dist_face_idx = i;
                     }
                 }
-                let new_dir = faces[c_min_dist_face_idx].0.xyz();
+                let new_dir = -faces[c_min_dist_face_idx].0.xyz();
                 let farth_point_a = a.farthest_point_along(new_dir);
                 let farth_point_b = b.farthest_point_along(-new_dir);
                 let new_point = farth_point_a - farth_point_b;
                 let face_dist = faces[c_min_dist_face_idx].0.w;
+                println!("points: {:?}", &points);
+                println!("faces: {:?}", &faces);
+                println!("c_min_dist_face_idx: {:?}", &c_min_dist_face_idx);
+                println!("face_dist: {:?}", &face_dist);
+                println!("new_point: {:?}", &new_point);
+                println!("pen_dir: {:?}", &pen_dir);
                 if face_dist - EPA_PROGRESS_EPSILON <= max_face_dist {
                     break;
                 } else {
                     points = vec![
                         points[faces[c_min_dist_face_idx].1[0]],
                         points[faces[c_min_dist_face_idx].1[1]],
-                        points[faces[c_min_dist_face_idx].1[2]],
                         new_point,
+                        points[faces[c_min_dist_face_idx].1[2]],
                     ];
                     pen_dir = new_dir;
                     pen_point_a = farth_point_a;
@@ -111,7 +126,7 @@ impl IntersectionInfo {
                 dir: pen_dir,
                 point_1: pen_point_a,
                 point_2: pen_point_b,
-                dist: (pen_point_a - pen_point_b).length(),
+                dist: max_face_dist,
             });
         } else {
             return None;
