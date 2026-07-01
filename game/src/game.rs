@@ -36,30 +36,25 @@ impl Game {
         let inst = Instance::new(&window)?;
         let device = inst.init_device(0)?;
 
-        // Sample rect object info
-        let c = [0.; 3];
-        let u = [3., 0., 0.];
-        let v = [0., 3., 0.];
-
         let mut renderer_system = Renderer::new(device)?;
-        let mesh_draw = renderer_system.load_mesh_draw(
+        let mut mesh_draw_infos = IndexMap::new();
+        let physics_system = PhysicsManager::new();
+        let mut rigid_bodies = IndexMap::new();
+
+        // Sample rect object info
+        let c = [0., 0., 0.];
+        let u = [1., 0., 0.];
+        let v = [0., 1., 0.];
+
+        let entity = Entity::new(0);
+        let mut mesh_draw = renderer_system.load_mesh_draw(
             "rect1".to_string(),
             MeshCreateInfo::RectCUV { c, u, v },
             "../data/textures/default.png".to_string(),
             true,
         )?;
-        let camera = Cam3d::new(
-            glam::vec3(3., 3., 3.),
-            glam::vec3(-1., -1., -1.),
-            glam::Vec3::Y,
-            2.,
-            1.,
-        );
-        let entity = Entity::new(0);
-        let mut mesh_draw_infos = IndexMap::new();
+        mesh_draw.set_transform(glam::Mat4::from_translation(glam::vec3(0., 5., 0.)));
         mesh_draw_infos.insert(entity, mesh_draw);
-        let physics_system = PhysicsManager::new();
-        let mut rigid_bodies = IndexMap::new();
         rigid_bodies.insert(
             entity,
             RigidBody::new(
@@ -69,12 +64,53 @@ impl Game {
                     glam::Vec3::from_array(u),
                     glam::Vec3::from_array(v),
                 )),
-                Orientation::new(),
+                Orientation {
+                    translation: glam::vec3(0., 5., 0.),
+                    rotation: glam::Mat4::IDENTITY,
+                },
                 Kinematics::new(),
                 true,
                 true,
                 0,
             ),
+        );
+
+        // Another rect object info
+        let c = [0.; 3];
+        let u = [8., 0., 0.];
+        let v = [0., 0., -8.];
+
+        let entity = Entity::new(1);
+        let mesh_draw = renderer_system.load_mesh_draw(
+            "rect2".to_string(),
+            MeshCreateInfo::RectCUV { c, u, v },
+            "../data/textures/default.png".to_string(),
+            true,
+        )?;
+        mesh_draw_infos.insert(entity, mesh_draw);
+        rigid_bodies.insert(
+            entity,
+            RigidBody::new(
+                f32::INFINITY,
+                Arc::new(CollisionShape::new_rect(
+                    glam::Vec3::from_array(c),
+                    glam::Vec3::from_array(u),
+                    glam::Vec3::from_array(v),
+                )),
+                Orientation::new(),
+                Kinematics::new(),
+                true,
+                false,
+                0,
+            ),
+        );
+
+        let camera = Cam3d::new(
+            glam::vec3(3., 3., 3.),
+            glam::vec3(-1., -1., -1.),
+            glam::Vec3::Y,
+            2.,
+            1.,
         );
 
         Ok(Self {
