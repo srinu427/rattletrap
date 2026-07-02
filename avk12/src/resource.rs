@@ -406,6 +406,10 @@ impl ImageRef {
             info: info.clone(),
         })
     }
+
+    pub fn res(&self) -> (u32, u32, u32) {
+        self.dropper.info.res
+    }
 }
 
 #[derive(Clone)]

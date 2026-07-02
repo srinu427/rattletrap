@@ -7,7 +7,9 @@ use avk12::{
     canvas::{NextImageRes, PresentableImage},
     device::Device,
     pipeline::{DSet, DSetWriteData},
-    resource::{BufferCreateInfo, BufferRef, ImageAccess, ImageCreateInfo, ImageViewInfo},
+    resource::{
+        BufferCreateInfo, BufferRef, ImageAccess, ImageCreateInfo, ImageRef, ImageViewInfo,
+    },
     task::{ClearValue, DrawInfo},
 };
 use common::Entity;
@@ -45,6 +47,7 @@ pub struct PerFrameData {
     mesh_transform_buffer: BufferRef,
     mesh_transform_stage_buffer: BufferRef,
     mesh_transform_dset: DSet,
+    depth_image: ImageRef,
 }
 
 impl PerFrameData {
@@ -91,6 +94,15 @@ impl PerFrameData {
             0,
             DSetWriteData::Buffers(vec![&mesh_transform_buffer]),
         )?;
+        let depth_image = device
+            .new_image(
+                ImageCreateInfo::builder()
+                    .format(vk::Format::D24_UNORM_S8_UINT)
+                    .res((1, 1, 1))
+                    .used_for(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+                    .build(),
+            )
+            .context("depth image creation failed")?;
         Ok(Self {
             camera_dset,
             camera_stage_buffer,
@@ -98,6 +110,7 @@ impl PerFrameData {
             mesh_transform_stage_buffer,
             mesh_transform_buffer,
             mesh_transform_dset,
+            depth_image,
         })
     }
 }
@@ -170,6 +183,27 @@ impl Renderer {
             .camera_stage_buffer
             .write_cpu(0, bytemuck::bytes_of(camera))
             .context("writing camera info to buffer failed")?;
+        let depth_res = self.per_frame_datas[frame_idx].depth_image.res();
+        if canvas_res != (depth_res.0, depth_res.1) {
+            self.per_frame_datas[frame_idx].depth_image = self
+                .device
+                .new_image(
+                    ImageCreateInfo::builder()
+                        .format(vk::Format::D24_UNORM_S8_UINT)
+                        .res((canvas_res.0, canvas_res.1, 1))
+                        .used_for(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+                        .build(),
+                )
+                .context("depth image resize failed")?;
+        }
+        let depth_image_view =
+            self.per_frame_datas[frame_idx]
+                .depth_image
+                .view(&ImageViewInfo {
+                    view_type: vk::ImageViewType::TYPE_2D,
+                    layer_range: 0..1,
+                    level_range: 0..1,
+                })?;
         // Update object transforms
         let obj_transforms: Vec<_> = mesh_draws.values().map(|v| v.transform).collect();
         let transforms_len = obj_transforms.len() * size_of::<glam::Mat4>();
@@ -222,8 +256,11 @@ impl Renderer {
         // recorder.blit(&self.bg_image, swap_img.view().image().as_ref());
         let mut render_pass = recorder.graphics(
             &mut self.gp.gp,
-            vec![swap_img_view],
-            vec![ClearValue::Color([0.4, 0.5, 0.3, 1.0])],
+            vec![swap_img_view, depth_image_view],
+            vec![
+                ClearValue::Color([0.4, 0.5, 0.3, 1.0]),
+                ClearValue::Depth(1.0),
+            ],
         )?;
         render_pass.bind_set(0, &self.per_frame_datas[frame_idx].camera_dset);
         render_pass.bind_set(1, &self.per_frame_datas[frame_idx].mesh_transform_dset);

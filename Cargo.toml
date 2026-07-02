@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["avk12", "common", "game", "physics", "renderer", "shader_info"]
+members = ["avk12", "common", "game", "physics", "renderer", "rhi3", "shader_info"]
 
 [workspace.dependencies]
 winit = { version = "0.30.12", features = ["android-native-activity"] }
@@ -18,3 +18,4 @@ image = "0.25.9"
 naga = { version = "29.0.3", features = ["wgsl-in", "glsl-in", "spv-out"] }
 thiserror = "2.0.18"
 indexmap = "2.14.0"
+bitflags = "2.13.0"

@@ -54,6 +54,11 @@ impl MeshPipeline {
                     }])
                     .build(),
             )
+            .depth_conf(Some(AttachInfo {
+                format: vk::Format::D24_UNORM_S8_UINT,
+                clear: true,
+                store: false,
+            }))
             .build();
         let gp = device.new_graphics_pipeline(gp_info)?;
         Ok(Self { gp })

@@ -344,7 +344,11 @@ impl Task {
         for a in &attachments {
             let new_access = if a.image_droppper.info.format.is_depth() {
                 ImageAccess {
-                    layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+                    layout: if a.image_droppper.info.format.has_stencil() {
+                        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                    } else {
+                        vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
+                    },
                     access_flags: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
                         | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
                     access_stage: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,

@@ -11,7 +11,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     device::DeviceDropper,
-    resource::{BufferRef, ImageView, Sampler},
+    resource::{BufferRef, FormatMeta, ImageView, Sampler},
 };
 
 static MAX_FB_CACHE: usize = 128;
@@ -611,16 +611,21 @@ impl GraphicsPipeline {
             )
         }
         if let Some(a) = &info.depth_conf {
+            let depth_layout = if a.format.has_stencil() {
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+            } else {
+                vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
+            };
             depth_ref = Some(
                 vk::AttachmentReference::default()
-                    .layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .layout(depth_layout)
                     .attachment(attachments.len() as _),
             );
             attachments.push(
                 vk::AttachmentDescription::default()
                     .format(a.format)
-                    .initial_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                    .final_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                    .initial_layout(depth_layout)
+                    .final_layout(depth_layout)
                     .load_op(a.load_op())
                     .store_op(a.store_op())
                     .samples(vk::SampleCountFlags::TYPE_1),
