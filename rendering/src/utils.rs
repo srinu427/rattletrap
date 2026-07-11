@@ -11,10 +11,33 @@ use winit::{
     window::Window,
 };
 
+use crate::GpuClient;
+
 pub struct ImageAccess {
     pub layout: vk::ImageLayout,
     pub access_flags: vk::AccessFlags,
     pub access_stage: vk::PipelineStageFlags,
+}
+
+pub struct ImageWrap {
+    pub image: vk::Image,
+    pub mem: Option<Allocation>,
+    pub access: ImageAccess,
+}
+
+impl ImageWrap {
+    pub fn destroy(mut self, client: &mut GpuClient) {
+        if let Some(allocation) = self.mem.take() {
+            client
+                .allocator
+                .free(allocation)
+                .inspect_err(|e| log::warn!("freeing memory of imagfe {:?} failed {e}", self.image))
+                .ok();
+            unsafe {
+                client.device.destroy_image(self.image, None);
+            }
+        }
+    }
 }
 
 pub struct StagingBuffer {

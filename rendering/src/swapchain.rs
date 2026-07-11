@@ -5,13 +5,15 @@ use ash::{
 };
 use winit::window::Window;
 
+use crate::{GpuClient, utils::ImageWrap};
+
 pub struct SwapchainWrap {
     pub res: (u32, u32),
     pub format: vk::Format,
     pub color_space: vk::ColorSpaceKHR,
     pub present_mode: vk::PresentModeKHR,
     pub image_views: Vec<vk::ImageView>,
-    pub images: Vec<vk::Image>,
+    pub images: Vec<ImageWrap>,
     pub swapchain: vk::SwapchainKHR,
     pub fence: vk::Fence,
 }
@@ -32,18 +34,17 @@ impl SwapchainWrap {
 
     pub fn refresh(
         &mut self,
-        device: &ash::Device,
-        gpu: vk::PhysicalDevice,
+        client: &mut GpuClient,
         swapchain_device: &khr::swapchain::Device,
-        surface_instance: &khr::surface::Instance,
-        surface: vk::SurfaceKHR,
-        window: &Window,
     ) -> anyhow::Result<()> {
-        let sc_caps =
-            unsafe { surface_instance.get_physical_device_surface_capabilities(gpu, surface)? };
+        let sc_caps = unsafe {
+            client
+                .surface_instance
+                .get_physical_device_surface_capabilities(client.gpu, client.surface)?
+        };
         let mut surface_resolution = sc_caps.current_extent;
         if surface_resolution.width == u32::MAX || surface_resolution.height == u32::MAX {
-            let window_res = window.inner_size();
+            let window_res = client.window.inner_size();
             surface_resolution.width = window_res.width;
             surface_resolution.height = window_res.height;
         }
@@ -55,11 +56,17 @@ impl SwapchainWrap {
                 sc_caps.max_image_count
             },
         );
-        let sc_fmts =
-            unsafe { surface_instance.get_physical_device_surface_formats(gpu, surface)? };
+        let sc_fmts = unsafe {
+            client
+                .surface_instance
+                .get_physical_device_surface_formats(client.gpu, client.surface)?
+        };
         let sc_fmt = select_surface_format(&sc_fmts)?;
-        let present_modes =
-            unsafe { surface_instance.get_physical_device_surface_present_modes(gpu, surface)? };
+        let present_modes = unsafe {
+            client
+                .surface_instance
+                .get_physical_device_surface_present_modes(client.gpu, client.surface)?
+        };
         let present_mode = select_present_mode(&present_modes);
         let create_info = vk::SwapchainCreateInfoKHR::default()
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -72,24 +79,24 @@ impl SwapchainWrap {
             .old_swapchain(self.swapchain)
             .pre_transform(sc_caps.current_transform)
             .present_mode(present_mode)
-            .surface(surface);
+            .surface(client.surface);
+        for iv in self.image_views.drain(..) {
+            unsafe { client.device.destroy_image_view(iv, None) };
+        }
+        let swapchain = unsafe { swapchain_device.create_swapchain(&create_info, None)? };
         if !self.swapchain.is_null() {
             unsafe {
                 swapchain_device.destroy_swapchain(self.swapchain, None);
             }
         }
-        for iv in self.image_views.drain(..) {
-            unsafe { device.destroy_image_view(iv, None) };
-        }
-        let swapchain = unsafe { swapchain_device.create_swapchain(&create_info, None)? };
         let images = unsafe { swapchain_device.get_swapchain_images(swapchain)? };
         let image_views: Vec<_> = images
             .iter()
             .map(|i| unsafe {
-                device.create_image_view(
+                client.device.create_image_view(
                     &vk::ImageViewCreateInfo::default()
                         .components(vk::ComponentMapping::default())
-                        .format(self.format)
+                        .format(sc_fmt.format)
                         .image(*i)
                         .subresource_range(
                             vk::ImageSubresourceRange::default()
@@ -102,9 +109,43 @@ impl SwapchainWrap {
                 )
             })
             .collect::<Result<_, _>>()?;
+        let command_buffer = client.get_deferred_cb()?;
+        unsafe {
+            client.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::DependencyFlags::BY_REGION,
+                &[],
+                &[],
+                &images
+                    .iter()
+                    .map(|i| {
+                        vk::ImageMemoryBarrier::default()
+                            .dst_access_mask(vk::AccessFlags::MEMORY_READ)
+                            .dst_queue_family_index(client.graphics_qf)
+                            .image(*i)
+                            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                            .old_layout(vk::ImageLayout::UNDEFINED)
+                            .src_access_mask(vk::AccessFlags::empty())
+                            .src_queue_family_index(client.graphics_qf)
+                            .subresource_range(
+                                vk::ImageSubresourceRange::default()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .layer_count(1)
+                                    .level_count(1),
+                            )
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
         self.color_space = sc_fmt.color_space;
         if self.fence.is_null() {
-            self.fence = unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None)? };
+            self.fence = unsafe {
+                client
+                    .device
+                    .create_fence(&vk::FenceCreateInfo::default(), None)?
+            };
         }
         self.format = sc_fmt.format;
         self.image_views = image_views;
@@ -157,13 +198,15 @@ impl SwapchainWrap {
     }
 
     pub fn destroy(&self, device: &ash::Device, swapchain_device: &khr::swapchain::Device) {
-        if self.swapchain.is_null() {
+        if !self.swapchain.is_null() {
             unsafe {
                 swapchain_device.destroy_swapchain(self.swapchain, None);
             }
         }
-        unsafe {
-            device.destroy_fence(self.fence, None);
+        if !self.fence.is_null() {
+            unsafe {
+                device.destroy_fence(self.fence, None);
+            }
         }
     }
 }

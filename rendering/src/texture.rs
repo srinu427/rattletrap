@@ -3,7 +3,7 @@ use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
 
 use crate::{
-    RenderingManager,
+    GpuClient,
     utils::{ImageAccess, StagingBuffer, create_image},
 };
 
@@ -15,7 +15,7 @@ pub struct Texture {
 
 impl Texture {
     pub fn load_image(
-        client: &mut RenderingManager,
+        client: &mut GpuClient,
         path: &str,
         usage: vk::ImageUsageFlags,
         dst_image_access: ImageAccess,

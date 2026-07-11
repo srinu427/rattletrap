@@ -20,5 +20,6 @@ image.workspace = true
 indexmap.workspace = true
 physics = { version = "0.1.0", path = "../physics" }
 renderer = { version = "0.1.0", path = "../renderer" }
+rendering = { version = "0.1.0", path = "../rendering" }
 serde.workspace = true
 winit.workspace = true
