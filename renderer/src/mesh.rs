@@ -10,11 +10,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, NoUninit, Serialize, Deserialize)]
 #[repr(C)]
 pub struct Vertex {
-    pub pos: glam::Vec4,
-    pub uv: glam::Vec4,
-    pub n: glam::Vec4,
-    pub t: glam::Vec4,
-    pub bt: glam::Vec4,
+    pub pos: glam::Vec3,
+    pub uv: glam::Vec2,
+    pub n: glam::Vec3,
+    pub t: glam::Vec3,
+    pub bt: glam::Vec3,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,26 +42,24 @@ pub struct Mesh {
 impl Mesh {
     fn t_bt(
         pos: &[glam::Vec3],
-        uvs: &[glam::Vec4],
+        uvs: &[glam::Vec2],
         idxs: &[u16; 3],
-    ) -> (glam::Vec4, glam::Vec4, glam::Vec4) {
+    ) -> (glam::Vec3, glam::Vec3, glam::Vec3) {
         let edge1 = pos[idxs[1] as usize] - pos[idxs[0] as usize];
         let edge2 = pos[idxs[2] as usize] - pos[idxs[0] as usize];
         let duv1 = uvs[idxs[1] as usize] - uvs[idxs[0] as usize];
         let duv2 = uvs[idxs[2] as usize] - uvs[idxs[0] as usize];
-        let n = glam::Vec4::from((edge1.cross(edge2).normalize(), 0.0));
+        let n = edge1.cross(edge2).normalize();
         let f = 1.0f32 / (duv1.x * duv2.y - duv2.x * duv1.y);
-        let t = f * glam::vec4(
+        let t = f * glam::vec3(
             duv2.y * edge1.x - duv1.y * edge2.x,
             duv2.y * edge1.y - duv1.y * edge2.y,
             duv2.y * edge1.z - duv1.y * edge2.z,
-            0.0,
         );
-        let bt = f * glam::vec4(
+        let bt = f * glam::vec3(
             -duv2.x * edge1.x - duv1.x * edge2.x,
             -duv2.x * edge1.y - duv1.x * edge2.y,
             -duv2.x * edge1.z - duv1.x * edge2.z,
-            0.0,
         );
         (n, t, bt)
     }
@@ -71,10 +69,10 @@ impl Mesh {
         let vlen = v.length();
         let vert_pos = [c + u + v, c - u + v, c - u - v, c + u - v];
         let uvs = [
-            glam::vec4(ulen, vlen, 0.0, 0.0),
-            glam::vec4(-ulen, vlen, 0.0, 0.0),
-            glam::vec4(-ulen, -vlen, 0.0, 0.0),
-            glam::vec4(ulen, -vlen, 0.0, 0.0),
+            glam::vec2(ulen, vlen),
+            glam::vec2(-ulen, vlen),
+            glam::vec2(-ulen, -vlen),
+            glam::vec2(ulen, -vlen),
         ];
         let tris = [[0u16, 1, 2], [2, 3, 0]];
         let verts: Vec<_> = tris
@@ -82,7 +80,7 @@ impl Mesh {
             .map(|idxs| {
                 let (n, t, bt) = Mesh::t_bt(&vert_pos, &uvs, idxs);
                 idxs.map(|i| Vertex {
-                    pos: glam::Vec4::from((vert_pos[i as usize], 1.0)),
+                    pos: vert_pos[i as usize],
                     uv: uvs[i as usize],
                     n,
                     t,

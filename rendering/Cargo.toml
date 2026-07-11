@@ -1,0 +1,17 @@
+[package]
+name = "rendering"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+ash = "0.38.0"
+ash-window = "0.13.0"
+bitflags.workspace = true
+bytemuck.workspace = true
+gpu-allocator = { version = "0.28.0", features = ["hashbrown"] }
+hashbrown.workspace = true
+image.workspace = true
+indexmap.workspace = true
+log.workspace = true
+winit.workspace = true
