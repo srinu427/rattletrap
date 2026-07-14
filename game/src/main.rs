@@ -41,7 +41,7 @@ impl App {
 
         let ecs_mut = self.ecs_mega.as_mut().unwrap();
         if let Err(e) = ecs_mut.run(frame_time, &mut self.inputs) {
-            eprintln!("failure running ECS: {e}");
+            eprintln!("failure running ECS: {e:#}");
         }
     }
 }
@@ -78,7 +78,7 @@ impl ApplicationHandler for App {
                 };
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
-                if let Err(e) = ecs_mut.renderer_system.resize() {
+                if let Err(e) = ecs_mut.renderer_system.refresh_size() {
                     eprintln!("error resizing rendering system: {e}");
                 }
             }

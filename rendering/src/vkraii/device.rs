@@ -1,71 +1,21 @@
+use std::sync::{Arc, Mutex};
+
 use anyhow::Context;
 #[cfg(debug_assertions)]
 use ash::ext;
-use ash::{khr, vk};
-use gpu_allocator::{
-    MemoryLocation,
-    vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
-};
+use ash::khr;
+#[cfg(target_os = "macos")]
+use ash::vk;
+use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
 };
 
-use crate::GpuClient;
-
-pub struct ImageAccess {
-    pub layout: vk::ImageLayout,
-    pub access_flags: vk::AccessFlags,
-    pub access_stage: vk::PipelineStageFlags,
-}
-
-pub struct ImageWrap {
-    pub image: vk::Image,
-    pub mem: Option<Allocation>,
-    pub access: ImageAccess,
-}
-
-impl ImageWrap {
-    pub fn destroy(mut self, client: &mut GpuClient) {
-        if let Some(allocation) = self.mem.take() {
-            client
-                .allocator
-                .free(allocation)
-                .inspect_err(|e| log::warn!("freeing memory of imagfe {:?} failed {e}", self.image))
-                .ok();
-            unsafe {
-                client.device.destroy_image(self.image, None);
-            }
-        }
-    }
-}
-
-pub struct StagingBuffer {
-    pub buffer: vk::Buffer,
-    pub mem: Allocation,
-    pub size: u64,
-}
-
-impl StagingBuffer {
-    pub fn new(device: &ash::Device, allocator: &mut Allocator, size: u64) -> anyhow::Result<Self> {
-        let create_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC);
-        let (buffer, mem) =
-            create_buffer(device, allocator, &create_info, MemoryLocation::CpuToGpu)?;
-        Ok(Self { buffer, mem, size })
-    }
-
-    pub fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
-        unsafe {
-            device.destroy_buffer(self.buffer, None);
-        }
-        allocator
-            .free(self.mem)
-            .inspect_err(|e| log::warn!("freeing memory of buffer {:?} failed {e}", self.buffer))
-            .ok();
-    }
-}
+use crate::vkraii::{
+    command::{CommandBufferRaii, CommandPoolRaii, Task},
+    sync::{SyncPoolRaii, TimelineSemaphore},
+};
 
 fn get_instance_layers() -> Vec<*const i8> {
     vec![
@@ -118,7 +68,7 @@ pub fn create_instance(entry: &ash::Entry) -> anyhow::Result<ash::Instance> {
     let instance = unsafe {
         entry
             .create_instance(&create_info, None)
-            .context("instance creation failed")?
+            .with_context(|| "instance creation failed")?
     };
     Ok(instance)
 }
@@ -134,17 +84,62 @@ pub fn create_surface(
             &instance,
             window
                 .display_handle()
-                .context("get display handle failed")?
+                .with_context(|| "get display handle failed")?
                 .as_raw(),
             window
                 .window_handle()
-                .context("get window handle failed")?
+                .with_context(|| "get window handle failed")?
                 .as_raw(),
             None,
         )
-        .context("surface creation failed")?
+        .with_context(|| "surface creation failed")?
     };
     Ok(surface)
+}
+
+pub struct InstanceDropper {
+    pub surface: vk::SurfaceKHR,
+    pub surface_instance: khr::surface::Instance,
+    pub instance: ash::Instance,
+    pub window: Arc<Window>,
+    _entry: ash::Entry,
+}
+
+impl InstanceDropper {
+    fn new(window: &Arc<Window>) -> anyhow::Result<Self> {
+        let entry = unsafe { ash::Entry::load()? };
+        let instance = create_instance(&entry)?;
+        let surface_instance = khr::surface::Instance::new(&entry, &instance);
+        let surface = create_surface(&entry, &instance, window)?;
+        Ok(Self {
+            surface,
+            surface_instance,
+            instance,
+            window: window.clone(),
+            _entry: entry,
+        })
+    }
+}
+
+impl Drop for InstanceDropper {
+    fn drop(&mut self) {
+        unsafe {
+            self.surface_instance.destroy_surface(self.surface, None);
+            self.instance.destroy_instance(None);
+        }
+    }
+}
+
+pub struct InstanceRaii {
+    instance_d: Arc<InstanceDropper>,
+}
+
+impl InstanceRaii {
+    pub fn new(window: &Arc<Window>) -> anyhow::Result<Self> {
+        Ok(Self {
+            instance_d: Arc::new(InstanceDropper::new(window)?),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -231,74 +226,105 @@ pub fn create_device(
     Ok((device, gfx_queue))
 }
 
-pub fn create_command_pool(
-    device: &ash::Device,
-    queue_family: u32,
-) -> anyhow::Result<vk::CommandPool> {
-    let command_pool = unsafe {
-        device.create_command_pool(
-            &vk::CommandPoolCreateInfo::default()
-                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-                .queue_family_index(queue_family),
-            None,
-        )?
-    };
-    Ok(command_pool)
+pub struct DeviceDropper {
+    pub graphics_queue: vk::Queue,
+    pub graphics_qf: u32,
+    pub swapchain_device: khr::swapchain::Device,
+    pub device: ash::Device,
+    pub gpu: vk::PhysicalDevice,
+    pub instance_raii: Arc<InstanceDropper>,
 }
 
-pub fn allocate_command_buffers(
-    device: &ash::Device,
-    command_pool: vk::CommandPool,
-    count: usize,
-) -> anyhow::Result<Vec<vk::CommandBuffer>> {
-    let command_buffers = unsafe {
-        device.allocate_command_buffers(
-            &vk::CommandBufferAllocateInfo::default()
-                .command_buffer_count(count as _)
-                .command_pool(command_pool)
-                .level(vk::CommandBufferLevel::PRIMARY),
-        )?
-    };
-    Ok(command_buffers)
-}
-
-pub fn create_buffer(
-    device: &ash::Device,
-    allocator: &mut Allocator,
-    create_info: &vk::BufferCreateInfo,
-    mem_location: MemoryLocation,
-) -> anyhow::Result<(vk::Buffer, Allocation)> {
-    let buffer = unsafe { device.create_buffer(&create_info, None)? };
-    let mem_req = unsafe { device.get_buffer_memory_requirements(buffer) };
-    let mem = allocator.allocate(&AllocationCreateDesc {
-        name: &format!("{:?}", buffer),
-        requirements: mem_req,
-        location: mem_location,
-        linear: true,
-        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-    })?;
-    unsafe {
-        device.bind_buffer_memory(buffer, mem.memory(), mem.offset())?;
+impl DeviceDropper {
+    fn new(instance: &InstanceRaii) -> anyhow::Result<Self> {
+        let selected_gpu = select_gpu(
+            &instance.instance_d.instance,
+            &instance.instance_d.surface_instance,
+            instance.instance_d.surface,
+        )?;
+        let (device, queue) = create_device(&instance.instance_d.instance, &selected_gpu)?;
+        let swapchain_device = khr::swapchain::Device::new(&instance.instance_d.instance, &device);
+        Ok(Self {
+            graphics_queue: queue,
+            graphics_qf: selected_gpu.graphics_qf,
+            swapchain_device,
+            device,
+            gpu: selected_gpu.gpu,
+            instance_raii: instance.instance_d.clone(),
+        })
     }
-    Ok((buffer, mem))
 }
 
-pub fn create_image(
-    device: &ash::Device,
-    allocator: &mut Allocator,
-    create_info: &vk::ImageCreateInfo,
-) -> anyhow::Result<(vk::Image, Allocation)> {
-    let image = unsafe { device.create_image(&create_info, None)? };
-    let mem_req = unsafe { device.get_image_memory_requirements(image) };
-    let mem = allocator.allocate(&AllocationCreateDesc {
-        name: &format!("{:?}", image),
-        requirements: mem_req,
-        location: MemoryLocation::CpuToGpu,
-        linear: true,
-        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-    })?;
-    unsafe {
-        device.bind_image_memory(image, mem.memory(), mem.offset())?;
+impl Drop for DeviceDropper {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_device(None);
+        }
     }
-    Ok((image, mem))
+}
+
+pub struct DeviceRaii {
+    pub sync_pool: SyncPoolRaii,
+    pub command_pool: CommandPoolRaii,
+    pub allocator: Arc<Mutex<Allocator>>,
+    pub device_d: Arc<DeviceDropper>,
+}
+
+impl DeviceRaii {
+    pub fn new(window: &Arc<Window>) -> anyhow::Result<Self> {
+        let instance = InstanceRaii::new(window)?;
+        let device_d = Arc::new(DeviceDropper::new(&instance)?);
+        let allocator = Allocator::new(&AllocatorCreateDesc {
+            instance: instance.instance_d.instance.clone(),
+            device: device_d.device.clone(),
+            physical_device: device_d.gpu,
+            debug_settings: Default::default(),
+            buffer_device_address: false,
+            allocation_sizes: Default::default(),
+        })?;
+        let command_pool = CommandPoolRaii::new(&device_d)?;
+        let sync_pool = SyncPoolRaii::new(&device_d);
+        Ok(Self {
+            sync_pool,
+            command_pool,
+            allocator: Arc::new(Mutex::new(allocator)),
+            device_d,
+        })
+    }
+
+    pub fn run_commands(
+        &self,
+        mut command_buffers: Vec<CommandBufferRaii>,
+        semaphore: &mut TimelineSemaphore,
+    ) -> anyhow::Result<Task> {
+        semaphore.value += 1;
+        for cb in &mut command_buffers {
+            cb.end()?;
+        }
+        unsafe {
+            self.device_d.device.queue_submit(
+                self.device_d.graphics_queue,
+                &[vk::SubmitInfo::default()
+                    .command_buffers(
+                        &command_buffers
+                            .iter()
+                            .map(|cb| cb.command_buffer)
+                            .collect::<Vec<_>>(),
+                    )
+                    .signal_semaphores(&[semaphore.semaphore])
+                    .push_next(
+                        &mut vk::TimelineSemaphoreSubmitInfo::default()
+                            .signal_semaphore_values(&[semaphore.value]),
+                    )],
+                vk::Fence::null(),
+            )?;
+        }
+
+        Ok(Task {
+            command_buffers,
+            tl_semaphore: semaphore.semaphore,
+            task_val: semaphore.value,
+            device_d: self.device_d.clone(),
+        })
+    }
 }
