@@ -5,13 +5,10 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
-ash = "0.38.0"
-ash-window = "0.13.0"
+bytemuck.workspace = true
+futures-executor = "0.3.32"
 glam.workspace = true
-gpu-allocator = "0.28.0"
-hashbrown.workspace = true
 image.workspace = true
-indexmap.workspace = true
 log.workspace = true
-naga.workspace = true
+wgpu = "30.0.0"
 winit.workspace = true

@@ -2,20 +2,14 @@ use std::sync::Arc;
 
 // use physics::PhysicsManager;
 use crate::inputs::Inputs;
-use renderer::{MeshDrawInfo, Renderer, camera::Cam3d, mesh::MeshCreateInfo};
 
-use avk12::device::Instance;
 use common::Entity;
-use indexmap::IndexMap;
-use physics::{
-    Kinematics, PhysicsManager, RigidBody, collision_shape::CollisionShape, orient::Orientation,
-};
-use rendering::RenderingManager;
+use physics::PhysicsManager;
+use rendering::RenderManager;
 use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window},
 };
-mod game_object;
 
 #[derive(Debug, Clone)]
 pub struct PhysicsInfo {
@@ -27,32 +21,32 @@ pub struct PhysicsInfo {
 }
 
 pub struct Game {
-    pub(crate) renderer_system: RenderingManager,
+    pub(crate) renderer_system: RenderManager,
     physics_system: PhysicsManager,
     entities: Vec<Entity>,
-    camera: Cam3d,
+    // camera: Cam3d,
     window: Arc<Window>,
     is_cursor_grabbed: bool,
 }
 
 impl Game {
     pub fn new(window: Arc<Window>) -> anyhow::Result<Self> {
-        let mut renderer_system = RenderingManager::new(&window)?;
+        let mut renderer_system = RenderManager::new(&window)?;
         let physics_system = PhysicsManager::new();
 
-        let camera = Cam3d::new(
-            glam::vec3(3., 3., 3.),
-            glam::vec3(-1., -1., -1.),
-            glam::Vec3::Y,
-            2.,
-            1.,
-        );
+        // let camera = Cam3d::new(
+        //     glam::vec3(3., 3., 3.),
+        //     glam::vec3(-1., -1., -1.),
+        //     glam::Vec3::Y,
+        //     2.,
+        //     1.,
+        // );
 
         Ok(Self {
             renderer_system,
             physics_system,
             entities: vec![],
-            camera,
+            // camera,
             window,
             is_cursor_grabbed: true,
         })
@@ -78,10 +72,10 @@ impl Game {
         if inputs.key_pressed_this_frame(PhysicalKey::Code(KeyCode::KeyC)) {
             self.toggle_mouse_grab();
         }
-        self.camera
-            .move_left_right(glam::Vec3::Y, -0.01 * mouse_move.0 as f32);
-        self.camera
-            .move_up_down(glam::Vec3::Y, 0.01 * mouse_move.1 as f32);
+        // self.camera
+        //     .move_left_right(glam::Vec3::Y, -0.01 * mouse_move.0 as f32);
+        // self.camera
+        //     .move_up_down(glam::Vec3::Y, 0.01 * mouse_move.1 as f32);
         self.renderer_system.render()?;
         inputs.advance_frame();
         Ok(())
