@@ -1,9 +1,6 @@
 use glam::{Vec3, Vec4Swizzles};
 
-use crate::{
-    collision_shape::CollisionShape,
-    utils::{get_triangle_plane, point_vec4},
-};
+use crate::{collision_shape::CollisionShape, utils::get_triangle_plane};
 
 const EPA_PROGRESS_EPSILON: f32 = 0.0001;
 const MIN_EPA_CYCLES: usize = 4;
@@ -105,12 +102,6 @@ impl IntersectionInfo {
                 let farth_point_b = b.farthest_point_along(-new_dir);
                 let new_point = farth_point_a - farth_point_b;
                 let face_dist = faces[c_min_dist_face_idx].w;
-                // println!("points: {:?}", &points);
-                // println!("faces: {:?}", &faces);
-                // println!("c_min_dist_face_idx: {:?}", &c_min_dist_face_idx);
-                // println!("new_dir: {:?}", &new_dir);
-                // println!("new_point: {:?}", &new_point);
-                // println!("pen_dir: {:?}", &pen_dir);
                 if face_dist - EPA_PROGRESS_EPSILON <= max_face_dist && epa_cycles > MIN_EPA_CYCLES
                 {
                     pen_dir = new_dir;
