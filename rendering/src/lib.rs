@@ -2,77 +2,39 @@ use std::sync::Arc;
 
 use winit::window::Window;
 
-use crate::model::{MeshPipeline, ModelGpu};
+use crate::{
+    tex_mesh::TexMeshPass,
+    vkraii::{
+        command::CommandBufferRaii,
+        device::DeviceRaii,
+        resource::{BufferRaii, ImageAccess, ImageRaii, ImageViewKey},
+        swapchain::SwapchainRaii,
+    },
+};
 
 pub mod model;
 
-pub struct RenderManager {
-    model_gpu: ModelGpu,
-    mesh_pipeline: MeshPipeline,
-    queue: wgpu::Queue,
-    device: wgpu::Device,
-    adapter: wgpu::Adapter,
-    surface_config: wgpu::SurfaceConfiguration,
-    surface: wgpu::Surface<'static>,
+pub struct RenderingManager {
+    textures: IndexMap<String, ImageRaii>,
+    pipeline: TexMeshPass,
+    deferred_cb: Option<CommandBufferRaii>,
+    swapchain: SwapchainRaii,
+    device: DeviceRaii,
     window: Arc<Window>,
 }
 
 impl RenderManager {
     pub fn new(window: &Arc<Window>) -> anyhow::Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            #[cfg(not(target_arch = "wasm32"))]
-            backends: wgpu::Backends::PRIMARY,
-            #[cfg(target_arch = "wasm32")]
-            backends: wgpu::Backends::GL,
-            flags: Default::default(),
-            memory_budget_thresholds: Default::default(),
-            backend_options: Default::default(),
-            display: None,
-        });
-        let surface = instance.create_surface(window.clone())?;
-        let adapter =
-            futures_executor::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-                apply_limit_buckets: true,
-            }))?;
-        let (device, queue) =
-            futures_executor::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                // WebGL doesn't support all of wgpu's features, so if
-                // we're building for the web we'll have to disable some.
-                required_limits: if cfg!(target_arch = "wasm32") {
-                    wgpu::Limits::downlevel_webgl2_defaults()
-                } else {
-                    wgpu::Limits::default()
-                },
-                memory_hints: Default::default(),
-                trace: wgpu::Trace::Off,
-            }))?;
-        let surface_caps = surface.get_capabilities(&adapter);
-        let (surface_fmt, color_space) = choose_surface_fmt(&surface_caps.formats);
-        let window_res = window.inner_size();
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
-            format: surface_fmt,
-            width: window_res.width,
-            height: window_res.height,
-            present_mode: wgpu::PresentMode::AutoNoVsync,
-            alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-            color_space: color_space,
-        };
-        surface.configure(&device, &surface_config);
-        let mesh_pipeline = MeshPipeline::new(&device, surface_fmt);
-        let model_gpu = ModelGpu::new(&device, &queue);
+        let mut device = DeviceRaii::new(window)?;
+        let swapchain = SwapchainRaii::new(&device.device_d)?;
+        let mut deferred_cb = device.command_pool.get_cb()?;
+        deferred_cb.begin()?;
+        let pipeline = TexMeshPass::new(&mut device, swapchain.format, &mut deferred_cb)?;
         Ok(Self {
-            model_gpu,
-            mesh_pipeline,
-            surface,
+            textures: Default::default(),
+            pipeline,
+            deferred_cb: Some(deferred_cb),
+            swapchain,
             device,
             queue,
             adapter,
@@ -161,34 +123,67 @@ impl RenderManager {
 
         Ok(())
     }
-}
 
-static SURF_FMT_PREF: &[(wgpu::TextureFormat, wgpu::SurfaceColorSpace); 4] = &[
-    (
-        wgpu::TextureFormat::Rgba16Float,
-        wgpu::SurfaceColorSpace::ExtendedSrgbLinear,
-    ),
-    (
-        wgpu::TextureFormat::Rgb10a2Unorm,
-        wgpu::SurfaceColorSpace::Bt2100Pq,
-    ),
-    (
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-        wgpu::SurfaceColorSpace::Srgb,
-    ),
-    (
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        wgpu::SurfaceColorSpace::Srgb,
-    ),
-];
-
-fn choose_surface_fmt(
-    supported_fmts: &Vec<wgpu::TextureFormat>,
-) -> (wgpu::TextureFormat, wgpu::SurfaceColorSpace) {
-    for (fmt, cs) in SURF_FMT_PREF {
-        if supported_fmts.contains(fmt) {
-            return (*fmt, *cs);
+    pub fn render(&mut self) -> anyhow::Result<()> {
+        let Some(mut curr_frame) = self.swapchain.acquire_image()? else {
+            self.refresh_size()?;
+            return Ok(());
+        };
+        if let Some(deferred_cb) = self.deferred_cb.take() {
+            let task = self.device.run_commands(vec![deferred_cb])?;
+            self.device.wait_on_task(task)?;
         }
+        let mut command_buffer = self.device.command_pool.get_cb()?;
+        command_buffer.begin()?;
+        if curr_frame.get_image().access.layout != vk::ImageLayout::PRESENT_SRC_KHR {
+            curr_frame.get_image().barrier(
+                command_buffer.command_buffer,
+                ImageAccess {
+                    access_flags: vk::AccessFlags::MEMORY_READ,
+                    layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                    stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                },
+                0..1,
+                0..1,
+            );
+        }
+        let view = curr_frame.get_image().get_view(&ImageViewKey {
+            type_: vk::ImageViewType::TYPE_2D,
+            layer_range: 0..1,
+            level_range: 0..1,
+        })?;
+        self.pipeline.begin(
+            command_buffer.command_buffer,
+            (curr_frame.get_image().res.0, curr_frame.get_image().res.1),
+            vec![view],
+        )?;
+        unsafe {
+            self.device.device_d.device.cmd_bind_vertex_buffers(
+                command_buffer.command_buffer,
+                0,
+                &[self.pipeline.gpu_mesh.vertex_buffer.buffer],
+                &[0],
+            );
+            self.device.device_d.device.cmd_bind_index_buffer(
+                command_buffer.command_buffer,
+                self.pipeline.gpu_mesh.index_buffer.buffer,
+                0,
+                vk::IndexType::UINT16,
+            );
+            self.device
+                .device_d
+                .device
+                .cmd_draw(command_buffer.command_buffer, 3, 1, 0, 0);
+        }
+        self.pipeline.end(command_buffer.command_buffer);
+        let task = self.device.run_commands(vec![command_buffer])?;
+        self.device.wait_on_task(task)?;
+        self.device
+            .device_d
+            .instance_raii
+            .window
+            .pre_present_notify();
+        drop(curr_frame);
+        Ok(())
     }
-    (supported_fmts[0], wgpu::SurfaceColorSpace::Auto)
 }

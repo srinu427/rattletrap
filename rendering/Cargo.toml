@@ -5,8 +5,9 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
+ash = "0.38.0"
+ash-window = "0.13.0"
 bytemuck.workspace = true
-futures-executor = "0.3.32"
 glam.workspace = true
 image.workspace = true
 log.workspace = true
