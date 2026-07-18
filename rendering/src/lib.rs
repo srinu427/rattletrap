@@ -6,11 +6,14 @@ use gpu_allocator::MemoryLocation;
 use indexmap::IndexMap;
 use winit::window::Window;
 
-use crate::vkraii::{
-    command::CommandBufferRaii,
-    device::DeviceRaii,
-    resource::{BufferRaii, ImageAccess, ImageRaii},
-    swapchain::SwapchainRaii,
+use crate::{
+    tex_mesh::TexMeshPass,
+    vkraii::{
+        command::CommandBufferRaii,
+        device::DeviceRaii,
+        resource::{BufferRaii, ImageAccess, ImageRaii, ImageViewKey},
+        swapchain::SwapchainRaii,
+    },
 };
 
 pub mod tex_mesh;
@@ -18,6 +21,7 @@ mod vkraii;
 
 pub struct RenderingManager {
     textures: IndexMap<String, ImageRaii>,
+    pipeline: TexMeshPass,
     deferred_cb: Option<CommandBufferRaii>,
     swapchain: SwapchainRaii,
     device: DeviceRaii,
@@ -26,11 +30,15 @@ pub struct RenderingManager {
 
 impl RenderingManager {
     pub fn new(window: &Arc<Window>) -> anyhow::Result<Self> {
-        let device = DeviceRaii::new(window)?;
+        let mut device = DeviceRaii::new(window)?;
         let swapchain = SwapchainRaii::new(&device.device_d)?;
+        let mut deferred_cb = device.command_pool.get_cb()?;
+        deferred_cb.begin()?;
+        let pipeline = TexMeshPass::new(&mut device, swapchain.format, &mut deferred_cb)?;
         Ok(Self {
             textures: Default::default(),
-            deferred_cb: None,
+            pipeline,
+            deferred_cb: Some(deferred_cb),
             swapchain,
             device,
             window: window.clone(),
@@ -127,27 +135,60 @@ impl RenderingManager {
             self.refresh_size()?;
             return Ok(());
         };
-        let mut semaphore = self.device.sync_pool.get_sem()?;
         if let Some(deferred_cb) = self.deferred_cb.take() {
-            self.device
-                .run_commands(vec![deferred_cb], &mut semaphore)?
-                .wait()?;
+            let task = self.device.run_commands(vec![deferred_cb])?;
+            self.device.wait_on_task(task)?;
         }
         let mut command_buffer = self.device.command_pool.get_cb()?;
         command_buffer.begin()?;
-        curr_frame.get_image().barrier(
+        if curr_frame.get_image().access.layout != vk::ImageLayout::PRESENT_SRC_KHR {
+            curr_frame.get_image().barrier(
+                command_buffer.command_buffer,
+                ImageAccess {
+                    access_flags: vk::AccessFlags::MEMORY_READ,
+                    layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                    stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                },
+                0..1,
+                0..1,
+            );
+        }
+        let view = curr_frame.get_image().get_view(&ImageViewKey {
+            type_: vk::ImageViewType::TYPE_2D,
+            layer_range: 0..1,
+            level_range: 0..1,
+        })?;
+        self.pipeline.begin(
             command_buffer.command_buffer,
-            ImageAccess {
-                access_flags: vk::AccessFlags::MEMORY_READ,
-                layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-            },
-            0..1,
-            0..1,
-        );
+            (curr_frame.get_image().res.0, curr_frame.get_image().res.1),
+            vec![view],
+        )?;
+        unsafe {
+            self.device.device_d.device.cmd_bind_vertex_buffers(
+                command_buffer.command_buffer,
+                0,
+                &[self.pipeline.gpu_mesh.vertex_buffer.buffer],
+                &[0],
+            );
+            self.device.device_d.device.cmd_bind_index_buffer(
+                command_buffer.command_buffer,
+                self.pipeline.gpu_mesh.index_buffer.buffer,
+                0,
+                vk::IndexType::UINT16,
+            );
+            self.device
+                .device_d
+                .device
+                .cmd_draw(command_buffer.command_buffer, 3, 1, 0, 0);
+        }
+        self.pipeline.end(command_buffer.command_buffer);
+        let task = self.device.run_commands(vec![command_buffer])?;
+        self.device.wait_on_task(task)?;
         self.device
-            .run_commands(vec![command_buffer], &mut semaphore)?
-            .wait()?;
+            .device_d
+            .instance_raii
+            .window
+            .pre_present_notify();
         drop(curr_frame);
         Ok(())
     }

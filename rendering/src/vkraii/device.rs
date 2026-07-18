@@ -12,10 +12,7 @@ use winit::{
     window::Window,
 };
 
-use crate::vkraii::{
-    command::{CommandBufferRaii, CommandPoolRaii, Task},
-    sync::{SyncPoolRaii, TimelineSemaphore},
-};
+use crate::vkraii::command::{CommandBufferRaii, CommandPoolRaii, Task};
 
 fn get_instance_layers() -> Vec<*const i8> {
     vec![
@@ -264,7 +261,8 @@ impl Drop for DeviceDropper {
 }
 
 pub struct DeviceRaii {
-    pub sync_pool: SyncPoolRaii,
+    pub semaphore: vk::Semaphore,
+    pub current_sub_id: u64,
     pub command_pool: CommandPoolRaii,
     pub allocator: Arc<Mutex<Allocator>>,
     pub device_d: Arc<DeviceDropper>,
@@ -283,9 +281,18 @@ impl DeviceRaii {
             allocation_sizes: Default::default(),
         })?;
         let command_pool = CommandPoolRaii::new(&device_d)?;
-        let sync_pool = SyncPoolRaii::new(&device_d);
+        let semaphore = unsafe {
+            device_d.device.create_semaphore(
+                &vk::SemaphoreCreateInfo::default().push_next(
+                    &mut vk::SemaphoreTypeCreateInfo::default()
+                        .semaphore_type(vk::SemaphoreType::TIMELINE),
+                ),
+                None,
+            )?
+        };
         Ok(Self {
-            sync_pool,
+            semaphore,
+            current_sub_id: 0,
             command_pool,
             allocator: Arc::new(Mutex::new(allocator)),
             device_d,
@@ -293,11 +300,10 @@ impl DeviceRaii {
     }
 
     pub fn run_commands(
-        &self,
+        &mut self,
         mut command_buffers: Vec<CommandBufferRaii>,
-        semaphore: &mut TimelineSemaphore,
     ) -> anyhow::Result<Task> {
-        semaphore.value += 1;
+        self.current_sub_id += 1;
         for cb in &mut command_buffers {
             cb.end()?;
         }
@@ -311,10 +317,10 @@ impl DeviceRaii {
                             .map(|cb| cb.command_buffer)
                             .collect::<Vec<_>>(),
                     )
-                    .signal_semaphores(&[semaphore.semaphore])
+                    .signal_semaphores(&[self.semaphore])
                     .push_next(
                         &mut vk::TimelineSemaphoreSubmitInfo::default()
-                            .signal_semaphore_values(&[semaphore.value]),
+                            .signal_semaphore_values(&[self.current_sub_id]),
                     )],
                 vk::Fence::null(),
             )?;
@@ -322,9 +328,33 @@ impl DeviceRaii {
 
         Ok(Task {
             command_buffers,
-            tl_semaphore: semaphore.semaphore,
-            task_val: semaphore.value,
-            device_d: self.device_d.clone(),
+            task_val: self.current_sub_id,
         })
+    }
+
+    pub fn wait_on_task(&mut self, task: Task) -> anyhow::Result<()> {
+        unsafe {
+            self.device_d.device.wait_semaphores(
+                &vk::SemaphoreWaitInfo::default()
+                    .semaphores(&[self.semaphore])
+                    .values(&[task.task_val]),
+                u64::MAX,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for DeviceRaii {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self
+                .device_d
+                .device
+                .device_wait_idle()
+                .inspect_err(|e| log::warn!("waiting for device to complete work failed: {e}"))
+                .ok();
+            self.device_d.device.destroy_semaphore(self.semaphore, None);
+        }
     }
 }

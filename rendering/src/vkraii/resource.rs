@@ -176,7 +176,17 @@ impl ImageRaii {
                 let view = unsafe {
                     self.device_d
                         .device
-                        .create_image_view(&vk::ImageViewCreateInfo::default(), None)
+                        .create_image_view(
+                            &vk::ImageViewCreateInfo::default()
+                                .format(self.format)
+                                .image(self.image)
+                                .subresource_range(self.subresource_range(
+                                    key.layer_range.clone(),
+                                    key.level_range.clone(),
+                                ))
+                                .view_type(key.type_),
+                            None,
+                        )
                         .with_context(|| "vk image view creation failed")?
                 };
                 self.views.insert(key.clone(), view);
@@ -184,6 +194,19 @@ impl ImageRaii {
             }
         };
         Ok(view)
+    }
+
+    pub fn subresource_range(
+        &self,
+        layer_range: Range<u32>,
+        level_range: Range<u32>,
+    ) -> vk::ImageSubresourceRange {
+        vk::ImageSubresourceRange::default()
+            .aspect_mask(image_aspect_mask(self.format))
+            .base_array_layer(layer_range.start)
+            .base_mip_level(level_range.start)
+            .layer_count(layer_range.end - layer_range.start)
+            .level_count(level_range.end - level_range.start)
     }
 
     pub fn subresource_layers(
@@ -195,6 +218,7 @@ impl ImageRaii {
             .aspect_mask(image_aspect_mask(self.format))
             .base_array_layer(layer_range.start)
             .layer_count(layer_range.end - layer_range.start)
+            .mip_level(level)
     }
 
     pub fn barrier(

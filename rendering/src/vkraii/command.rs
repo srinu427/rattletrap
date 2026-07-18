@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use anyhow::Context;
 use ash::vk;
 
-use crate::vkraii::{device::DeviceDropper, resource::BufferRaii, sync::TimelineSemaphore};
+use crate::vkraii::{device::DeviceDropper, resource::BufferRaii};
 
 pub struct CommandPoolDropper {
     pub command_buffers: Mutex<Vec<vk::CommandBuffer>>,
@@ -136,21 +136,5 @@ impl Drop for CommandBufferRaii {
 
 pub struct Task {
     pub command_buffers: Vec<CommandBufferRaii>,
-    pub tl_semaphore: vk::Semaphore,
     pub task_val: u64,
-    pub device_d: Arc<DeviceDropper>,
-}
-
-impl Task {
-    pub fn wait(&self) -> anyhow::Result<()> {
-        unsafe {
-            self.device_d.device.wait_semaphores(
-                &vk::SemaphoreWaitInfo::default()
-                    .semaphores(&[self.tl_semaphore])
-                    .values(&[self.task_val]),
-                u64::MAX,
-            )?
-        }
-        Ok(())
-    }
 }
