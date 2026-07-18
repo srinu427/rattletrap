@@ -78,9 +78,7 @@ impl ApplicationHandler for App {
                 };
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
-                if let Err(e) = ecs_mut.renderer_system.refresh_size() {
-                    eprintln!("error resizing rendering system: {e}");
-                }
+                ecs_mut.renderer_system.resize();
             }
             WindowEvent::KeyboardInput {
                 device_id: _,

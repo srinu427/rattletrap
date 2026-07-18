@@ -9,7 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-avk12 = { version = "0.1.0", path = "../avk12" }
 bytemuck.workspace = true
 common = { version = "0.1.0", path = "../common" }
 env_logger.workspace = true
@@ -19,7 +18,6 @@ hashbrown.workspace = true
 image.workspace = true
 indexmap.workspace = true
 physics = { version = "0.1.0", path = "../physics" }
-renderer = { version = "0.1.0", path = "../renderer" }
 rendering = { version = "0.1.0", path = "../rendering" }
 serde.workspace = true
 winit.workspace = true

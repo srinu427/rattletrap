@@ -6,3 +6,8 @@ impl Entity {
         Self(id)
     }
 }
+
+pub struct ComponentData<T> {
+    entity_ids: Vec<Entity>,
+    data: Vec<T>,
+}

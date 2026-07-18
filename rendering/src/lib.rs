@@ -1,9 +1,5 @@
 use std::sync::Arc;
 
-use anyhow::Context;
-use ash::vk;
-use gpu_allocator::MemoryLocation;
-use indexmap::IndexMap;
 use winit::window::Window;
 
 use crate::{
@@ -16,8 +12,7 @@ use crate::{
     },
 };
 
-pub mod tex_mesh;
-mod vkraii;
+pub mod model;
 
 pub struct RenderingManager {
     textures: IndexMap<String, ImageRaii>,
@@ -28,7 +23,7 @@ pub struct RenderingManager {
     window: Arc<Window>,
 }
 
-impl RenderingManager {
+impl RenderManager {
     pub fn new(window: &Arc<Window>) -> anyhow::Result<Self> {
         let mut device = DeviceRaii::new(window)?;
         let swapchain = SwapchainRaii::new(&device.device_d)?;
@@ -41,92 +36,91 @@ impl RenderingManager {
             deferred_cb: Some(deferred_cb),
             swapchain,
             device,
+            queue,
+            adapter,
+            surface_config,
             window: window.clone(),
         })
     }
 
-    pub fn refresh_size(&mut self) -> anyhow::Result<()> {
-        self.swapchain.refresh()
+    pub fn resize(&mut self) {
+        let window_res = self.window.inner_size();
+        let surface_caps = self.surface.get_capabilities(&self.adapter);
+        let (surface_fmt, color_space) = choose_surface_fmt(&surface_caps.formats);
+        if window_res.width > 0 && window_res.height > 0 {
+            self.surface_config.format = surface_fmt;
+            self.surface_config.color_space = color_space;
+            self.surface_config.width = window_res.width;
+            self.surface_config.height = window_res.height;
+            self.surface.configure(&self.device, &self.surface_config);
+        }
     }
 
-    fn get_deferred_cb(&mut self) -> anyhow::Result<CommandBufferRaii> {
-        match self.deferred_cb.take() {
-            Some(t) => Ok(t),
-            None => {
-                let mut cb = self.device.command_pool.get_cb()?;
-                cb.begin()?;
-                Ok(cb)
+    pub fn render(&mut self) -> anyhow::Result<()> {
+        // self.window.request_redraw();
+
+        let output = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => {
+                // Skip this frame
+                return Ok(());
             }
-        }
-    }
-
-    fn load_image(&mut self, path: &str) -> anyhow::Result<()> {
-        if self.textures.contains_key(path) {
-            return Ok(());
-        }
-        let img_obj = image::open(path)?;
-        let img_bytes = img_obj.to_rgba8();
-        let mut stage_buffer = BufferRaii::new(
-            &self.device.device_d,
-            &self.device.allocator,
-            &vk::BufferCreateInfo::default()
-                .size(img_bytes.len() as _)
-                .usage(vk::BufferUsageFlags::TRANSFER_SRC),
-            MemoryLocation::CpuToGpu,
-        )?;
-        stage_buffer
-            .mem
-            .allocation
-            .mapped_slice_mut()
-            .with_context(|| "unable to write to stage buffer")?[..img_bytes.len()]
-            .copy_from_slice(&img_bytes);
-        let mut image = ImageRaii::new(
-            &self.device.device_d,
-            &self.device.allocator,
-            &vk::ImageCreateInfo::default()
-                .array_layers(1)
-                .extent(vk::Extent3D {
-                    width: img_obj.width(),
-                    height: img_bytes.height(),
-                    depth: 1,
-                })
-                .format(vk::Format::R8G8B8A8_UNORM)
-                .image_type(vk::ImageType::TYPE_2D)
-                .initial_layout(vk::ImageLayout::UNDEFINED)
-                .mip_levels(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC),
-            MemoryLocation::GpuOnly,
-        )?;
-        let mut deferred_cb = self.get_deferred_cb()?;
-        image.barrier(
-            deferred_cb.command_buffer,
-            ImageAccess {
-                access_flags: vk::AccessFlags::TRANSFER_WRITE,
-                layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                stage: vk::PipelineStageFlags::TRANSFER,
-            },
-            0..1,
-            0..1,
-        );
-        unsafe {
-            self.device.device_d.device.cmd_copy_buffer_to_image(
-                deferred_cb.command_buffer,
-                stage_buffer.buffer,
-                image.image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[vk::BufferImageCopy::default()
-                    .image_extent(vk::Extent3D {
-                        width: image.res.0,
-                        height: image.res.1,
-                        depth: image.res.2,
-                    })
-                    .image_subresource(image.subresource_layers(0..1, 0))],
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
+                self.resize();
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                // You could recreate the devices and all resources
+                // created with it here, but we'll just bail
+                anyhow::bail!("Lost device");
+            }
+        };
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.1,
+                            g: 0.2,
+                            b: 0.3,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            render_pass.set_pipeline(&self.mesh_pipeline.pipeline);
+            render_pass.set_vertex_buffer(0, self.model_gpu.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                self.model_gpu.index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
             );
+            render_pass.draw(0..self.model_gpu.index_len, 0..1);
         }
-        deferred_cb.preserve_buffers.push(stage_buffer);
-        self.deferred_cb = Some(deferred_cb);
-        self.textures.insert(path.to_string(), image);
+
+        // submit will accept anything that implements IntoIter
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.window.pre_present_notify();
+        self.queue.present(output);
+
         Ok(())
     }
 

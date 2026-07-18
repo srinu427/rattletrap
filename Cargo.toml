@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["avk12", "common", "game", "physics", "renderer", "rendering", "shader_info"]
+members = ["common", "game", "physics", "rendering", "shader_info"]
 
 [workspace.dependencies]
 winit = { version = "0.30.12", features = ["android-native-activity"] }
