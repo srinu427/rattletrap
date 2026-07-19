@@ -103,7 +103,6 @@ impl Inputs {
     }
 
     pub fn reset_mouse(&mut self) {
-        self.mouse.0 = 0.0;
-        self.mouse.1 = 0.0;
+        self.mouse = (0.0, 0.0);
     }
 }

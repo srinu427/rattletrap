@@ -1,10 +1,12 @@
 use core::slice;
 use std::{
     fs,
+    ops::AddAssign,
     sync::{Arc, Mutex, PoisonError},
 };
 
 use ash::vk;
+use hashbrown::HashMap;
 use naga::{
     ShaderStage,
     back::spv,
@@ -115,6 +117,24 @@ impl DescriptorSetLayoutRaii {
         })
     }
 
+    fn get_pool_sizes(
+        bindings: &[(vk::DescriptorType, u32)],
+        sets: u32,
+    ) -> Vec<vk::DescriptorPoolSize> {
+        let mut counts = HashMap::new();
+        for (t, count) in bindings {
+            counts.entry(*t).or_insert(0).add_assign(*count * sets);
+        }
+        counts
+            .iter()
+            .map(|(t, c)| {
+                vk::DescriptorPoolSize::default()
+                    .ty(*t)
+                    .descriptor_count(*c)
+            })
+            .collect()
+    }
+
     pub fn get_set(&self) -> anyhow::Result<DescriptorSetRaii> {
         let mut pool_mut = self.pool.lock().unwrap_or_else(PoisonError::into_inner);
         let set = pool_mut.pop();
@@ -122,9 +142,15 @@ impl DescriptorSetLayoutRaii {
             Some(t) => t,
             None => {
                 let pool = unsafe {
-                    self.device_d
-                        .device
-                        .create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default(), None)?
+                    self.device_d.device.create_descriptor_pool(
+                        &vk::DescriptorPoolCreateInfo::default()
+                            .max_sets(self.alloc_batch_size as _)
+                            .pool_sizes(&Self::get_pool_sizes(
+                                &self.bindings,
+                                self.alloc_batch_size as _,
+                            )),
+                        None,
+                    )?
                 };
                 let sets = unsafe {
                     self.device_d.device.allocate_descriptor_sets(
@@ -148,6 +174,16 @@ impl DescriptorSetLayoutRaii {
             pool_d: set.1,
             pool: self.pool.clone(),
         })
+    }
+}
+
+impl Drop for DescriptorSetLayoutRaii {
+    fn drop(&mut self) {
+        unsafe {
+            self.device_d
+                .device
+                .destroy_descriptor_set_layout(self.layout, None);
+        }
     }
 }
 

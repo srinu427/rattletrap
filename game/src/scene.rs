@@ -1,33 +1,31 @@
-pub enum DiskPhysicsShape {
-    Sphere {
+use std::fs;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Shape {
+    Rectangle {
         c: [f32; 3],
-        r: f32,
-    },
-    Rect {
-        c: [f32; 3],
-        u: [f32; 3],
-        v: [f32; 3],
-    },
-    Cube {
-        c: [f32; 3],
-        u: [f32; 3],
-        v: [f32; 3],
-        h: f32,
+        x: [f32; 3],
+        y: [f32; 3],
     },
 }
 
-pub struct DiskPhysicsInfo {
-    shape: DiskPhysicsShape,
-    gravity: bool,
+#[derive(Serialize, Deserialize)]
+pub struct Level {
+    pub shapes: Vec<Shape>,
 }
 
-pub enum DiskRenderInfo {
-    TexturedMesh { mesh: String, tex: String },
-}
+impl Level {
+    pub fn from_file(path: &str) -> anyhow::Result<Self> {
+        let file_str = fs::read_to_string(path)?;
+        let level: Self = ron::from_str(&file_str)?;
+        Ok(level)
+    }
 
-pub struct DiskNode {
-    name: String,
-    physics_info: Option<DiskPhysicsInfo>,
-    render_info: Option<DiskRenderInfo>,
-    children: Vec<Self>,
+    pub fn dump_to_file(&self, path: &str) -> anyhow::Result<()> {
+        let data_str = ron::to_string(self)?;
+        fs::write(path, data_str)?;
+        Ok(())
+    }
 }

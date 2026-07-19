@@ -17,7 +17,9 @@ glam.workspace = true
 hashbrown.workspace = true
 image.workspace = true
 indexmap.workspace = true
+log.workspace = true
 physics = { version = "0.1.0", path = "../physics" }
 rendering = { version = "0.1.0", path = "../rendering" }
+ron.workspace = true
 serde.workspace = true
 winit.workspace = true

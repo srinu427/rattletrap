@@ -1,27 +1,28 @@
-use glam::{Vec2, Vec3, Vec4Swizzles};
+use glam::{Vec3, Vec4Swizzles};
 
 use crate::{orient::Orientation, utils::point_vec4};
 
 #[derive(Debug, Clone)]
-pub(crate) struct Sphere {
+pub struct Sphere {
     pub(crate) center: Vec3,
     pub(crate) radius: f32,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Capsule {
+pub struct Capsule {
     pub(crate) a: Vec3,
     pub(crate) b: Vec3,
     pub(crate) radius: f32,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Mesh {
+pub struct Mesh {
     pub(crate) center: Vec3,
     pub(crate) points: Vec<Vec3>,
     pub(crate) edges: Vec<[u32; 2]>,
     pub(crate) faces: Vec<u32>,
 }
+
 #[derive(Debug, Clone)]
 pub enum CollisionShape {
     Sphere(Sphere),

@@ -1,21 +1,28 @@
-use std::{collections::HashMap, mem::offset_of, sync::Arc};
+use std::{
+    collections::HashMap,
+    mem::offset_of,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::Context;
 use ash::vk;
-use gpu_allocator::MemoryLocation;
+use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 use naga::ShaderStage;
 
-use crate::vkraii::{
-    command::CommandBufferRaii,
-    device::{DeviceDropper, DeviceRaii},
-    pipeline::{DescriptorSetLayoutRaii, ShaderRaii},
-    resource::BufferRaii,
+use crate::{
+    camera::{Camera, CameraGpu},
+    vkraii::{
+        command::CommandBufferRaii,
+        device::{DeviceDropper, DeviceRaii},
+        pipeline::{DescriptorSetLayoutRaii, DescriptorSetRaii, ShaderRaii},
+        resource::BufferRaii,
+    },
 };
 
 #[derive(Debug, Clone, Copy, bytemuck::NoUninit)]
 #[repr(C)]
 pub struct Vertex {
-    pub pos: glam::Vec2,
+    pub pos: glam::Vec3,
     pub color: glam::Vec3,
 }
 
@@ -25,7 +32,7 @@ impl Vertex {
             vk::VertexInputAttributeDescription {
                 location: 0,
                 binding: 0,
-                format: vk::Format::R32G32_SFLOAT,
+                format: vk::Format::R32G32B32_SFLOAT,
                 offset: offset_of!(Self, pos) as _,
             },
             vk::VertexInputAttributeDescription {
@@ -56,7 +63,7 @@ pub struct Mesh {
 }
 
 impl Mesh {
-    pub fn new_triangle(a: glam::Vec2, b: glam::Vec2, c: glam::Vec2) -> Self {
+    pub fn new_triangle(a: glam::Vec3, b: glam::Vec3, c: glam::Vec3) -> Self {
         let vertices = vec![
             Vertex {
                 pos: a,
@@ -72,6 +79,29 @@ impl Mesh {
             },
         ];
         let indices = vec![0, 1, 2];
+        Self { vertices, indices }
+    }
+
+    pub fn new_rectangle(c: glam::Vec3, x: glam::Vec3, y: glam::Vec3) -> Self {
+        let vertices = vec![
+            Vertex {
+                pos: c + x + y,
+                color: glam::vec3(1.0, 0.0, 0.0),
+            },
+            Vertex {
+                pos: c - x + y,
+                color: glam::vec3(0.0, 1.0, 0.0),
+            },
+            Vertex {
+                pos: c - x - y,
+                color: glam::vec3(0.0, 0.0, 1.0),
+            },
+            Vertex {
+                pos: c + x - y,
+                color: glam::vec3(0.0, 1.0, 1.0),
+            },
+        ];
+        let indices = vec![0, 1, 2, 0, 2, 3];
         Self { vertices, indices }
     }
 }
@@ -147,13 +177,19 @@ impl GpuMesh {
     }
 }
 
+pub struct CameraData {
+    pub stage_buffer: BufferRaii,
+    pub buffer: BufferRaii,
+    pub dset: DescriptorSetRaii,
+}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct FramebufferKey {
     pub views: Vec<vk::ImageView>,
 }
 
 pub struct TexMeshPass {
-    pub gpu_mesh: GpuMesh,
+    pub camera_datas: Vec<CameraData>,
     pub framebuffers: HashMap<FramebufferKey, vk::Framebuffer>,
     pub render_pass: vk::RenderPass,
     pub descriptor_set_layouts: Vec<DescriptorSetLayoutRaii>,
@@ -163,11 +199,7 @@ pub struct TexMeshPass {
 }
 
 impl TexMeshPass {
-    pub fn new(
-        device: &mut DeviceRaii,
-        sc_format: vk::Format,
-        cb: &mut CommandBufferRaii,
-    ) -> anyhow::Result<Self> {
+    pub fn new(device: &mut DeviceRaii, sc_format: vk::Format) -> anyhow::Result<Self> {
         let render_pass = unsafe {
             device.device_d.device.create_render_pass(
                 &vk::RenderPassCreateInfo::default()
@@ -204,7 +236,16 @@ impl TexMeshPass {
                 None,
             )?
         };
-        let descriptor_set_layouts = vec![];
+        let descriptor_set_layouts = vec![DescriptorSetLayoutRaii::new(
+            &device.device_d,
+            &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
+                vk::DescriptorSetLayoutBinding::default()
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::ALL),
+            ]),
+            3,
+        )?];
         let vert_shader = ShaderRaii::load_glsl_str(
             &device.device_d,
             include_str!("shaders/triangle.vert"),
@@ -215,11 +256,12 @@ impl TexMeshPass {
             include_str!("shaders/triangle.frag"),
             ShaderStage::Fragment,
         )?;
+        let dsls_vk: Vec<_> = descriptor_set_layouts.iter().map(|d| d.layout).collect();
         let pipeline_layout = unsafe {
-            device
-                .device_d
-                .device
-                .create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default(), None)?
+            device.device_d.device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default().set_layouts(&dsls_vk),
+                None,
+            )?
         };
         let pipeline = unsafe {
             device
@@ -289,14 +331,9 @@ impl TexMeshPass {
         };
         drop(vert_shader);
         drop(frag_shader);
-        let mesh = Mesh::new_triangle(
-            glam::vec2(0.0, -0.5),
-            glam::vec2(0.5, 0.5),
-            glam::vec2(-0.5, 0.5),
-        );
-        let gpu_mesh = GpuMesh::new(device, cb, mesh)?;
+
         Ok(Self {
-            gpu_mesh,
+            camera_datas: Vec::with_capacity(4),
             framebuffers: HashMap::with_capacity(128),
             render_pass,
             descriptor_set_layouts,
@@ -340,6 +377,114 @@ impl TexMeshPass {
             }
         };
         Ok(fb)
+    }
+
+    pub fn get_camera_uniform(
+        &mut self,
+        data: &Camera,
+        cb: &mut CommandBufferRaii,
+        allocator: &Arc<Mutex<Allocator>>,
+    ) -> anyhow::Result<CameraData> {
+        let cam_data = self.camera_datas.pop();
+        let mut cam_data = match cam_data {
+            Some(t) => t,
+            None => {
+                let dset = self.descriptor_set_layouts[0].get_set()?;
+                let stage_buffer = BufferRaii::new(
+                    &self.device_d,
+                    allocator,
+                    &vk::BufferCreateInfo::default()
+                        .size(size_of::<CameraGpu>() as _)
+                        .usage(vk::BufferUsageFlags::TRANSFER_SRC),
+                    MemoryLocation::CpuToGpu,
+                )?;
+                let buffer = BufferRaii::new(
+                    &self.device_d,
+                    allocator,
+                    &vk::BufferCreateInfo::default()
+                        .size(size_of::<CameraGpu>() as _)
+                        .usage(
+                            vk::BufferUsageFlags::TRANSFER_DST
+                                | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        ),
+                    MemoryLocation::GpuOnly,
+                )?;
+                unsafe {
+                    self.device_d.device.update_descriptor_sets(
+                        &[vk::WriteDescriptorSet::default()
+                            .buffer_info(&[vk::DescriptorBufferInfo::default()
+                                .buffer(buffer.buffer)
+                                .range(vk::WHOLE_SIZE)])
+                            .descriptor_count(1)
+                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                            .dst_set(dset.set)],
+                        &[],
+                    );
+                }
+                CameraData {
+                    stage_buffer,
+                    buffer,
+                    dset,
+                }
+            }
+        };
+        let mapped_mem = cam_data
+            .stage_buffer
+            .mem
+            .allocation
+            .mapped_slice_mut()
+            .with_context(|| "failed to map memory to write")?;
+        let cam_gpu = data.to_gpu_data_perspective();
+        mapped_mem.copy_from_slice(bytemuck::bytes_of(&cam_gpu));
+        unsafe {
+            self.device_d.device.cmd_copy_buffer(
+                cb.command_buffer,
+                cam_data.stage_buffer.buffer,
+                cam_data.buffer.buffer,
+                &[vk::BufferCopy::default().size(cam_data.buffer.size)],
+            );
+        }
+        Ok(cam_data)
+    }
+
+    pub fn bind_camera_data(&self, cam_data: &CameraData, command_buffer: vk::CommandBuffer) {
+        unsafe {
+            self.device_d.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[cam_data.dset.set],
+                &[],
+            );
+        }
+    }
+
+    pub fn draw_meshes(&self, meshes: &[GpuMesh], command_buffer: vk::CommandBuffer) {
+        for gpu_mesh in meshes {
+            unsafe {
+                self.device_d.device.cmd_bind_vertex_buffers(
+                    command_buffer,
+                    0,
+                    &[gpu_mesh.vertex_buffer.buffer],
+                    &[0],
+                );
+                self.device_d.device.cmd_bind_index_buffer(
+                    command_buffer,
+                    gpu_mesh.index_buffer.buffer,
+                    0,
+                    vk::IndexType::UINT16,
+                );
+                self.device_d.device.cmd_draw_indexed(
+                    command_buffer,
+                    gpu_mesh.index_count,
+                    1,
+                    0,
+                    0,
+                    0,
+                );
+            }
+        }
     }
 
     pub fn begin(
