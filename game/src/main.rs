@@ -1,6 +1,5 @@
 mod game;
 mod inputs;
-mod scene;
 use std::{sync::Arc, time};
 
 // use physics::PhysicsManager;

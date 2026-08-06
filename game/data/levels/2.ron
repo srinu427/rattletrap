@@ -1,14 +1,49 @@
 (
-    shapes: [
-        Rectangle (
-            c: (0.0, -1.0, 0.0),
-            x: (10.0, 0.0, 0.0),
-            y: (0.0, 0.0, -10.0),
-        ),
-        Rectangle (
-            c: (0.0, 1.0, 0.0),
-            x: (1.0, 0.0, 0.0),
-            y: (0.0, 1.0, 0.0),
-        ),
+    nodes: [
+        PhysicsRb ((
+            mass: 1,
+            shape: Rectangle (
+                c: (0.0, 0.0, 0.0),
+                x: (1.0, 0.0, 0.0),
+                y: (0.0, 1.0, 0.0),
+            ),
+            has_gravity: true,
+            init_location: (0.0, 1.0, 0.0),
+            no_interact_mask: 0,
+        )),
+        PhysicsRb ((
+            mass: 1,
+            shape: Cube (
+                c: (0.0, 0.0, 0.0),
+                x: (1.0, 0.0, 0.0),
+                y: (0.0, 1.0, 0.0),
+                h: 1.0,
+            ),
+            has_gravity: true,
+            init_location: (0.0, 8.0, 0.0),
+            no_interact_mask: 0,
+        )),
+        PhysicsRb ((
+            mass: inf,
+            shape: Rectangle (
+                c: (0.0, 0.0, 0.0),
+                x: (10.0, 0.0, 0.0),
+                y: (0.0, 0.0, -10.0),
+            ),
+            has_gravity: false,
+            init_location: (0.0, -5.0, 0.0),
+            no_interact_mask: 0b1,
+        )),
+        PhysicsRb ((
+            mass: inf,
+            shape: Rectangle (
+                c: (0.0, 0.0, 0.0),
+                x: (10.0, 0.0, 0.0),
+                y: (0.0, 10.0, 0.0),
+            ),
+            has_gravity: false,
+            init_location: (0.0, 0.0, -5.0),
+            no_interact_mask: 0b1,
+        )),
     ]
 )

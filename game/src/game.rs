@@ -1,32 +1,25 @@
 use std::sync::Arc;
 
 // use physics::PhysicsManager;
-use crate::{
-    inputs::Inputs,
-    scene::{Level, Shape},
-};
+use crate::inputs::Inputs;
 
-use common::Entity;
-use physics::PhysicsManager;
+use common::{Entity, Level, Node, PhysicsRb, Shape};
+use glam::{Mat4, Vec3};
+use indexmap::IndexMap;
+use physics::{
+    Kinematics, Orientation, PhysicsManager, RigidBody, collision_shape::CollisionShape,
+};
 use rendering::{RenderingManager, tex_mesh::Mesh};
 use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window},
 };
 
-#[derive(Debug, Clone)]
-pub struct PhysicsInfo {
-    pos: glam::Vec3,
-    rot: glam::Mat4,
-    full_t: glam::Mat4,
-    vel: glam::Vec3,
-    acc: glam::Vec3,
-}
-
 pub struct Game {
     pub(crate) renderer_system: RenderingManager,
     physics_system: PhysicsManager,
     entities: Vec<Entity>,
+    physics_rbs: IndexMap<Entity, RigidBody>,
     // camera: Cam3d,
     window: Arc<Window>,
     is_cursor_grabbed: bool,
@@ -48,7 +41,8 @@ impl Game {
         Ok(Self {
             renderer_system,
             physics_system,
-            entities: vec![],
+            entities: Default::default(),
+            physics_rbs: Default::default(),
             // camera, d
             window,
             is_cursor_grabbed: true,
@@ -77,28 +71,77 @@ impl Game {
 
     fn shape_to_mesh(shape: &Shape) -> Mesh {
         match shape {
-            Shape::Rectangle { c, x, y } => Mesh::new_rectangle(
+            Shape::Rectangle { c, x, y, .. } => Mesh::new_rectangle(
                 glam::Vec3::from(*c),
                 glam::Vec3::from(*x),
                 glam::Vec3::from(*y),
             ),
+            Shape::Cube { c, x, y, h } => Mesh::new_cube(
+                glam::Vec3::from(*c),
+                glam::Vec3::from(*x),
+                glam::Vec3::from(*y),
+                *h,
+            ),
         }
+    }
+
+    fn import_rb(rb: &PhysicsRb) -> RigidBody {
+        let shape = match &rb.shape {
+            Shape::Rectangle { c, x, y } => CollisionShape::new_rect(
+                Vec3::from_array(*c),
+                Vec3::from_array(*x),
+                Vec3::from_array(*y),
+            ),
+            Shape::Cube { c, x, y, h } => CollisionShape::new_cube(
+                Vec3::from_array(*c),
+                Vec3::from_array(*x),
+                Vec3::from_array(*y),
+                *h,
+            ),
+        };
+        let orient = Orientation {
+            translation: Vec3::from_array(rb.init_location),
+            rotation: Mat4::IDENTITY,
+        };
+        RigidBody::new(
+            rb.mass,
+            Arc::new(shape),
+            orient,
+            Kinematics::new(),
+            false,
+            rb.has_gravity,
+            rb.no_interact_mask,
+        )
     }
 
     pub fn load_level(&mut self) -> anyhow::Result<()> {
         let level = Level::from_file("data/levels/2.ron")?;
-        let gpu_meshes: Vec<_> = level
-            .shapes
-            .iter()
-            .map(Self::shape_to_mesh)
-            .map(|m| self.renderer_system.load_mesh(m))
-            .collect::<Result<_, _>>()?;
+        self.entities.clear();
+        let mut next_ent_id = 0;
+        let mut gpu_meshes = IndexMap::new();
+        let mut physics_rbs = IndexMap::new();
+        for node in &level.nodes {
+            match node {
+                Node::PhysicsRb(physics_rb) => {
+                    let mesh = Self::shape_to_mesh(&physics_rb.shape);
+                    let gpu_mesh = self.renderer_system.load_mesh(mesh)?;
+                    let rb = Self::import_rb(physics_rb);
+                    let ent = Entity::new(next_ent_id);
+                    gpu_meshes.insert(ent, gpu_mesh);
+                    physics_rbs.insert(ent, rb);
+                    self.entities.push(ent);
+                    next_ent_id += 1;
+                }
+            }
+        }
+        self.physics_rbs = physics_rbs;
         self.renderer_system.meshes = gpu_meshes;
+
         Ok(())
     }
 
     fn camera_move(&mut self, frame_time: u128, front: i32, right: i32, up: i32) {
-        let mvmt = 0.001 * (frame_time as f32);
+        let mvmt = 0.002 * (frame_time as f32);
         self.renderer_system.camera.eye.y += up as f32 * mvmt;
 
         let mut dir_proj = self.renderer_system.camera.dir;
@@ -119,8 +162,9 @@ impl Game {
             self.toggle_mouse_grab();
         }
         if inputs.key_pressed_this_frame(PhysicalKey::Code(KeyCode::KeyR)) {
+            println!("refreshing level");
             self.load_level()
-                .inspect_err(|e| log::warn!("loading level failed: {e:#}"))
+                .inspect_err(|e| log::error!("loading level failed: {e:#}"))
                 .ok();
         }
         let mut up = 0;
@@ -152,6 +196,23 @@ impl Game {
             self.renderer_system
                 .camera
                 .move_up_down(glam::Vec3::Y, 0.01 * mouse_move.1 as f32);
+        }
+        for _ in 0..frame_time {
+            for rb in self.physics_rbs.values_mut() {
+                if rb.has_gravity {
+                    rb.kinematics.acceleration.y = -10.0;
+                }
+            }
+            self.physics_system.run_ms(&mut self.physics_rbs);
+        }
+        for ent in &self.entities {
+            let Some(rb) = self.physics_rbs.get(ent) else {
+                continue;
+            };
+            let Some(gpu_mesh) = self.renderer_system.meshes.get_mut(ent) else {
+                continue;
+            };
+            gpu_mesh.tr = rb.orient.to_transform();
         }
         self.renderer_system.render()?;
         inputs.advance_frame();
