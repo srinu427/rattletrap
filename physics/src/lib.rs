@@ -4,14 +4,39 @@ use common::Entity;
 use glam::Mat4;
 use indexmap::IndexMap;
 
-use crate::{
-    collision_shape::CollisionShape, intersection_info::IntersectionInfo, orient::Orientation,
-};
+use crate::{collision_shape::CollisionShape, intersection_info::IntersectionInfo};
 
 pub mod collision_shape;
 pub mod intersection_info;
-pub mod orient;
 mod utils;
+
+#[derive(Debug, Clone)]
+pub struct Orientation {
+    pub translation: glam::Vec3,
+    pub rotation: glam::Mat4,
+}
+
+impl Orientation {
+    pub fn new() -> Self {
+        Self {
+            translation: glam::Vec3::ZERO,
+            rotation: glam::Mat4::IDENTITY,
+        }
+    }
+
+    pub fn reverse(&self) -> Self {
+        let rev_trans = -self.translation;
+        let rev_rot = self.rotation.transpose();
+        Self {
+            translation: rev_trans,
+            rotation: rev_rot,
+        }
+    }
+
+    pub fn to_transform(&self) -> glam::Mat4 {
+        glam::Mat4::from_translation(self.translation) * self.rotation
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Kinematics {
@@ -87,6 +112,10 @@ impl RigidBody {
     }
 }
 
+pub struct PhysicsScene {
+    pub rigid_bodies: Vec<RigidBody>,
+}
+
 pub struct PhysicsManager {}
 
 impl PhysicsManager {
@@ -100,7 +129,7 @@ impl PhysicsManager {
         let mut touch_dirs = vec![vec![]; rb_count];
         for i in 0..rb_count {
             for j in i + 1..rb_count {
-                let Some(touch_info) = IntersectionInfo::new(
+                let Some(touch_info) = IntersectionInfo::new_with_gjk(
                     &rigid_bodies[i].orient_shape,
                     &rigid_bodies[j].orient_shape,
                 ) else {
@@ -147,7 +176,7 @@ impl PhysicsManager {
         let mut touch_dirs = vec![vec![]; rb_count];
         for i in 0..rb_count {
             for j in i + 1..rb_count {
-                let Some(touch_info) = IntersectionInfo::new(
+                let Some(touch_info) = IntersectionInfo::new_with_gjk(
                     &rigid_bodies[i].orient_shape,
                     &rigid_bodies[j].orient_shape,
                 ) else {
@@ -159,6 +188,9 @@ impl PhysicsManager {
         }
         // Normalize velocities
         for i in 0..rb_count {
+            if rigid_bodies[i].mass == f32::INFINITY {
+                continue;
+            }
             for (j, touch_info) in &touch_dirs[i] {
                 let rel_vel =
                     rigid_bodies[i].kinematics.velocity - rigid_bodies[*j].kinematics.velocity;

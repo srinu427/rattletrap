@@ -8,8 +8,11 @@ layout(location = 0) out vec3 fragColor;
 layout(set = 0, binding = 0) uniform Camera {
     mat4 tr;
 } cam;
+layout(set = 1, binding = 0) uniform Model {
+    mat4 mo_tr;
+} mod;
 
 void main() {
-    gl_Position = tr * vec4(inPosition, 1.0);
+    gl_Position = tr * mo_tr * vec4(inPosition, 1.0);
     fragColor = inColor;
 }

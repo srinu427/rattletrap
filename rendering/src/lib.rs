@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use ash::vk;
+use common::Entity;
 use gpu_allocator::MemoryLocation;
 use indexmap::IndexMap;
 use winit::window::Window;
@@ -21,8 +22,38 @@ pub mod camera;
 pub mod tex_mesh;
 mod vkraii;
 
+pub struct PerFrameData {
+    pub depth_image: ImageRaii,
+}
+
+impl PerFrameData {
+    pub fn new(device: &DeviceRaii, res: (u32, u32)) -> anyhow::Result<Self> {
+        let depth_image = ImageRaii::new(
+            &device.device_d,
+            &device.allocator,
+            &vk::ImageCreateInfo::default()
+                .array_layers(1)
+                .extent(vk::Extent3D {
+                    width: res.0,
+                    height: res.1,
+                    depth: 1,
+                })
+                .format(vk::Format::D32_SFLOAT)
+                .image_type(vk::ImageType::TYPE_2D)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .mip_levels(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT),
+            MemoryLocation::GpuOnly,
+        )?;
+        Ok(Self { depth_image })
+    }
+}
+
 pub struct RenderingManager {
-    pub meshes: Vec<GpuMesh>,
+    pfd_idx: usize,
+    pub per_frame_datas: Vec<PerFrameData>,
+    pub meshes: IndexMap<Entity, GpuMesh>,
     pub camera: Camera,
     textures: IndexMap<String, ImageRaii>,
     pipeline: TexMeshPass,
@@ -43,7 +74,12 @@ impl RenderingManager {
             fov: 1.5,
             aspect: 1.0,
         };
+        let per_frame_datas: Vec<_> = (0..swapchain.images.len())
+            .map(|_| PerFrameData::new(&device, swapchain.res))
+            .collect::<Result<_, _>>()?;
         Ok(Self {
+            pfd_idx: 0,
+            per_frame_datas,
             meshes: Default::default(),
             camera,
             textures: Default::default(),
@@ -58,6 +94,11 @@ impl RenderingManager {
         self.swapchain.refresh()?;
         self.camera.aspect =
             self.swapchain.res.0.max(1) as f32 / self.swapchain.res.1.max(1) as f32;
+        let new_pfds: Vec<_> = (0..self.swapchain.images.len())
+            .map(|_| PerFrameData::new(&self.device, self.swapchain.res))
+            .collect::<Result<_, _>>()?;
+        self.per_frame_datas = new_pfds;
+        self.pfd_idx = 0;
         Ok(())
     }
 
@@ -74,7 +115,7 @@ impl RenderingManager {
 
     pub fn load_mesh(&mut self, mesh: Mesh) -> anyhow::Result<GpuMesh> {
         let mut deferred_cb = self.get_deferred_cb()?;
-        let gpu_mesh = GpuMesh::new(&mut self.device, &mut deferred_cb, mesh)?;
+        let gpu_mesh = GpuMesh::new(&mut self.device, &mut deferred_cb, &mut self.pipeline, mesh)?;
         self.deferred_cb = Some(deferred_cb);
         Ok(gpu_mesh)
     }
@@ -172,11 +213,39 @@ impl RenderingManager {
                 0..1,
             );
         }
+        if self.per_frame_datas[self.pfd_idx].depth_image.access.layout
+            != vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        {
+            self.per_frame_datas[self.pfd_idx].depth_image.barrier(
+                command_buffer.command_buffer,
+                ImageAccess {
+                    access_flags: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                    layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    stage: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                },
+                0..1,
+                0..1,
+            );
+        }
+        for mesh in self.meshes.values_mut() {
+            mesh.update_tr_data(&self.device, command_buffer.command_buffer)
+                .inspect_err(|e| eprintln!("{e}"))
+                .ok();
+        }
         let view = curr_frame.get_image().get_view(&ImageViewKey {
             type_: vk::ImageViewType::TYPE_2D,
             layer_range: 0..1,
             level_range: 0..1,
         })?;
+        let depth_view =
+            self.per_frame_datas[self.pfd_idx]
+                .depth_image
+                .get_view(&ImageViewKey {
+                    type_: vk::ImageViewType::TYPE_2D,
+                    layer_range: 0..1,
+                    level_range: 0..1,
+                })?;
         let cam_dset_data = self.pipeline.get_camera_uniform(
             &self.camera,
             &mut command_buffer,
@@ -185,12 +254,12 @@ impl RenderingManager {
         self.pipeline.begin(
             command_buffer.command_buffer,
             (curr_frame.get_image().res.0, curr_frame.get_image().res.1),
-            vec![view],
+            vec![view, depth_view],
         )?;
         self.pipeline
             .bind_camera_data(&cam_dset_data, command_buffer.command_buffer);
         self.pipeline
-            .draw_meshes(&self.meshes, command_buffer.command_buffer);
+            .draw_meshes(self.meshes.values(), command_buffer.command_buffer);
         self.pipeline.end(command_buffer.command_buffer);
         let task = self.device.run_commands(vec![command_buffer])?;
         self.device.wait_on_task(task)?;
@@ -201,6 +270,7 @@ impl RenderingManager {
             .window
             .pre_present_notify();
         drop(curr_frame);
+        self.pfd_idx = (self.pfd_idx + 1) % self.per_frame_datas.len();
         Ok(())
     }
 }

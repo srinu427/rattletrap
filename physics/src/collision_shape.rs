@@ -1,6 +1,6 @@
 use glam::{Vec3, Vec4Swizzles};
 
-use crate::{orient::Orientation, utils::point_vec4};
+use crate::{Orientation, utils::point_vec4};
 
 #[derive(Debug, Clone)]
 pub struct Sphere {
@@ -20,7 +20,7 @@ pub struct Mesh {
     pub(crate) center: Vec3,
     pub(crate) points: Vec<Vec3>,
     pub(crate) edges: Vec<[u32; 2]>,
-    pub(crate) faces: Vec<u32>,
+    pub(crate) faces: Vec<Vec<u32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,5 +91,55 @@ impl CollisionShape {
                 max_dist_point
             }
         }
+    }
+
+    pub fn new_rect(c: Vec3, u: Vec3, v: Vec3) -> Self {
+        let mesh = Mesh {
+            center: c,
+            points: vec![c + u + v, c - u + v, c - u - v, c + u - v],
+            edges: vec![[0, 1], [1, 2], [2, 3], [3, 0]],
+            faces: vec![vec![0, 1, 2, 3], vec![0, 3, 2, 1]],
+        };
+        Self::Mesh(mesh)
+    }
+
+    pub fn new_cube(c: Vec3, u: Vec3, v: Vec3, h: f32) -> Self {
+        let n = u.cross(v).normalize() * h;
+        let mesh = Mesh {
+            center: c,
+            points: vec![
+                c + u + v + n,
+                c - u + v + n,
+                c - u - v + n,
+                c + u - v + n,
+                c + u + v - n,
+                c + u - v - n,
+                c - u - v - n,
+                c - u + v - n,
+            ],
+            edges: vec![
+                [0, 1],
+                [1, 2],
+                [2, 3],
+                [3, 0],
+                [4, 5],
+                [5, 6],
+                [6, 7],
+                [7, 4],
+                [0, 4],
+                [1, 7],
+                [2, 6],
+                [3, 5],
+            ],
+            faces: vec![
+                vec![0, 1, 2, 3],
+                vec![4, 5, 6, 7],
+                vec![0, 4, 7, 1],
+                vec![1, 7, 6, 2],
+                vec![2, 6, 5, 3],
+                vec![3, 5, 4, 0],
+            ],
+        };
+        Self::Mesh(mesh)
     }
 }

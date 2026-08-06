@@ -8,13 +8,11 @@ const MIN_EPA_CYCLES: usize = 4;
 #[derive(Debug, Clone)]
 pub struct IntersectionInfo {
     pub dir: Vec3,
-    pub point_1: Vec3,
-    pub point_2: Vec3,
     pub dist: f32,
 }
 
 impl IntersectionInfo {
-    pub fn new(a: &CollisionShape, b: &CollisionShape) -> Option<IntersectionInfo> {
+    pub fn new_with_gjk(a: &CollisionShape, b: &CollisionShape) -> Option<IntersectionInfo> {
         let mut supp_points: Vec<Vec3> = vec![];
         loop {
             let check_dir = if supp_points.len() == 0 {
@@ -45,21 +43,13 @@ impl IntersectionInfo {
             // Check if new point crossed origin
             let supp_pt_check_dist = check_dir.dot(supp_point);
             if supp_pt_check_dist < 0.0 {
-                // println!("supp_point: {:?}", &supp_point);
-                // println!("supp_points: {:?}", &supp_points);
                 return None;
             }
             supp_points.push(supp_point);
-            // println!("check_dir: {:?}", &check_dir);
-            // println!("farth_point_a: {:?}", &farth_point_a);
-            // println!("farth_point_b: {:?}", &farth_point_b);
-            // println!("supp_points: {:?}", &supp_points);
             if supp_point == Vec3::ZERO {
                 // println!("touch found");
                 return Some(Self {
                     dir: check_dir,
-                    point_1: farth_point_a,
-                    point_2: farth_point_b,
                     dist: 0.0,
                 });
             }
@@ -72,12 +62,9 @@ impl IntersectionInfo {
             let mut face_pts: Vec<_> = (0..points_len)
                 .map(|i| [i, (i + 1) % points_len, (i + 2) % points_len])
                 .collect();
-            let mut pen_dir = Vec3::ZERO;
-            let mut pen_point_a = Vec3::ZERO;
-            let mut pen_point_b = Vec3::ZERO;
+            let mut pen_dir;
             let mut max_face_dist = f32::NEG_INFINITY;
             let mut epa_cycles = 0;
-            // println!("epa");
             'epa: loop {
                 epa_cycles += 1;
                 // Calculate tetrahedron faces
@@ -105,14 +92,10 @@ impl IntersectionInfo {
                 if face_dist - EPA_PROGRESS_EPSILON <= max_face_dist && epa_cycles > MIN_EPA_CYCLES
                 {
                     pen_dir = new_dir;
-                    pen_point_a = farth_point_a;
-                    pen_point_b = farth_point_b;
                     max_face_dist = face_dist;
                     break 'epa;
                 } else {
                     pen_dir = new_dir;
-                    pen_point_a = farth_point_a;
-                    pen_point_b = farth_point_b;
                     max_face_dist = face_dist;
                     for p in &points {
                         if *p == new_point {
@@ -130,8 +113,6 @@ impl IntersectionInfo {
             }
             return Some(Self {
                 dir: pen_dir,
-                point_1: pen_point_a,
-                point_2: pen_point_b,
                 dist: max_face_dist,
             });
         } else {
@@ -141,7 +122,6 @@ impl IntersectionInfo {
 
     pub fn obj_swapped(mut self) -> Self {
         self.dir = -self.dir;
-        (self.point_1, self.point_2) = (self.point_2, self.point_1);
         self
     }
 }

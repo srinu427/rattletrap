@@ -193,6 +193,38 @@ pub struct DescriptorSetRaii {
     pool: Arc<Mutex<Vec<(vk::DescriptorSet, Arc<DescriptorPoolDropper>)>>>,
 }
 
+impl DescriptorSetRaii {
+    pub fn write_buffers(
+        &self,
+        binding: u32,
+        ty: vk::DescriptorType,
+        offset: u32,
+        buffers: &[vk::Buffer],
+    ) {
+        unsafe {
+            self.pool_d.device_d.device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .buffer_info(
+                        &buffers
+                            .iter()
+                            .map(|b| {
+                                vk::DescriptorBufferInfo::default()
+                                    .buffer(*b)
+                                    .range(vk::WHOLE_SIZE)
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .descriptor_count(buffers.len() as _)
+                    .descriptor_type(ty)
+                    .dst_array_element(offset)
+                    .dst_binding(binding)
+                    .dst_set(self.set)],
+                &[],
+            );
+        }
+    }
+}
+
 impl Drop for DescriptorSetRaii {
     fn drop(&mut self) {
         self.pool

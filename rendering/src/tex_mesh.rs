@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::Context;
 use ash::vk;
+use glam::Mat4;
 use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 use naga::ShaderStage;
 
@@ -63,6 +64,22 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    pub fn merge(meshes: Vec<Mesh>) -> Self {
+        let mut out = Self {
+            vertices: Default::default(),
+            indices: Default::default(),
+        };
+        for mesh in meshes {
+            out.indices.extend(
+                mesh.indices
+                    .into_iter()
+                    .map(|i| i + out.vertices.len() as u16)
+                    .collect::<Vec<_>>(),
+            );
+            out.vertices.extend(mesh.vertices);
+        }
+        out
+    }
     pub fn new_triangle(a: glam::Vec3, b: glam::Vec3, c: glam::Vec3) -> Self {
         let vertices = vec![
             Vertex {
@@ -104,18 +121,35 @@ impl Mesh {
         let indices = vec![0, 1, 2, 0, 2, 3];
         Self { vertices, indices }
     }
+
+    pub fn new_cube(c: glam::Vec3, x: glam::Vec3, y: glam::Vec3, h: f32) -> Self {
+        let z = h * x.cross(y).normalize();
+        Self::merge(vec![
+            Self::new_rectangle(c + x, y, z),
+            Self::new_rectangle(c - x, -y, z),
+            Self::new_rectangle(c + y, z, x),
+            Self::new_rectangle(c - y, -z, x),
+            Self::new_rectangle(c + z, x, y),
+            Self::new_rectangle(c - z, -x, y),
+        ])
+    }
 }
 
 pub struct GpuMesh {
     pub vertex_buffer: BufferRaii,
     pub index_buffer: BufferRaii,
     pub index_count: u32,
+    pub tr: Mat4,
+    pub tr_buffer: BufferRaii,
+    pub tr_stage_buffer: BufferRaii,
+    pub tr_dset: DescriptorSetRaii,
 }
 
 impl GpuMesh {
     pub fn new(
         device: &mut DeviceRaii,
         cb: &mut CommandBufferRaii,
+        tmp: &mut TexMeshPass,
         mesh: Mesh,
     ) -> anyhow::Result<GpuMesh> {
         let vb_size = mesh.vertices.len() * size_of::<Vertex>();
@@ -169,11 +203,79 @@ impl GpuMesh {
             );
         }
         cb.preserve_buffers.push(stage_buffer);
+
+        let tr = Mat4::IDENTITY;
+        let tr_buffer = BufferRaii::new(
+            &device.device_d,
+            &device.allocator,
+            &vk::BufferCreateInfo::default()
+                .size(size_of::<Mat4>() as _)
+                .usage(vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER),
+            MemoryLocation::GpuOnly,
+        )?;
+        let mut tr_stage_buffer = BufferRaii::new(
+            &device.device_d,
+            &device.allocator,
+            &vk::BufferCreateInfo::default()
+                .size(size_of::<Mat4>() as _)
+                .usage(vk::BufferUsageFlags::TRANSFER_SRC),
+            MemoryLocation::CpuToGpu,
+        )?;
+
+        let mapped_mem = tr_stage_buffer
+            .mem
+            .allocation
+            .mapped_slice_mut()
+            .with_context(|| "cant map tr stage buffer memory")?;
+        mapped_mem[..size_of::<Mat4>()].copy_from_slice(bytemuck::bytes_of(&tr));
+        unsafe {
+            device.device_d.device.cmd_copy_buffer(
+                cb.command_buffer,
+                tr_stage_buffer.buffer,
+                tr_buffer.buffer,
+                &[vk::BufferCopy::default().size(size_of::<Mat4>() as _)],
+            );
+        }
+
+        let tr_dset = tmp.descriptor_set_layouts[1].get_set()?;
+        tr_dset.write_buffers(
+            0,
+            vk::DescriptorType::UNIFORM_BUFFER,
+            0,
+            &[tr_buffer.buffer],
+        );
         Ok(Self {
             vertex_buffer,
             index_buffer,
             index_count: mesh.indices.len() as _,
+            tr: Mat4::IDENTITY,
+            tr_buffer,
+            tr_stage_buffer,
+            tr_dset,
         })
+    }
+
+    pub fn update_tr_data(
+        &mut self,
+        device: &DeviceRaii,
+        command_buffer: vk::CommandBuffer,
+    ) -> anyhow::Result<()> {
+        let mapped_mem = self
+            .tr_stage_buffer
+            .mem
+            .allocation
+            .mapped_slice_mut()
+            .with_context(|| "cant map tr stage buffer memory")?;
+        mapped_mem[..size_of::<Mat4>()].copy_from_slice(bytemuck::bytes_of(&self.tr));
+        unsafe {
+            device.device_d.device.cmd_copy_buffer(
+                command_buffer,
+                self.tr_stage_buffer.buffer,
+                self.tr_buffer.buffer,
+                &[vk::BufferCopy::default().size(size_of::<Mat4>() as _)],
+            );
+        }
+        Ok(())
     }
 }
 
@@ -203,18 +305,33 @@ impl TexMeshPass {
         let render_pass = unsafe {
             device.device_d.device.create_render_pass(
                 &vk::RenderPassCreateInfo::default()
-                    .attachments(&[vk::AttachmentDescription::default()
-                        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                        .format(sc_format)
-                        .initial_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                        .load_op(vk::AttachmentLoadOp::CLEAR)
-                        .samples(vk::SampleCountFlags::TYPE_1)
-                        .store_op(vk::AttachmentStoreOp::STORE)])
+                    .attachments(&[
+                        vk::AttachmentDescription::default()
+                            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                            .format(sc_format)
+                            .initial_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                            .load_op(vk::AttachmentLoadOp::CLEAR)
+                            .samples(vk::SampleCountFlags::TYPE_1)
+                            .store_op(vk::AttachmentStoreOp::STORE),
+                        vk::AttachmentDescription::default()
+                            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                            .format(vk::Format::D32_SFLOAT)
+                            .load_op(vk::AttachmentLoadOp::CLEAR)
+                            .samples(vk::SampleCountFlags::TYPE_1)
+                            .stencil_load_op(vk::AttachmentLoadOp::CLEAR)
+                            .stencil_store_op(vk::AttachmentStoreOp::STORE)
+                            .store_op(vk::AttachmentStoreOp::STORE),
+                    ])
                     .subpasses(&[vk::SubpassDescription::default()
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
                         .color_attachments(&[vk::AttachmentReference::default()
                             .attachment(0)
-                            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)])])
+                            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)])
+                        .depth_stencil_attachment(
+                            &vk::AttachmentReference::default()
+                                .attachment(1)
+                                .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+                        )])
                     .dependencies(&[
                         vk::SubpassDependency::default()
                             .dependency_flags(vk::DependencyFlags::BY_REGION)
@@ -236,16 +353,30 @@ impl TexMeshPass {
                 None,
             )?
         };
-        let descriptor_set_layouts = vec![DescriptorSetLayoutRaii::new(
-            &device.device_d,
-            &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
-                vk::DescriptorSetLayoutBinding::default()
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::ALL),
-            ]),
-            3,
-        )?];
+        let descriptor_set_layouts = vec![
+            DescriptorSetLayoutRaii::new(
+                &device.device_d,
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::ALL),
+                ]),
+                3,
+            )?,
+            DescriptorSetLayoutRaii::new(
+                &device.device_d,
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::ALL),
+                ]),
+                3,
+            )?,
+        ];
         let vert_shader = ShaderRaii::load_glsl_str(
             &device.device_d,
             include_str!("shaders/triangle.vert"),
@@ -274,6 +405,13 @@ impl TexMeshPass {
                             &vk::PipelineColorBlendStateCreateInfo::default()
                                 .attachments(&[vk::PipelineColorBlendAttachmentState::default()
                                     .color_write_mask(vk::ColorComponentFlags::RGBA)]),
+                        )
+                        .depth_stencil_state(
+                            &vk::PipelineDepthStencilStateCreateInfo::default()
+                                .depth_test_enable(true)
+                                .depth_compare_op(vk::CompareOp::LESS)
+                                .depth_write_enable(true)
+                                .max_depth_bounds(1.0),
                         )
                         .dynamic_state(
                             &vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&[
@@ -409,18 +547,7 @@ impl TexMeshPass {
                         ),
                     MemoryLocation::GpuOnly,
                 )?;
-                unsafe {
-                    self.device_d.device.update_descriptor_sets(
-                        &[vk::WriteDescriptorSet::default()
-                            .buffer_info(&[vk::DescriptorBufferInfo::default()
-                                .buffer(buffer.buffer)
-                                .range(vk::WHOLE_SIZE)])
-                            .descriptor_count(1)
-                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                            .dst_set(dset.set)],
-                        &[],
-                    );
-                }
+                dset.write_buffers(0, vk::DescriptorType::UNIFORM_BUFFER, 0, &[buffer.buffer]);
                 CameraData {
                     stage_buffer,
                     buffer,
@@ -460,7 +587,11 @@ impl TexMeshPass {
         }
     }
 
-    pub fn draw_meshes(&self, meshes: &[GpuMesh], command_buffer: vk::CommandBuffer) {
+    pub fn draw_meshes<'a>(
+        &self,
+        meshes: impl IntoIterator<Item = &'a GpuMesh>,
+        command_buffer: vk::CommandBuffer,
+    ) {
         for gpu_mesh in meshes {
             unsafe {
                 self.device_d.device.cmd_bind_vertex_buffers(
@@ -474,6 +605,14 @@ impl TexMeshPass {
                     gpu_mesh.index_buffer.buffer,
                     0,
                     vk::IndexType::UINT16,
+                );
+                self.device_d.device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline_layout,
+                    1,
+                    &[gpu_mesh.tr_dset.set],
+                    &[],
                 );
                 self.device_d.device.cmd_draw_indexed(
                     command_buffer,
@@ -505,9 +644,14 @@ impl TexMeshPass {
             self.device_d.device.cmd_begin_render_pass(
                 command_buffer,
                 &vk::RenderPassBeginInfo::default()
-                    .clear_values(&[vk::ClearValue {
-                        color: vk::ClearColorValue::default(),
-                    }])
+                    .clear_values(&[
+                        vk::ClearValue {
+                            color: vk::ClearColorValue::default(),
+                        },
+                        vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue::default().depth(1.0),
+                        },
+                    ])
                     .framebuffer(fb)
                     .render_area(rect)
                     .render_pass(self.render_pass),

@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-#[cfg(debug_assertions)]
 use ash::ext;
 use ash::khr;
 #[cfg(target_os = "macos")]
