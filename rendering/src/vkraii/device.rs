@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use ash::ext;
 use ash::khr;
-#[cfg(target_os = "macos")]
 use ash::vk;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use winit::{
