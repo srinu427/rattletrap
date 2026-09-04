@@ -1,5 +1,5 @@
 [package]
-name = "rendering"
+name = "renderers"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,12 +8,11 @@ anyhow.workspace = true
 ash = "0.38.0"
 ash-window = "0.13.0"
 bytemuck.workspace = true
-common = { version = "0.1.0", path = "../common" }
 glam.workspace = true
 gpu-allocator = "0.28.0"
 hashbrown.workspace = true
-image.workspace = true
-indexmap.workspace = true
 log.workspace = true
 naga.workspace = true
+serde.workspace = true
+wgpu = "30.0.1"
 winit.workspace = true

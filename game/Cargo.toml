@@ -19,7 +19,8 @@ image.workspace = true
 indexmap.workspace = true
 log.workspace = true
 physics = { version = "0.1.0", path = "../physics" }
-rendering = { version = "0.1.0", path = "../rendering" }
+pollster = "1.0.1"
+renderers = { version = "0.1.0", path = "../renderers" }
 ron.workspace = true
 serde.workspace = true
 winit.workspace = true

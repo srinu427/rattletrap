@@ -9,17 +9,28 @@ use indexmap::IndexMap;
 use physics::{
     Kinematics, Orientation, PhysicsManager, RigidBody, collision_shape::CollisionShape,
 };
-use rendering::{RenderingManager, tex_mesh::Mesh};
+use renderers::{Mesh, Scene, vk12::RendererVk12};
 use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window},
 };
 
+#[derive(Debug, Clone, Copy)]
+pub struct GameObjectRef {
+    renderer_id: usize,
+    physics_id: usize,
+}
+
+pub struct GameWorld {
+    renderer_scene: Scene,
+    physics_sim: Vec<RigidBody>,
+    object_refs: Vec<GameObjectRef>,
+}
+
 pub struct Game {
-    pub(crate) renderer_system: RenderingManager,
+    pub(crate) renderer_system: RendererVk12,
     physics_system: PhysicsManager,
-    entities: Vec<Entity>,
-    physics_rbs: IndexMap<Entity, RigidBody>,
+    world: GameWorld,
     // camera: Cam3d,
     window: Arc<Window>,
     is_cursor_grabbed: bool,
@@ -27,7 +38,7 @@ pub struct Game {
 
 impl Game {
     pub fn new(window: Arc<Window>) -> anyhow::Result<Self> {
-        let renderer_system = RenderingManager::new(&window)?;
+        let renderer_system = RendererVk12::new(&window)?;
         let physics_system = PhysicsManager::new();
 
         // let camera = Cam3d::new(
@@ -41,8 +52,11 @@ impl Game {
         Ok(Self {
             renderer_system,
             physics_system,
-            entities: Default::default(),
-            physics_rbs: Default::default(),
+            world: GameWorld {
+                renderer_scene: Scene { drawables: vec![] },
+                physics_sim: vec![],
+                object_refs: vec![],
+            },
             // camera, d
             window,
             is_cursor_grabbed: true,
@@ -71,7 +85,7 @@ impl Game {
 
     fn shape_to_mesh(shape: &Shape) -> Mesh {
         match shape {
-            Shape::Rectangle { c, x, y, .. } => Mesh::new_rectangle(
+            Shape::Rectangle { c, x, y } => Mesh::new_rectangle(
                 glam::Vec3::from(*c),
                 glam::Vec3::from(*x),
                 glam::Vec3::from(*y),
@@ -214,7 +228,7 @@ impl Game {
             };
             gpu_mesh.tr = rb.orient.to_transform();
         }
-        self.renderer_system.render()?;
+        self.renderer_system.render(&self.world.renderer_scene)?;
         inputs.advance_frame();
         Ok(())
     }
