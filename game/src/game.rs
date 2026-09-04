@@ -1,24 +1,66 @@
-use std::sync::Arc;
+use std::{fs, sync::Arc};
 
 // use physics::PhysicsManager;
 use crate::inputs::Inputs;
 
-use common::{Entity, Level, Node, PhysicsRb, Shape};
 use glam::{Mat4, Vec3};
 use indexmap::IndexMap;
 use physics::{
     Kinematics, Orientation, PhysicsManager, RigidBody, collision_shape::CollisionShape,
 };
-use renderers::{Mesh, Scene, vk12::RendererVk12};
+use renderers::{DrawableMesh, Mesh, Scene, vk12::RendererVk12};
+use serde::{Deserialize, Serialize};
 use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window},
 };
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderableDisk {
+    pub mesh: String,
+    pub transform: Mat4,
+    pub material: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ShapeDisk {
+    Rectangle {
+        c: [f32; 3],
+        x: [f32; 3],
+        y: [f32; 3],
+    },
+    Cube {
+        c: [f32; 3],
+        x: [f32; 3],
+        y: [f32; 3],
+        h: f32,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhysicsDisk {
+    pub mass: f32,
+    pub shape: ShapeDisk,
+    pub has_gravity: bool,
+    pub init_location: [f32; 3],
+    pub no_interact_mask: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameObjectDisk {
+    renderable: Option<RenderableDisk>,
+    physics: Option<PhysicsDisk>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct GameObjectRef {
-    renderer_id: usize,
-    physics_id: usize,
+    renderer_id: i64,
+    physics_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameWorldDisk {
+    objects: Vec<GameObjectDisk>,
 }
 
 pub struct GameWorld {
@@ -83,14 +125,14 @@ impl Game {
         };
     }
 
-    fn shape_to_mesh(shape: &Shape) -> Mesh {
+    fn shape_to_mesh(shape: &ShapeDisk) -> Mesh {
         match shape {
-            Shape::Rectangle { c, x, y } => Mesh::new_rectangle(
+            ShapeDisk::Rectangle { c, x, y } => Mesh::new_rectangle(
                 glam::Vec3::from(*c),
                 glam::Vec3::from(*x),
                 glam::Vec3::from(*y),
             ),
-            Shape::Cube { c, x, y, h } => Mesh::new_cube(
+            ShapeDisk::Cube { c, x, y, h } => Mesh::new_cube(
                 glam::Vec3::from(*c),
                 glam::Vec3::from(*x),
                 glam::Vec3::from(*y),
@@ -99,14 +141,14 @@ impl Game {
         }
     }
 
-    fn import_rb(rb: &PhysicsRb) -> RigidBody {
+    fn import_rb(rb: &PhysicsDisk) -> RigidBody {
         let shape = match &rb.shape {
-            Shape::Rectangle { c, x, y } => CollisionShape::new_rect(
+            ShapeDisk::Rectangle { c, x, y } => CollisionShape::new_rect(
                 Vec3::from_array(*c),
                 Vec3::from_array(*x),
                 Vec3::from_array(*y),
             ),
-            Shape::Cube { c, x, y, h } => CollisionShape::new_cube(
+            ShapeDisk::Cube { c, x, y, h } => CollisionShape::new_cube(
                 Vec3::from_array(*c),
                 Vec3::from_array(*x),
                 Vec3::from_array(*y),
@@ -129,28 +171,44 @@ impl Game {
     }
 
     pub fn load_level(&mut self) -> anyhow::Result<()> {
-        let level = Level::from_file("data/levels/2.ron")?;
-        self.entities.clear();
-        let mut next_ent_id = 0;
-        let mut gpu_meshes = IndexMap::new();
-        let mut physics_rbs = IndexMap::new();
-        for node in &level.nodes {
-            match node {
-                Node::PhysicsRb(physics_rb) => {
-                    let mesh = Self::shape_to_mesh(&physics_rb.shape);
-                    let gpu_mesh = self.renderer_system.load_mesh(mesh)?;
-                    let rb = Self::import_rb(physics_rb);
-                    let ent = Entity::new(next_ent_id);
-                    gpu_meshes.insert(ent, gpu_mesh);
-                    physics_rbs.insert(ent, rb);
-                    self.entities.push(ent);
-                    next_ent_id += 1;
+        let level: GameWorldDisk = ron::de::from_bytes(&fs::read("data/levels/2.ron")?)?;
+        let mut drawables = vec![];
+        let mut physics_rbs = vec![];
+        let mut game_object_refs = vec![];
+        for obj in level.objects {
+            let mut game_object = GameObjectRef {
+                renderer_id: -1,
+                physics_id: -1,
+            };
+            if let Some(drawable) = &obj.renderable {
+                if !fs::exists(&drawable.mesh).unwrap_or(false) {
+                    if let Some(physics_rb) = &obj.physics {
+                        let mesh = Self::shape_to_mesh(&physics_rb.shape);
+                        fs::write(&drawable.mesh, ron::ser::to_string(&mesh)?)?;
+                        game_object.renderer_id = drawables.len() as _;
+                        drawables.push(DrawableMesh {
+                            mesh: drawable.mesh.clone(),
+                            transform: drawable.transform.to_cols_array_2d(),
+                            material: drawable.material.clone(),
+                        });
+                    } else {
+                        log::warn!("cant find mesh {:?}. skipping loading it", &drawable.mesh);
+                    }
+                } else {
+                    drawables.push(DrawableMesh {
+                        mesh: drawable.mesh.clone(),
+                        transform: drawable.transform.to_cols_array_2d(),
+                        material: drawable.material.clone(),
+                    });
                 }
             }
+            if let Some(physics_rb) = &obj.physics {
+                let rb = Self::import_rb(physics_rb);
+                game_object.physics_id = physics_rbs.len() as _;
+                physics_rbs.push(rb);
+            }
+            game_object_refs.push(game_object);
         }
-        self.physics_rbs = physics_rbs;
-        self.renderer_system.meshes = gpu_meshes;
-
         Ok(())
     }
 
