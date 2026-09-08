@@ -13,6 +13,7 @@ gpu-allocator = "0.28.0"
 hashbrown.workspace = true
 log.workspace = true
 naga.workspace = true
+ron.workspace = true
 serde.workspace = true
 wgpu = "30.0.1"
 winit.workspace = true

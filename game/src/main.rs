@@ -77,7 +77,11 @@ impl ApplicationHandler for App {
                 };
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
-                ecs_mut.renderer_system.resize();
+                ecs_mut
+                    .renderer_system
+                    .resize()
+                    .inspect_err(|e| log::error!("{e}"))
+                    .ok();
             }
             WindowEvent::KeyboardInput {
                 device_id: _,

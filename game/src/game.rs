@@ -4,11 +4,10 @@ use std::{fs, sync::Arc};
 use crate::inputs::Inputs;
 
 use glam::{Mat4, Vec3};
-use indexmap::IndexMap;
 use physics::{
     Kinematics, Orientation, PhysicsManager, RigidBody, collision_shape::CollisionShape,
 };
-use renderers::{DrawableMesh, Mesh, Scene, vk12::RendererVk12};
+use renderers::{Camera3d, DrawableMesh, Mesh, Scene, vk12::RendererVk12};
 use serde::{Deserialize, Serialize};
 use winit::{
     keyboard::{KeyCode, PhysicalKey},
@@ -18,8 +17,13 @@ use winit::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderableDisk {
     pub mesh: String,
+    #[serde(default = "default_transform")]
     pub transform: Mat4,
     pub material: String,
+}
+
+fn default_transform() -> glam::Mat4 {
+    glam::Mat4::IDENTITY
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +46,6 @@ pub struct PhysicsDisk {
     pub mass: f32,
     pub shape: ShapeDisk,
     pub has_gravity: bool,
-    pub init_location: [f32; 3],
     pub no_interact_mask: u32,
 }
 
@@ -50,6 +53,7 @@ pub struct PhysicsDisk {
 pub struct GameObjectDisk {
     renderable: Option<RenderableDisk>,
     physics: Option<PhysicsDisk>,
+    init_location: [f32; 3],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +75,7 @@ pub struct GameWorld {
 
 pub struct Game {
     pub(crate) renderer_system: RendererVk12,
+    camera: Camera3d,
     physics_system: PhysicsManager,
     world: GameWorld,
     // camera: Cam3d,
@@ -83,16 +88,19 @@ impl Game {
         let renderer_system = RendererVk12::new(&window)?;
         let physics_system = PhysicsManager::new();
 
-        // let camera = Cam3d::new(
-        //     glam::vec3(3., 3., 3.),
-        //     glam::vec3(-1., -1., -1.),
-        //     glam::Vec3::Y,
-        //     2.,
-        //     1.,
-        // );
+        let camera = Camera3d::new(
+            glam::vec3(3.0, 3.0, 3.0),
+            glam::vec3(-1.0, -1.0, -1.0),
+            glam::Vec3::Y,
+            2.0,
+            1.0,
+            0.1,
+            100.0,
+        );
 
         Ok(Self {
             renderer_system,
+            camera,
             physics_system,
             world: GameWorld {
                 renderer_scene: Scene { drawables: vec![] },
@@ -141,7 +149,7 @@ impl Game {
         }
     }
 
-    fn import_rb(rb: &PhysicsDisk) -> RigidBody {
+    fn import_rb(rb: &PhysicsDisk, location: [f32; 3]) -> RigidBody {
         let shape = match &rb.shape {
             ShapeDisk::Rectangle { c, x, y } => CollisionShape::new_rect(
                 Vec3::from_array(*c),
@@ -156,7 +164,7 @@ impl Game {
             ),
         };
         let orient = Orientation {
-            translation: Vec3::from_array(rb.init_location),
+            translation: Vec3::from_array(location),
             rotation: Mat4::IDENTITY,
         };
         RigidBody::new(
@@ -188,44 +196,50 @@ impl Game {
                         game_object.renderer_id = drawables.len() as _;
                         drawables.push(DrawableMesh {
                             mesh: drawable.mesh.clone(),
-                            transform: drawable.transform.to_cols_array_2d(),
+                            transform: drawable.transform,
                             material: drawable.material.clone(),
                         });
                     } else {
-                        log::warn!("cant find mesh {:?}. skipping loading it", &drawable.mesh);
+                        log::error!("cant find mesh {:?}. skipping loading it", &drawable.mesh);
                     }
                 } else {
+                    game_object.renderer_id = drawables.len() as _;
                     drawables.push(DrawableMesh {
                         mesh: drawable.mesh.clone(),
-                        transform: drawable.transform.to_cols_array_2d(),
+                        transform: drawable.transform,
                         material: drawable.material.clone(),
                     });
                 }
             }
             if let Some(physics_rb) = &obj.physics {
-                let rb = Self::import_rb(physics_rb);
+                let rb = Self::import_rb(physics_rb, obj.init_location);
                 game_object.physics_id = physics_rbs.len() as _;
                 physics_rbs.push(rb);
             }
             game_object_refs.push(game_object);
         }
+        self.world = GameWorld {
+            renderer_scene: Scene { drawables },
+            physics_sim: physics_rbs,
+            object_refs: game_object_refs,
+        };
         Ok(())
     }
 
     fn camera_move(&mut self, frame_time: u128, front: i32, right: i32, up: i32) {
         let mvmt = 0.002 * (frame_time as f32);
-        self.renderer_system.camera.eye.y += up as f32 * mvmt;
+        self.camera.eye.y += up as f32 * mvmt;
 
-        let mut dir_proj = self.renderer_system.camera.dir;
+        let mut dir_proj = self.camera.dir;
         dir_proj.y = 0.0;
         if dir_proj.x == 0.0 && dir_proj.z == 0.0 {
-            dir_proj = -self.renderer_system.camera.up;
+            dir_proj = -self.camera.up;
             dir_proj.y = 0.0;
         }
         let x = dir_proj.normalize();
         let y = glam::vec3(-x.z, 0.0, x.x);
-        self.renderer_system.camera.eye += front as f32 * x * mvmt;
-        self.renderer_system.camera.eye += right as f32 * y * mvmt;
+        self.camera.eye += front as f32 * x * mvmt;
+        self.camera.eye += right as f32 * y * mvmt;
     }
 
     pub fn run(&mut self, frame_time: u128, inputs: &mut Inputs) -> anyhow::Result<()> {
@@ -262,31 +276,30 @@ impl Game {
         }
         self.camera_move(frame_time, front, right, up);
         if self.is_cursor_grabbed {
-            self.renderer_system
-                .camera
+            self.camera
                 .move_left_right(glam::Vec3::Y, -0.01 * mouse_move.0 as f32);
-            self.renderer_system
-                .camera
+            self.camera
                 .move_up_down(glam::Vec3::Y, 0.01 * mouse_move.1 as f32);
         }
         for _ in 0..frame_time {
-            for rb in self.physics_rbs.values_mut() {
+            for rb in self.world.physics_sim.iter_mut() {
                 if rb.has_gravity {
                     rb.kinematics.acceleration.y = -10.0;
                 }
             }
-            self.physics_system.run_ms(&mut self.physics_rbs);
+            self.physics_system.run_ms(&mut self.world.physics_sim);
         }
-        for ent in &self.entities {
-            let Some(rb) = self.physics_rbs.get(ent) else {
+        for gor in &self.world.object_refs {
+            if gor.physics_id < 0 || gor.renderer_id < 0 {
                 continue;
-            };
-            let Some(gpu_mesh) = self.renderer_system.meshes.get_mut(ent) else {
-                continue;
-            };
-            gpu_mesh.tr = rb.orient.to_transform();
+            }
+            self.world.renderer_scene.drawables[gor.renderer_id as usize].transform =
+                self.world.physics_sim[gor.physics_id as usize]
+                    .orient
+                    .to_transform();
         }
-        self.renderer_system.render(&self.world.renderer_scene)?;
+        self.renderer_system
+            .render(&self.world.renderer_scene, &self.camera)?;
         inputs.advance_frame();
         Ok(())
     }

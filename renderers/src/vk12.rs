@@ -1,9 +1,12 @@
 use std::fs;
+use std::marker::PhantomData;
 use std::ops::{AddAssign, Range};
 use std::sync::Arc;
 
 use anyhow::Context;
+use ash::vk::Handle;
 use ash::{ext, khr, vk};
+use bytemuck::NoUninit;
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{
     Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc,
@@ -12,10 +15,11 @@ use hashbrown::{HashMap, HashSet};
 use naga::back::spv;
 use naga::front::glsl;
 use naga::valid;
+use ron::de;
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::Window;
 
-use crate::{Material, MeshVertex, Scene};
+use crate::{Camera3d, Material, Mesh, MeshVertex, Scene};
 
 fn get_instance_layers() -> Vec<*const i8> {
     vec![
@@ -30,6 +34,7 @@ fn get_instance_extensions() -> Vec<*const i8> {
         ext::debug_utils::NAME.as_ptr(),
         khr::get_physical_device_properties2::NAME.as_ptr(),
         khr::surface::NAME.as_ptr(),
+        ext::swapchain_colorspace::NAME.as_ptr(),
         #[cfg(target_os = "windows")]
         khr::win32_surface::NAME.as_ptr(),
         #[cfg(target_os = "linux")]
@@ -279,6 +284,7 @@ impl GpuQueue {
         self.cmd_buffers.clear();
         unsafe {
             device.destroy_command_pool(self.cmd_pool, None);
+            device.destroy_semaphore(self.semaphore, None);
         }
     }
 }
@@ -513,9 +519,6 @@ impl GpuSwapchain {
         };
         unsafe {
             ctx.device.device.device_wait_idle()?;
-            ctx.device
-                .swapchain_device
-                .destroy_swapchain(self.handle, None);
         }
         for mut image in self.images.drain(..) {
             image.destroy(ctx);
@@ -524,6 +527,7 @@ impl GpuSwapchain {
         let swapchain = unsafe {
             ctx.device.swapchain_device.create_swapchain(
                 &vk::SwapchainCreateInfoKHR::default()
+                    .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
                     .image_array_layers(1)
                     .image_color_space(format.color_space)
                     .image_extent(vk::Extent2D {
@@ -544,6 +548,13 @@ impl GpuSwapchain {
                 None,
             )?
         };
+        if !self.handle.is_null() {
+            unsafe {
+                ctx.device
+                    .swapchain_device
+                    .destroy_swapchain(self.handle, None);
+            }
+        }
         let images = unsafe {
             ctx.device
                 .swapchain_device
@@ -699,6 +710,19 @@ impl GpuBuffer {
         })
     }
 
+    fn new_gpu_local_ro(
+        ctx: &mut GpuCtx,
+        len: u64,
+        mut usage: vk::BufferUsageFlags,
+    ) -> anyhow::Result<Self> {
+        if ctx.device.gpu_info.unified_mem {
+            GpuBuffer::new(ctx, len, usage, true)
+        } else {
+            usage |= vk::BufferUsageFlags::TRANSFER_DST;
+            GpuBuffer::new(ctx, len, usage, false)
+        }
+    }
+
     fn destroy(&mut self, ctx: &mut GpuCtx) {
         if let Some(altn) = self.allocation.take() {
             unsafe {
@@ -717,15 +741,9 @@ enum GpuImageType {
     E3d,
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-enum GpuImageViewType {
-    E2d,
-    ECube,
-}
-
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct GpuImageViewInfo {
-    type_: GpuImageViewType,
+    type_: vk::ImageViewType,
     layer_range: Range<u32>,
     level_range: Range<u32>,
 }
@@ -744,6 +762,31 @@ impl Default for GpuImageAccess {
             access: vk::AccessFlags::empty(),
             stage: vk::PipelineStageFlags::TOP_OF_PIPE,
         }
+    }
+}
+
+fn is_depth_stencil(fmt: vk::Format) -> (bool, bool) {
+    match fmt {
+        vk::Format::D16_UNORM | vk::Format::D32_SFLOAT | vk::Format::X8_D24_UNORM_PACK32 => {
+            (true, false)
+        }
+        vk::Format::D16_UNORM_S8_UINT
+        | vk::Format::D24_UNORM_S8_UINT
+        | vk::Format::D32_SFLOAT_S8_UINT => (true, true),
+        _ => (false, false),
+    }
+}
+
+fn image_aspect_mask(fmt: vk::Format) -> vk::ImageAspectFlags {
+    let (is_d, has_s) = is_depth_stencil(fmt);
+    if is_d {
+        if has_s {
+            vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+        } else {
+            vk::ImageAspectFlags::DEPTH
+        }
+    } else {
+        vk::ImageAspectFlags::COLOR
     }
 }
 
@@ -827,15 +870,58 @@ impl GpuImage {
             Some(t) => t,
             None => {
                 let iv = unsafe {
-                    ctx.device
-                        .device
-                        .create_image_view(&vk::ImageViewCreateInfo::default(), None)?
+                    ctx.device.device.create_image_view(
+                        &vk::ImageViewCreateInfo::default()
+                            .components(vk::ComponentMapping::default())
+                            .format(self.format)
+                            .image(self.handle)
+                            .subresource_range(
+                                vk::ImageSubresourceRange::default()
+                                    .aspect_mask(image_aspect_mask(self.format))
+                                    .base_array_layer(info.layer_range.start)
+                                    .base_mip_level(info.level_range.start)
+                                    .layer_count(info.layer_range.end - info.layer_range.start)
+                                    .level_count(info.layer_range.end - info.layer_range.start),
+                            )
+                            .view_type(info.type_),
+                        None,
+                    )?
                 };
                 self.views.insert(info, iv);
                 iv
             }
         };
         Ok(iv)
+    }
+
+    fn transition(&mut self, ctx: &GpuCtx, cb: vk::CommandBuffer, new_access: GpuImageAccess) {
+        if self.access == new_access {
+            return;
+        }
+        unsafe {
+            ctx.device.device.cmd_pipeline_barrier(
+                cb,
+                self.access.stage,
+                new_access.stage,
+                vk::DependencyFlags::BY_REGION,
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier::default()
+                    .dst_access_mask(new_access.access)
+                    .dst_queue_family_index(ctx.device.gpu_info.graphics_qf)
+                    .image(self.handle)
+                    .new_layout(new_access.layout)
+                    .old_layout(self.access.layout)
+                    .src_access_mask(self.access.access)
+                    .src_queue_family_index(ctx.device.gpu_info.graphics_qf)
+                    .subresource_range(
+                        vk::ImageSubresourceRange::default()
+                            .aspect_mask(image_aspect_mask(self.format))
+                            .layer_count(self.res.2)
+                            .level_count(self.levels),
+                    )],
+            );
+        }
     }
 
     fn destroy(&mut self, ctx: &mut GpuCtx) {
@@ -916,7 +1002,8 @@ impl GpuDsl {
                 let pool = unsafe {
                     ctx.device.device.create_descriptor_pool(
                         &vk::DescriptorPoolCreateInfo::default()
-                            .pool_sizes(&get_pool_sizes(&self.bindings, 16)),
+                            .pool_sizes(&get_pool_sizes(&self.bindings, 16))
+                            .max_sets(16),
                         None,
                     )?
                 };
@@ -992,6 +1079,13 @@ fn load_glsl(
     Ok(shader_mod)
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, NoUninit)]
+struct MeshPipelinePushConstant {
+    obj_id: u32,
+    material_id: u32,
+}
+
 struct RenderPipelineVk12 {
     render_pass: vk::RenderPass,
     handle: vk::Pipeline,
@@ -1001,7 +1095,7 @@ struct RenderPipelineVk12 {
 }
 
 impl RenderPipelineVk12 {
-    fn new_mesh_pipeline(ctx: &mut GpuCtx) -> anyhow::Result<Self> {
+    fn new_mesh_pipeline(ctx: &mut GpuCtx, format: vk::Format) -> anyhow::Result<Self> {
         let render_pass = unsafe {
             ctx.device.device.create_render_pass(
                 &vk::RenderPassCreateInfo::default()
@@ -1009,12 +1103,14 @@ impl RenderPipelineVk12 {
                         vk::AttachmentDescription::default()
                             .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                             .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                            .format(vk::Format::R8G8B8A8_UNORM)
+                            .format(format)
+                            .samples(vk::SampleCountFlags::TYPE_1)
                             .load_op(vk::AttachmentLoadOp::CLEAR)
                             .store_op(vk::AttachmentStoreOp::STORE),
                         vk::AttachmentDescription::default()
-                            .initial_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                            .final_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                            .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                            .samples(vk::SampleCountFlags::TYPE_1)
                             .format(vk::Format::D32_SFLOAT)
                             .load_op(vk::AttachmentLoadOp::CLEAR)
                             .store_op(vk::AttachmentStoreOp::STORE),
@@ -1026,7 +1122,7 @@ impl RenderPipelineVk12 {
                         .depth_stencil_attachment(
                             &vk::AttachmentReference::default()
                                 .attachment(1)
-                                .layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL),
+                                .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
                         )
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)]),
                 None,
@@ -1034,12 +1130,16 @@ impl RenderPipelineVk12 {
         };
         let dsls = vec![
             GpuDsl::new(ctx, vec![(vk::DescriptorType::UNIFORM_BUFFER, 1)])?,
-            GpuDsl::new(ctx, vec![(vk::DescriptorType::UNIFORM_BUFFER, 1)])?,
+            GpuDsl::new(ctx, vec![(vk::DescriptorType::STORAGE_BUFFER, 1)])?,
+            GpuDsl::new(ctx, vec![(vk::DescriptorType::STORAGE_BUFFER, 1)])?,
         ];
         let layout = unsafe {
             ctx.device.device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default(),
-                // .set_layouts(&[dsls[0].handle, dsls[1].handle]),
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(&[dsls[0].handle, dsls[1].handle, dsls[2].handle])
+                    .push_constant_ranges(&[vk::PushConstantRange::default()
+                        .size(size_of::<MeshPipelinePushConstant>() as _)
+                        .stage_flags(vk::ShaderStageFlags::ALL)]),
                 None,
             )?
         };
@@ -1087,7 +1187,7 @@ impl RenderPipelineVk12 {
                         )
                         .rasterization_state(
                             &vk::PipelineRasterizationStateCreateInfo::default()
-                                .cull_mode(vk::CullModeFlags::BACK)
+                                .cull_mode(vk::CullModeFlags::NONE)
                                 .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
                                 .line_width(1.0)
                                 .polygon_mode(vk::PolygonMode::FILL),
@@ -1111,6 +1211,11 @@ impl RenderPipelineVk12 {
                                         .format(vk::Format::R32G32B32_SFLOAT)
                                         .location(0)
                                         .offset(0),
+                                    vk::VertexInputAttributeDescription::default()
+                                        .binding(0)
+                                        .format(vk::Format::R32G32B32_SFLOAT)
+                                        .location(1)
+                                        .offset(12),
                                 ])
                                 .vertex_binding_descriptions(&[
                                     vk::VertexInputBindingDescription::default()
@@ -1143,7 +1248,7 @@ impl RenderPipelineVk12 {
 
     fn get_frame_buffer(
         &mut self,
-        ctx: GpuCtx,
+        ctx: &GpuCtx,
         mut images: Vec<&mut GpuImage>,
     ) -> anyhow::Result<vk::Framebuffer> {
         let mut views = vec![];
@@ -1151,7 +1256,7 @@ impl RenderPipelineVk12 {
             let view = image.get_view(
                 &ctx,
                 GpuImageViewInfo {
-                    type_: GpuImageViewType::E2d,
+                    type_: vk::ImageViewType::TYPE_2D,
                     layer_range: 0..1,
                     level_range: 0..1,
                 },
@@ -1252,22 +1357,75 @@ fn write_to_gpu_buffer(
     }
 }
 
-struct GpuMaterialMgr {
-    materials: HashMap<String, u32>,
+struct GpuVecData<T: NoUninit> {
     buffer: GpuBuffer,
     capacity: u32,
     len: u32,
+    _phantom: PhantomData<T>,
 }
 
-impl GpuMaterialMgr {
+impl<T: NoUninit> GpuVecData<T> {
     fn new(ctx: &mut GpuCtx) -> anyhow::Result<Self> {
-        let buf_size = 128 * size_of::<Material>() as u64;
-        let buffer = GpuBuffer::new(ctx, buf_size, vk::BufferUsageFlags::UNIFORM_BUFFER, false)?;
+        let buf_size = 128 * size_of::<T>() as u64;
+        let buffer =
+            GpuBuffer::new_gpu_local_ro(ctx, buf_size, vk::BufferUsageFlags::STORAGE_BUFFER)?;
         Ok(Self {
-            materials: Default::default(),
             buffer,
             capacity: 128,
             len: 0,
+            _phantom: Default::default(),
+        })
+    }
+
+    fn push(
+        &mut self,
+        ctx: &mut GpuCtx,
+        elem: T,
+        cb: vk::CommandBuffer,
+    ) -> anyhow::Result<Option<GpuBuffer>> {
+        let insert_idx = self.len;
+        let write_offset = insert_idx as u64 * size_of::<Material>() as u64;
+        self.len += 1;
+        write_to_gpu_buffer(
+            ctx,
+            cb,
+            &mut self.buffer,
+            write_offset,
+            bytemuck::bytes_of(&elem),
+        )
+    }
+
+    fn destroy(&mut self, ctx: &mut GpuCtx) {
+        self.buffer.destroy(ctx);
+    }
+}
+
+struct GpuMaterialMgr {
+    materials: HashMap<String, u32>,
+    buffer: GpuVecData<Material>,
+    dset: vk::DescriptorSet,
+}
+
+impl GpuMaterialMgr {
+    fn new(ctx: &mut GpuCtx, dpool: &mut GpuDsl) -> anyhow::Result<Self> {
+        let buffer = GpuVecData::new(ctx)?;
+        let dset = dpool.get_set(ctx)?;
+        unsafe {
+            ctx.device.device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .buffer_info(&[vk::DescriptorBufferInfo::default()
+                        .buffer(buffer.buffer.handle)
+                        .range(vk::WHOLE_SIZE)])
+                    .descriptor_count(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .dst_set(dset)],
+                &[],
+            );
+        }
+        Ok(Self {
+            materials: Default::default(),
+            buffer,
+            dset,
         })
     }
 
@@ -1278,17 +1436,18 @@ impl GpuMaterialMgr {
         material: Material,
         cb: vk::CommandBuffer,
     ) -> anyhow::Result<Option<GpuBuffer>> {
-        let insert_idx = self.len;
-        let write_offset = insert_idx as u64 * size_of::<Material>() as u64;
+        if self.materials.contains_key(name) {
+            return Ok(None);
+        }
+        let insert_idx = self.buffer.len;
+        let res = self.buffer.push(ctx, material, cb)?;
         self.materials.insert(name.to_string(), insert_idx);
-        self.len += 1;
-        write_to_gpu_buffer(
-            ctx,
-            cb,
-            &mut self.buffer,
-            write_offset,
-            bytemuck::bytes_of(&material),
-        )
+        Ok(res)
+    }
+
+    fn destroy(&mut self, ctx: &mut GpuCtx, dpool: &mut GpuDsl) {
+        self.buffer.destroy(ctx);
+        dpool.reclaim(self.dset);
     }
 }
 
@@ -1298,11 +1457,205 @@ struct GpuLoadedMesh {
     draw_count: u32,
 }
 
+impl GpuLoadedMesh {
+    fn new(
+        ctx: &mut GpuCtx,
+        cb: vk::CommandBuffer,
+        mesh: Mesh,
+    ) -> anyhow::Result<(Self, Vec<GpuBuffer>)> {
+        let vb_size = (mesh.vertices.len() * size_of::<MeshVertex>()) as u64;
+        let ib_size = (mesh.indices.len() * size_of::<u16>()) as u64;
+        let mut vbo =
+            GpuBuffer::new_gpu_local_ro(ctx, vb_size, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        let mut ibo =
+            GpuBuffer::new_gpu_local_ro(ctx, ib_size, vk::BufferUsageFlags::INDEX_BUFFER)?;
+        let draw_count = mesh.indices.len() as u32;
+        let mut stg_buffers = vec![];
+        if let Some(buf) =
+            write_to_gpu_buffer(ctx, cb, &mut vbo, 0, bytemuck::cast_slice(&mesh.vertices))?
+        {
+            stg_buffers.push(buf);
+        }
+        if let Some(buf) =
+            write_to_gpu_buffer(ctx, cb, &mut ibo, 0, bytemuck::cast_slice(&mesh.indices))?
+        {
+            stg_buffers.push(buf);
+        }
+        Ok((
+            Self {
+                vbo,
+                ibo,
+                draw_count,
+            },
+            stg_buffers,
+        ))
+    }
+
+    fn destroy(&mut self, ctx: &mut GpuCtx) {
+        self.vbo.destroy(ctx);
+        self.ibo.destroy(ctx);
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, NoUninit)]
+struct GpuMeshInfo {
+    transform: glam::Mat4,
+}
+
+struct GpuMeshMgr {
+    meshes: HashMap<String, GpuLoadedMesh>,
+    info_buffer: GpuBuffer,
+    dset: vk::DescriptorSet,
+}
+
+impl GpuMeshMgr {
+    fn new(ctx: &mut GpuCtx, dpool: &mut GpuDsl) -> anyhow::Result<Self> {
+        let info_buffer = GpuBuffer::new_gpu_local_ro(
+            ctx,
+            128 * size_of::<GpuMeshInfo>() as u64,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )?;
+        let dset = dpool.get_set(ctx)?;
+        unsafe {
+            ctx.device.device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .buffer_info(&[vk::DescriptorBufferInfo::default()
+                        .buffer(info_buffer.handle)
+                        .range(vk::WHOLE_SIZE)])
+                    .descriptor_count(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .dst_set(dset)],
+                &[],
+            );
+        }
+        Ok(Self {
+            meshes: Default::default(),
+            info_buffer,
+            dset,
+        })
+    }
+
+    fn add_mesh(
+        &mut self,
+        ctx: &mut GpuCtx,
+        name: &str,
+        mesh: Mesh,
+        cb: vk::CommandBuffer,
+    ) -> anyhow::Result<Vec<GpuBuffer>> {
+        let (gpu_mesh, stg_buffers) = GpuLoadedMesh::new(ctx, cb, mesh)?;
+        self.meshes.insert(name.to_string(), gpu_mesh);
+        Ok(stg_buffers)
+    }
+
+    fn write_data(
+        &mut self,
+        ctx: &mut GpuCtx,
+        cb: vk::CommandBuffer,
+        data: &[GpuMeshInfo],
+    ) -> anyhow::Result<Option<GpuBuffer>> {
+        let needed_size = (data.len() * size_of::<GpuMeshInfo>()) as u64;
+        if self.info_buffer.len < needed_size {
+            let info_buffer = GpuBuffer::new_gpu_local_ro(
+                ctx,
+                needed_size.next_power_of_two(),
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+            )?;
+            self.info_buffer.destroy(ctx);
+            self.info_buffer = info_buffer;
+            unsafe {
+                ctx.device.device.update_descriptor_sets(
+                    &[vk::WriteDescriptorSet::default()
+                        .buffer_info(&[vk::DescriptorBufferInfo::default()
+                            .buffer(self.info_buffer.handle)
+                            .range(vk::WHOLE_SIZE)])
+                        .descriptor_count(1)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .dst_set(self.dset)],
+                    &[],
+                );
+            }
+        }
+        write_to_gpu_buffer(
+            ctx,
+            cb,
+            &mut self.info_buffer,
+            0,
+            bytemuck::cast_slice(data),
+        )
+    }
+
+    fn destroy(&mut self, ctx: &mut GpuCtx, dpool: &mut GpuDsl) {
+        for (_, mut mesh) in self.meshes.drain() {
+            mesh.destroy(ctx);
+        }
+        self.info_buffer.destroy(ctx);
+        dpool.reclaim(self.dset);
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, NoUninit)]
+struct GpuCamera {
+    transform: glam::Mat4,
+    eye: glam::Vec4,
+}
+
+struct GpuLoadedCamera {
+    buffer: GpuBuffer,
+    dset: vk::DescriptorSet,
+}
+
+impl GpuLoadedCamera {
+    fn new(ctx: &mut GpuCtx, dpool: &mut GpuDsl) -> anyhow::Result<Self> {
+        let buffer = GpuBuffer::new_gpu_local_ro(
+            ctx,
+            size_of::<GpuCamera>() as _,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+        )?;
+        let dset = dpool.get_set(ctx)?;
+        unsafe {
+            ctx.device.device.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .buffer_info(&[vk::DescriptorBufferInfo::default()
+                        .buffer(buffer.handle)
+                        .range(vk::WHOLE_SIZE)])
+                    .descriptor_count(1)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .dst_set(dset)],
+                &[],
+            );
+        }
+        Ok(Self { buffer, dset })
+    }
+
+    fn udpate(
+        &mut self,
+        ctx: &mut GpuCtx,
+        cb: vk::CommandBuffer,
+        cam: &Camera3d,
+    ) -> anyhow::Result<Option<GpuBuffer>> {
+        let transform = cam.get_perspective_proj();
+        let gpu_cam = GpuCamera {
+            transform,
+            eye: glam::Vec4::from((cam.eye, 1.0)),
+        };
+        write_to_gpu_buffer(ctx, cb, &mut self.buffer, 0, bytemuck::bytes_of(&gpu_cam))
+    }
+
+    fn destroy(&mut self, ctx: &mut GpuCtx, dpool: &mut GpuDsl) {
+        self.buffer.destroy(ctx);
+        dpool.reclaim(self.dset);
+    }
+}
+
 pub struct RendererVk12 {
     deferred_buffers_to_delete: Vec<GpuBuffer>,
     deferred_command_buffer: Option<vk::CommandBuffer>,
     loaded_materials: GpuMaterialMgr,
-    loaded_meshes: HashMap<String, GpuLoadedMesh>,
+    loaded_meshes: GpuMeshMgr,
+    loaded_camera: GpuLoadedCamera,
+    depth_image: GpuImage,
     mesh_pipeline: RenderPipelineVk12,
     swapchain: GpuSwapchain,
     ctx: GpuCtx,
@@ -1312,13 +1665,26 @@ impl RendererVk12 {
     pub fn new(window: &Arc<Window>) -> anyhow::Result<Self> {
         let mut ctx = GpuCtx::new(window)?;
         let swapchain = GpuSwapchain::new(&mut ctx)?;
-        let mesh_pipeline = RenderPipelineVk12::new_mesh_pipeline(&mut ctx)?;
-        let loaded_materials = GpuMaterialMgr::new(&mut ctx)?;
+        let mut mesh_pipeline =
+            RenderPipelineVk12::new_mesh_pipeline(&mut ctx, swapchain.format.format)?;
+        let loaded_materials = GpuMaterialMgr::new(&mut ctx, &mut mesh_pipeline.dsls[2])?;
+        let loaded_meshes = GpuMeshMgr::new(&mut ctx, &mut mesh_pipeline.dsls[1])?;
+        let loaded_camera = GpuLoadedCamera::new(&mut ctx, &mut mesh_pipeline.dsls[0])?;
+        let depth_image = GpuImage::new(
+            &mut ctx,
+            GpuImageType::E2d,
+            vk::Format::D32_SFLOAT,
+            (swapchain.res.0, swapchain.res.1, 1),
+            1,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        )?;
         Ok(Self {
             deferred_buffers_to_delete: Default::default(),
             deferred_command_buffer: None,
             loaded_materials,
-            loaded_meshes: Default::default(),
+            loaded_meshes,
+            loaded_camera,
+            depth_image,
             mesh_pipeline,
             swapchain,
             ctx,
@@ -1335,6 +1701,13 @@ impl RendererVk12 {
                     .device
                     .graphics_q
                     .get_cmd_buffer(&self.ctx.device.device)?;
+                unsafe {
+                    self.ctx.device.device.begin_command_buffer(
+                        cb,
+                        &vk::CommandBufferBeginInfo::default()
+                            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                    )?;
+                }
                 self.deferred_command_buffer = Some(cb);
                 cb
             }
@@ -1342,17 +1715,224 @@ impl RendererVk12 {
         Ok(cb)
     }
 
+    fn load_material(name: &str) -> anyhow::Result<Material> {
+        let mat_bytes = fs::read(name)?;
+        let material = ron::de::from_bytes(&mat_bytes)?;
+        Ok(material)
+    }
+
     pub fn resize(&mut self) -> anyhow::Result<()> {
         self.swapchain.resize(&mut self.ctx)?;
         Ok(())
     }
 
-    pub fn render(&mut self, scene: &Scene) -> anyhow::Result<()> {
+    pub fn render(&mut self, scene: &Scene, camera: &Camera3d) -> anyhow::Result<()> {
         let Some(idx) = self.swapchain.acquire(&mut self.ctx)? else {
             self.resize()?;
             return Ok(());
         };
 
+        let cb = self.get_deferred_cmd_buffer()?;
+
+        if let Some(stg_buffer) = self
+            .loaded_camera
+            .udpate(&mut self.ctx, cb, camera)
+            .with_context(|| "camera update")?
+        {
+            self.deferred_buffers_to_delete.push(stg_buffer);
+        }
+        let object_datas: Vec<_> = scene
+            .drawables
+            .iter()
+            .map(|d| GpuMeshInfo {
+                transform: d.transform,
+            })
+            .collect();
+        self.loaded_meshes
+            .write_data(&mut self.ctx, cb, &object_datas)?;
+
+        let mut material_ids = vec![];
+        for drawable in &scene.drawables {
+            match self.loaded_materials.materials.get(&drawable.material) {
+                Some(idx) => {
+                    material_ids.push(*idx);
+                }
+                None => {
+                    let material = Self::load_material(&drawable.material).unwrap_or_default();
+                    let stg_buffer = self.loaded_materials.add_material(
+                        &mut self.ctx,
+                        &drawable.material,
+                        material,
+                        cb,
+                    )?;
+                    material_ids.push(self.loaded_materials.buffer.len);
+                    if let Some(buffer) = stg_buffer {
+                        self.deferred_buffers_to_delete.push(buffer);
+                    }
+                }
+            };
+            if self.loaded_meshes.meshes.get(&drawable.mesh).is_none() {
+                let mesh_bytes = fs::read(&drawable.mesh)?;
+                let mesh = ron::de::from_bytes(&mesh_bytes)?;
+                self.loaded_meshes
+                    .add_mesh(&mut self.ctx, &drawable.mesh, mesh, cb)?;
+            }
+        }
+
+        self.swapchain.images[idx as usize].transition(
+            &mut self.ctx,
+            cb,
+            GpuImageAccess {
+                layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                access: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            },
+        );
+        if self.depth_image.res != self.swapchain.images[idx as usize].res {
+            let depth_image = GpuImage::new(
+                &mut self.ctx,
+                GpuImageType::E2d,
+                vk::Format::D32_SFLOAT,
+                (self.swapchain.res.0, self.swapchain.res.1, 1),
+                1,
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            )?;
+            self.depth_image.destroy(&mut self.ctx);
+            self.depth_image = depth_image;
+        }
+        self.depth_image.transition(
+            &mut self.ctx,
+            cb,
+            GpuImageAccess {
+                layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                access: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                stage: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+            },
+        );
+
+        let framebuffer = self.mesh_pipeline.get_frame_buffer(
+            &self.ctx,
+            vec![
+                &mut self.swapchain.images[idx as usize],
+                &mut self.depth_image,
+            ],
+        )?;
+        unsafe {
+            self.ctx.device.device.cmd_begin_render_pass(
+                cb,
+                &vk::RenderPassBeginInfo::default()
+                    .clear_values(&[
+                        vk::ClearValue {
+                            color: vk::ClearColorValue::default(),
+                        },
+                        vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue::default().depth(1.0),
+                        },
+                    ])
+                    .framebuffer(framebuffer)
+                    .render_area(vk::Rect2D::default().extent(vk::Extent2D {
+                        width: self.swapchain.res.0,
+                        height: self.swapchain.res.1,
+                    }))
+                    .render_pass(self.mesh_pipeline.render_pass),
+                vk::SubpassContents::INLINE,
+            );
+            self.ctx.device.device.cmd_bind_pipeline(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.mesh_pipeline.handle,
+            );
+            self.ctx.device.device.cmd_set_viewport(
+                cb,
+                0,
+                &[vk::Viewport {
+                    x: 0.0,
+                    y: self.swapchain.res.1 as _,
+                    width: self.swapchain.res.0 as _,
+                    height: -(self.swapchain.res.1 as f32),
+                    min_depth: 0.0,
+                    max_depth: 1.0,
+                }],
+            );
+            self.ctx.device.device.cmd_set_scissor(
+                cb,
+                0,
+                &[vk::Rect2D::default()
+                    .offset(vk::Offset2D::default())
+                    .extent(vk::Extent2D {
+                        width: self.swapchain.res.0,
+                        height: self.swapchain.res.1,
+                    })],
+            );
+
+            self.ctx.device.device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.mesh_pipeline.layout,
+                0,
+                &[
+                    self.loaded_camera.dset,
+                    self.loaded_meshes.dset,
+                    self.loaded_materials.dset,
+                ],
+                &[],
+            );
+
+            for (i, drawable) in scene.drawables.iter().enumerate() {
+                let Some(gpu_mesh) = self.loaded_meshes.meshes.get(&drawable.mesh) else {
+                    continue;
+                };
+                let pc_data = MeshPipelinePushConstant {
+                    obj_id: i as _,
+                    material_id: material_ids[i],
+                };
+                self.ctx
+                    .device
+                    .device
+                    .cmd_bind_vertex_buffers(cb, 0, &[gpu_mesh.vbo.handle], &[0]);
+                self.ctx.device.device.cmd_bind_index_buffer(
+                    cb,
+                    gpu_mesh.ibo.handle,
+                    0,
+                    vk::IndexType::UINT16,
+                );
+                self.ctx.device.device.cmd_push_constants(
+                    cb,
+                    self.mesh_pipeline.layout,
+                    vk::ShaderStageFlags::ALL,
+                    0,
+                    bytemuck::bytes_of(&pc_data),
+                );
+                self.ctx
+                    .device
+                    .device
+                    .cmd_draw_indexed(cb, gpu_mesh.draw_count, 1, 0, 0, 0);
+            }
+
+            self.ctx.device.device.cmd_end_render_pass(cb);
+        }
+
+        self.swapchain.images[idx as usize].transition(
+            &mut self.ctx,
+            cb,
+            GpuImageAccess {
+                layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                access: vk::AccessFlags::empty(),
+                stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            },
+        );
+
+        unsafe {
+            self.ctx.device.device.end_command_buffer(cb)?;
+        }
+
+        let task = self.ctx.device.submit(cb)?;
+        self.ctx.device.wait(vec![task])?;
+        self.ctx.device.graphics_q.reclaim(cb);
+        self.deferred_command_buffer = None;
+        for mut buf in self.deferred_buffers_to_delete.drain(..) {
+            buf.destroy(&mut self.ctx);
+        }
         self.swapchain.present(&mut self.ctx, idx)?;
         Ok(())
     }
@@ -1364,7 +1944,14 @@ impl Drop for RendererVk12 {
             if let Err(e) = self.ctx.device.device.device_wait_idle() {
                 log::warn!("waiting for gpu to be idle failed: {e}")
             };
+            self.loaded_materials
+                .destroy(&mut self.ctx, &mut self.mesh_pipeline.dsls[2]);
+            self.loaded_meshes
+                .destroy(&mut self.ctx, &mut self.mesh_pipeline.dsls[1]);
+            self.loaded_camera
+                .destroy(&mut self.ctx, &mut self.mesh_pipeline.dsls[0]);
             self.mesh_pipeline.destroy(&mut self.ctx);
+            self.depth_image.destroy(&mut self.ctx);
             self.swapchain.destroy(&mut self.ctx);
         }
     }
