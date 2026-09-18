@@ -2,9 +2,6 @@ use bytemuck::NoUninit;
 use glam::Vec4Swizzles;
 use serde::{Deserialize, Serialize};
 
-pub type Color3 = [u8; 3];
-pub type Color4 = [u8; 4];
-
 pub mod vk12;
 
 #[repr(C)]

@@ -252,6 +252,7 @@ impl Game {
             self.load_level()
                 .inspect_err(|e| log::error!("loading level failed: {e:#}"))
                 .ok();
+            self.renderer_system.reset_data();
         }
         let mut up = 0;
         let mut front = 0;
