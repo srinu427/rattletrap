@@ -1,5 +1,6 @@
 use std::{
     marker::PhantomData,
+    mem,
     ops::{AddAssign, Range},
 };
 
@@ -60,10 +61,10 @@ impl GpuBuffer {
         len: u64,
         mut usage: vk::BufferUsageFlags,
     ) -> anyhow::Result<Self> {
+        usage |= vk::BufferUsageFlags::TRANSFER_DST;
         if ctx.gpu_info.unified_mem {
             GpuBuffer::new(ctx, len, usage, true)
         } else {
-            usage |= vk::BufferUsageFlags::TRANSFER_DST;
             GpuBuffer::new(ctx, len, usage, false)
         }
     }
@@ -385,14 +386,32 @@ pub struct GpuVecData<T: NoUninit> {
 impl<T: NoUninit> GpuVecData<T> {
     pub fn new(ctx: &mut GpuCtx) -> anyhow::Result<Self> {
         let buf_size = 128 * size_of::<T>() as u64;
-        let buffer =
-            GpuBuffer::new_gpu_local_ro(ctx, buf_size, vk::BufferUsageFlags::STORAGE_BUFFER)?;
+        let buffer = GpuBuffer::new_gpu_local_ro(
+            ctx,
+            buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
+        )?;
         Ok(Self {
             buffer,
-            capacity: 128,
+            capacity: 1,
             len: 0,
             _phantom: Default::default(),
         })
+    }
+
+    fn grow(&mut self, ctx: &mut GpuCtx, cr: &mut GpuCommandRecorder) -> anyhow::Result<()> {
+        let old_buf_size = self.buffer.len;
+        let new_buf_size = old_buf_size * 2;
+        let mut new_buffer = GpuBuffer::new_gpu_local_ro(
+            ctx,
+            new_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
+        )?;
+        cr.copy_b2b(ctx, &mut self.buffer, 0, &mut new_buffer, 0, old_buf_size)?;
+        self.capacity *= 2;
+        mem::swap(&mut self.buffer, &mut new_buffer);
+        cr.preserve_buffers.push(new_buffer);
+        Ok(())
     }
 
     pub fn push(
@@ -401,6 +420,9 @@ impl<T: NoUninit> GpuVecData<T> {
         elem: T,
         cr: &mut GpuCommandRecorder,
     ) -> anyhow::Result<()> {
+        if self.len == self.capacity {
+            self.grow(ctx, cr)?;
+        }
         let insert_idx = self.len;
         let write_offset = insert_idx as u64 * size_of::<T>() as u64;
         self.len += 1;

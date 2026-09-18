@@ -230,6 +230,76 @@ impl GpuCommandRecorder {
         Ok(())
     }
 
+    fn copy_b2b_coherent(
+        src: &mut GpuBuffer,
+        src_offset: u64,
+        dst: &mut GpuBuffer,
+        dst_offset: u64,
+        len: u64,
+    ) -> anyhow::Result<()> {
+        let src_mem = src
+            .allocation
+            .as_mut()
+            .with_context(|| "no mem allocation for src buffer")?
+            .mapped_slice()
+            .with_context(|| "cant map src buffer memory")?;
+        let src_slice = &src_mem[src_offset as usize..(src_offset + len) as usize];
+        let dst_mem = dst
+            .allocation
+            .as_mut()
+            .with_context(|| "no mem allocation for dst buffer")?
+            .mapped_slice_mut()
+            .with_context(|| "cant map dst buffer memory")?;
+        let dst_slice = &mut dst_mem[dst_offset as usize..(dst_offset + len) as usize];
+        dst_slice.copy_from_slice(src_slice);
+        Ok(())
+    }
+
+    pub fn copy_b2b(
+        &mut self,
+        ctx: &mut GpuCtx,
+        src: &mut GpuBuffer,
+        src_offset: u64,
+        dst: &mut GpuBuffer,
+        dst_offset: u64,
+        len: u64,
+    ) -> anyhow::Result<()> {
+        if ctx.gpu_info.unified_mem {
+            Self::copy_b2b_coherent(src, src_offset, dst, dst_offset, len)?;
+            return Ok(());
+        }
+        self.begin(ctx)?;
+        unsafe {
+            ctx.device.cmd_copy_buffer(
+                self.cb,
+                src.handle,
+                dst.handle,
+                &[vk::BufferCopy {
+                    src_offset,
+                    dst_offset,
+                    size: len,
+                }],
+            );
+            ctx.device.cmd_pipeline_barrier(
+                self.cb,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[vk::BufferMemoryBarrier::default()
+                    .buffer(dst.handle)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_queue_family_index(ctx.graphics_q.family)
+                    .offset(0)
+                    .size(dst.len)
+                    .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .src_queue_family_index(ctx.graphics_q.family)],
+                &[],
+            );
+        }
+        Ok(())
+    }
+
     pub fn write_to_gpu_buffer(
         &mut self,
         ctx: &mut GpuCtx,
@@ -262,18 +332,7 @@ impl GpuCommandRecorder {
                 .mapped_slice_mut()
                 .with_context(|| "cant map stage buffer's memory")?[..copy_size as usize]
                 .copy_from_slice(&data[..copy_size as usize]);
-            unsafe {
-                ctx.device.cmd_copy_buffer(
-                    self.cb,
-                    stage_buffer.handle,
-                    buffer.handle,
-                    &[vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: offset,
-                        size: copy_size,
-                    }],
-                );
-            }
+            self.copy_b2b(ctx, &mut stage_buffer, 0, buffer, offset, copy_size)?;
             self.preserve_buffers.push(stage_buffer);
             Ok(())
         }

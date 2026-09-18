@@ -186,6 +186,42 @@ impl Default for Material {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::NoUninit, bytemuck::Zeroable)]
+struct Light {
+    pub position: glam::Vec4, // xyz = World Position, w = Type (0 = Directional, 1 = Point)
+    pub color: glam::Vec4,    // rgb = Light Color, a = Intensity / Power
+    pub direction: glam::Vec4, // xyz = Light Direction (for directional lights), w = Attenuation distance (for point lights)
+}
+
+impl Light {
+    pub fn new_point_light(
+        pos: glam::Vec3,
+        color: glam::Vec3,
+        intensity: f32,
+        attenuation_dist: f32,
+    ) -> Self {
+        Self {
+            position: glam::Vec4::from((pos, 1.0)),
+            color: glam::Vec4::from((color, intensity)),
+            direction: glam::vec4(0.0, 0.0, 0.0, attenuation_dist),
+        }
+    }
+
+    pub fn new_directional_light(
+        pos: glam::Vec3,
+        color: glam::Vec3,
+        intensity: f32,
+        direction: glam::Vec3,
+    ) -> Self {
+        Self {
+            position: glam::Vec4::from((pos, 0.0)),
+            color: glam::Vec4::from((color, intensity)),
+            direction: glam::Vec4::from((direction, 0.0)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DrawableMesh {
     pub mesh: String,

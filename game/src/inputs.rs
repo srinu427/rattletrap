@@ -65,7 +65,7 @@ impl Inputs {
             ks.pressed_this_frame = false;
             ks.released_this_frame = false;
         }
-        self.mouse = (0.0, 0.0);
+        self.reset_mouse();
     }
 
     pub fn add_key_event(&mut self, key: PhysicalKey, state: ElementState) {

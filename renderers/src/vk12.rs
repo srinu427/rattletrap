@@ -15,7 +15,7 @@ mod resource;
 mod swapchain;
 
 use crate::{
-    Camera3d, Material, Mesh, MeshVertex, Scene,
+    Camera3d, Light, Material, Mesh, MeshVertex, Scene,
     vk12::{
         device::{GpuCommandRecorder, GpuCtx},
         resource::{
@@ -503,23 +503,28 @@ impl GpuMaterialMgr {
     fn new(ctx: &mut GpuCtx, dpool: &mut GpuDsl) -> anyhow::Result<Self> {
         let buffer = GpuVecData::new(ctx)?;
         let dset = dpool.get_set(ctx)?;
+        let out = Self {
+            materials: Default::default(),
+            buffer,
+            dset,
+        };
+        out.sync_dset(ctx);
+        Ok(out)
+    }
+
+    fn sync_dset(&self, ctx: &GpuCtx) {
         unsafe {
             ctx.device.update_descriptor_sets(
                 &[vk::WriteDescriptorSet::default()
                     .buffer_info(&[vk::DescriptorBufferInfo::default()
-                        .buffer(buffer.buffer.handle)
+                        .buffer(self.buffer.buffer.handle)
                         .range(vk::WHOLE_SIZE)])
                     .descriptor_count(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .dst_set(dset)],
+                    .dst_set(self.dset)],
                 &[],
             );
         }
-        Ok(Self {
-            materials: Default::default(),
-            buffer,
-            dset,
-        })
     }
 
     fn add_material(
@@ -533,7 +538,12 @@ impl GpuMaterialMgr {
             return Ok(());
         }
         let insert_idx = self.buffer.len;
+        let old_buffer_handle = self.buffer.buffer.handle;
         self.buffer.push(ctx, material, cr)?;
+        let new_buffer_handle = self.buffer.buffer.handle;
+        if old_buffer_handle != new_buffer_handle {
+            self.sync_dset(ctx);
+        }
         self.materials.insert(name.to_string(), insert_idx);
         Ok(())
     }
@@ -799,6 +809,10 @@ impl RendererVk12 {
     pub fn resize(&mut self) -> anyhow::Result<()> {
         self.swapchain.resize(&mut self.ctx)?;
         Ok(())
+    }
+
+    fn render_shadow_map(&mut self, scene: &Scene, light: &Light) -> anyhow::Result<()> {
+        todo!()
     }
 
     pub fn render(&mut self, scene: &Scene, camera: &Camera3d) -> anyhow::Result<()> {
