@@ -750,6 +750,7 @@ pub struct RendererVk12 {
     loaded_camera: GpuLoadedCamera,
     depth_image: GpuImage,
     mesh_pipeline: RenderPipelineVk12,
+    smap_pipeline: RenderPipelineVk12,
     swapchain: GpuSwapchain,
     ctx: GpuCtx,
 }
@@ -758,6 +759,7 @@ impl RendererVk12 {
     pub fn new(window: &Arc<Window>) -> anyhow::Result<Self> {
         let mut ctx = GpuCtx::new(window)?;
         let swapchain = GpuSwapchain::new(&mut ctx)?;
+        let smap_pipeline = RenderPipelineVk12::new_smap_pipeline(&mut ctx)?;
         let mut mesh_pipeline =
             RenderPipelineVk12::new_mesh_pipeline(&mut ctx, swapchain.format.format)?;
         let loaded_materials = GpuMaterialMgr::new(&mut ctx, &mut mesh_pipeline.dsls[2])?;
@@ -778,6 +780,7 @@ impl RendererVk12 {
             loaded_camera,
             depth_image,
             mesh_pipeline,
+            smap_pipeline,
             swapchain,
             ctx,
         })
@@ -811,7 +814,47 @@ impl RendererVk12 {
         Ok(())
     }
 
-    fn render_shadow_map(&mut self, scene: &Scene, light: &Light) -> anyhow::Result<()> {
+    fn render_shadow_map(
+        &mut self,
+        cr: &mut GpuCommandRecorder,
+        scene: &Scene,
+        light: &Light,
+        output: &mut GpuImage,
+    ) -> anyhow::Result<()> {
+        cr.begin(&mut self.ctx)?;
+        self.smap_pipeline
+            .start(&mut self.ctx, cr.cb, vec![output])?;
+        unsafe {
+            for (i, drawable) in scene.drawables.iter().enumerate() {
+                let Some(gpu_mesh) = self.loaded_meshes.meshes.get(&drawable.mesh) else {
+                    continue;
+                };
+                let pc_data = MeshPipelinePushConstant {
+                    obj_id: i as _,
+                    material_id: 0,
+                };
+                self.ctx
+                    .device
+                    .cmd_bind_vertex_buffers(cr.cb, 0, &[gpu_mesh.vbo.handle], &[0]);
+                self.ctx.device.cmd_bind_index_buffer(
+                    cr.cb,
+                    gpu_mesh.ibo.handle,
+                    0,
+                    vk::IndexType::UINT16,
+                );
+                self.ctx.device.cmd_push_constants(
+                    cr.cb,
+                    self.mesh_pipeline.layout,
+                    vk::ShaderStageFlags::ALL,
+                    0,
+                    bytemuck::bytes_of(&pc_data),
+                );
+                self.ctx
+                    .device
+                    .cmd_draw_indexed(cr.cb, gpu_mesh.draw_count, 1, 0, 0, 0);
+            }
+            self.ctx.device.cmd_end_render_pass(cr.cb);
+        }
         todo!()
     }
 

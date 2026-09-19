@@ -209,7 +209,7 @@ pub struct GpuCommandRecorder {
 }
 
 impl GpuCommandRecorder {
-    fn begin(&mut self, ctx: &mut GpuCtx) -> anyhow::Result<()> {
+    pub fn begin(&mut self, ctx: &mut GpuCtx) -> anyhow::Result<()> {
         if !self.is_recording {
             unsafe {
                 ctx.device
@@ -220,7 +220,7 @@ impl GpuCommandRecorder {
         Ok(())
     }
 
-    fn end(&mut self, ctx: &mut GpuCtx) -> anyhow::Result<()> {
+    pub fn end(&mut self, ctx: &mut GpuCtx) -> anyhow::Result<()> {
         if self.is_recording {
             unsafe {
                 ctx.device.end_command_buffer(self.cb)?;

@@ -1,9 +1,14 @@
-use std::{fs, sync::Arc};
+use std::{
+    any::{Any, TypeId},
+    fs,
+    sync::Arc,
+};
 
 // use physics::PhysicsManager;
 use crate::inputs::Inputs;
 
 use glam::{Mat4, Vec3};
+use hashbrown::HashMap;
 use physics::{
     Kinematics, Orientation, PhysicsManager, RigidBody, collision_shape::CollisionShape,
 };
@@ -65,6 +70,51 @@ pub struct GameObjectRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameWorldDisk {
     objects: Vec<GameObjectDisk>,
+}
+
+pub struct ComponentData<T> {
+    data: Vec<T>,
+}
+
+pub struct DataBank {
+    bank: HashMap<TypeId, Box<dyn Any>>,
+}
+
+impl DataBank {
+    unsafe fn get_unchecked_mut<T: 'static>(&mut self) -> &mut ComponentData<T> {
+        // Get the Box<dyn Any> from the map
+        let any_box = self
+            .bank
+            .get_mut(&TypeId::of::<T>())
+            .expect("Component data not found");
+
+        // Convert the Box<dyn Any> to a raw pointer and cast it to the concrete type pointer
+        let raw: *mut dyn Any = &mut **any_box;
+        let typed_ptr = raw.cast::<ComponentData<T>>();
+
+        &mut *typed_ptr
+    }
+
+    unsafe fn get_unchecked<T: 'static>(&self) -> &ComponentData<T> {
+        // Get the Box<dyn Any> from the map
+        let any_box = self
+            .bank
+            .get(&TypeId::of::<T>())
+            .expect("Component data not found");
+
+        // Convert the Box<dyn Any> to a raw pointer and cast it to the concrete type pointer
+        let raw: *const dyn Any = &**any_box;
+        let typed_ptr = raw.cast::<ComponentData<T>>();
+
+        &*typed_ptr
+    }
+
+    fn get_data<T: 'static>(&self, idx: i64) -> Option<&T> {
+        if idx < 0 {
+            return None;
+        }
+        unsafe { self.get_unchecked().data.get(idx as usize) }
+    }
 }
 
 pub struct GameWorld {
