@@ -119,9 +119,7 @@ impl GpuSwapchain {
                     })
                     .image_format(format.format)
                     .image_usage(
-                        vk::ImageUsageFlags::COLOR_ATTACHMENT
-                            | vk::ImageUsageFlags::TRANSFER_DST
-                            | vk::ImageUsageFlags::STORAGE,
+                        vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
                     )
                     .min_image_count(image_count)
                     .old_swapchain(self.handle)

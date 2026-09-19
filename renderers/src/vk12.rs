@@ -245,7 +245,7 @@ impl RenderPipelineVk12 {
                     .subpasses(&[vk::SubpassDescription::default()
                         .depth_stencil_attachment(
                             &vk::AttachmentReference::default()
-                                .attachment(1)
+                                .attachment(0)
                                 .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
                         )
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)]),
@@ -1003,6 +1003,7 @@ impl Drop for RendererVk12 {
                 .destroy(&mut self.ctx, &mut self.mesh_pipeline.dsls[0]);
             self.mesh_pipeline.destroy(&mut self.ctx);
             self.depth_image.destroy(&mut self.ctx);
+            self.smap_pipeline.destroy(&mut self.ctx);
             self.swapchain.destroy(&mut self.ctx);
         }
     }
