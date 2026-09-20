@@ -19,8 +19,7 @@ use crate::{
     vk12::{
         device::{GpuCommandRecorder, GpuCtx},
         resource::{
-            GpuBuffer, GpuDsl, GpuImage, GpuImageAccess, GpuImageViewInfo, GpuVecData,
-            is_depth_stencil,
+            GpuDsl, GpuImage, GpuImageAccess, GpuImageViewInfo, GpuObj, GpuVec, is_depth_stencil,
         },
         swapchain::GpuSwapchain,
     },
@@ -494,14 +493,14 @@ impl RenderPipelineVk12 {
 }
 
 struct GpuMaterialMgr {
-    materials: HashMap<String, u32>,
-    buffer: GpuVecData<Material>,
+    materials: HashMap<String, usize>,
+    buffer: GpuVec<Material>,
     dset: vk::DescriptorSet,
 }
 
 impl GpuMaterialMgr {
     fn new(ctx: &mut GpuCtx, dpool: &mut GpuDsl) -> anyhow::Result<Self> {
-        let buffer = GpuVecData::new(ctx)?;
+        let buffer = GpuVec::new_dynamic(ctx, vk::BufferUsageFlags::STORAGE_BUFFER)?;
         let dset = dpool.get_set(ctx)?;
         let out = Self {
             materials: Default::default(),
@@ -517,7 +516,7 @@ impl GpuMaterialMgr {
             ctx.device.update_descriptor_sets(
                 &[vk::WriteDescriptorSet::default()
                     .buffer_info(&[vk::DescriptorBufferInfo::default()
-                        .buffer(self.buffer.buffer.handle)
+                        .buffer(self.buffer.buffer)
                         .range(vk::WHOLE_SIZE)])
                     .descriptor_count(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -538,9 +537,9 @@ impl GpuMaterialMgr {
             return Ok(());
         }
         let insert_idx = self.buffer.len;
-        let old_buffer_handle = self.buffer.buffer.handle;
-        self.buffer.push(ctx, material, cr)?;
-        let new_buffer_handle = self.buffer.buffer.handle;
+        let old_buffer_handle = self.buffer.buffer;
+        self.buffer.push(ctx, &material, cr)?;
+        let new_buffer_handle = self.buffer.buffer;
         if old_buffer_handle != new_buffer_handle {
             self.sync_dset(ctx);
         }
@@ -560,22 +559,26 @@ impl GpuMaterialMgr {
 }
 
 struct GpuLoadedMesh {
-    vbo: GpuBuffer,
-    ibo: GpuBuffer,
+    vbo: GpuVec<MeshVertex>,
+    ibo: GpuVec<u16>,
     draw_count: u32,
 }
 
 impl GpuLoadedMesh {
     fn new(ctx: &mut GpuCtx, cr: &mut GpuCommandRecorder, mesh: Mesh) -> anyhow::Result<Self> {
-        let vb_size = (mesh.vertices.len() * size_of::<MeshVertex>()) as u64;
-        let ib_size = (mesh.indices.len() * size_of::<u16>()) as u64;
-        let mut vbo =
-            GpuBuffer::new_gpu_local_ro(ctx, vb_size, vk::BufferUsageFlags::VERTEX_BUFFER)?;
-        let mut ibo =
-            GpuBuffer::new_gpu_local_ro(ctx, ib_size, vk::BufferUsageFlags::INDEX_BUFFER)?;
+        let mut vbo = GpuVec::new_static(
+            ctx,
+            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            mesh.vertices.len(),
+        )?;
+        let mut ibo = GpuVec::new_static(
+            ctx,
+            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            mesh.indices.len(),
+        )?;
+        vbo.write(ctx, 0, &mesh.vertices, cr)?;
+        ibo.write(ctx, 0, &mesh.indices, cr)?;
         let draw_count = mesh.indices.len() as u32;
-        cr.write_to_gpu_buffer(ctx, &mut vbo, 0, bytemuck::cast_slice(&mesh.vertices))?;
-        cr.write_to_gpu_buffer(ctx, &mut ibo, 0, bytemuck::cast_slice(&mesh.indices))?;
         Ok(Self {
             vbo,
             ibo,
@@ -597,23 +600,19 @@ struct GpuMeshInfo {
 
 struct GpuMeshMgr {
     meshes: HashMap<String, GpuLoadedMesh>,
-    info_buffer: GpuBuffer,
+    mesh_info_gvec: GpuVec<GpuMeshInfo>,
     dset: vk::DescriptorSet,
 }
 
 impl GpuMeshMgr {
     fn new(ctx: &mut GpuCtx, dpool: &mut GpuDsl) -> anyhow::Result<Self> {
-        let info_buffer = GpuBuffer::new_gpu_local_ro(
-            ctx,
-            128 * size_of::<GpuMeshInfo>() as u64,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-        )?;
+        let mesh_info_gvec = GpuVec::new_dynamic(ctx, vk::BufferUsageFlags::STORAGE_BUFFER)?;
         let dset = dpool.get_set(ctx)?;
         unsafe {
             ctx.device.update_descriptor_sets(
                 &[vk::WriteDescriptorSet::default()
                     .buffer_info(&[vk::DescriptorBufferInfo::default()
-                        .buffer(info_buffer.handle)
+                        .buffer(mesh_info_gvec.buffer)
                         .range(vk::WHOLE_SIZE)])
                     .descriptor_count(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -623,7 +622,7 @@ impl GpuMeshMgr {
         }
         Ok(Self {
             meshes: Default::default(),
-            info_buffer,
+            mesh_info_gvec,
             dset,
         })
     }
@@ -646,20 +645,15 @@ impl GpuMeshMgr {
         cr: &mut GpuCommandRecorder,
         data: &[GpuMeshInfo],
     ) -> anyhow::Result<()> {
-        let needed_size = (data.len() * size_of::<GpuMeshInfo>()) as u64;
-        if self.info_buffer.len < needed_size {
-            let info_buffer = GpuBuffer::new_gpu_local_ro(
-                ctx,
-                needed_size.next_power_of_two(),
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-            )?;
-            self.info_buffer.destroy(ctx);
-            self.info_buffer = info_buffer;
+        let old_buffer = self.mesh_info_gvec.buffer;
+        self.mesh_info_gvec.write(ctx, 0, data, cr)?;
+        let new_buffer = self.mesh_info_gvec.buffer;
+        if old_buffer != new_buffer {
             unsafe {
                 ctx.device.update_descriptor_sets(
                     &[vk::WriteDescriptorSet::default()
                         .buffer_info(&[vk::DescriptorBufferInfo::default()
-                            .buffer(self.info_buffer.handle)
+                            .buffer(self.mesh_info_gvec.buffer)
                             .range(vk::WHOLE_SIZE)])
                         .descriptor_count(1)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -668,7 +662,6 @@ impl GpuMeshMgr {
                 );
             }
         }
-        cr.write_to_gpu_buffer(ctx, &mut self.info_buffer, 0, bytemuck::cast_slice(data))?;
         Ok(())
     }
 
@@ -682,7 +675,7 @@ impl GpuMeshMgr {
         for (_, mut mesh) in self.meshes.drain() {
             mesh.destroy(ctx);
         }
-        self.info_buffer.destroy(ctx);
+        self.mesh_info_gvec.destroy(ctx);
         dpool.reclaim(self.dset);
     }
 }
@@ -695,23 +688,22 @@ struct GpuCamera {
 }
 
 struct GpuLoadedCamera {
-    buffer: GpuBuffer,
+    gpu_obj: GpuObj<GpuCamera>,
     dset: vk::DescriptorSet,
 }
 
 impl GpuLoadedCamera {
     fn new(ctx: &mut GpuCtx, dpool: &mut GpuDsl) -> anyhow::Result<Self> {
-        let buffer = GpuBuffer::new_gpu_local_ro(
+        let gpu_obj = GpuObj::new(
             ctx,
-            size_of::<GpuCamera>() as _,
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
         )?;
         let dset = dpool.get_set(ctx)?;
         unsafe {
             ctx.device.update_descriptor_sets(
                 &[vk::WriteDescriptorSet::default()
                     .buffer_info(&[vk::DescriptorBufferInfo::default()
-                        .buffer(buffer.handle)
+                        .buffer(gpu_obj.buffer)
                         .range(vk::WHOLE_SIZE)])
                     .descriptor_count(1)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
@@ -719,13 +711,13 @@ impl GpuLoadedCamera {
                 &[],
             );
         }
-        Ok(Self { buffer, dset })
+        Ok(Self { gpu_obj, dset })
     }
 
     fn udpate(
         &mut self,
         ctx: &mut GpuCtx,
-        cb: &mut GpuCommandRecorder,
+        cr: &mut GpuCommandRecorder,
         cam: &Camera3d,
     ) -> anyhow::Result<()> {
         let transform = cam.get_perspective_proj();
@@ -733,12 +725,12 @@ impl GpuLoadedCamera {
             transform,
             eye: glam::Vec4::from((cam.eye, 1.0)),
         };
-        cb.write_to_gpu_buffer(ctx, &mut self.buffer, 0, bytemuck::bytes_of(&gpu_cam))?;
+        self.gpu_obj.write(ctx, cr, &gpu_cam)?;
         Ok(())
     }
 
     fn destroy(&mut self, ctx: &mut GpuCtx, dpool: &mut GpuDsl) {
-        self.buffer.destroy(ctx);
+        self.gpu_obj.destroy(ctx);
         dpool.reclaim(self.dset);
     }
 }
@@ -835,10 +827,10 @@ impl RendererVk12 {
                 };
                 self.ctx
                     .device
-                    .cmd_bind_vertex_buffers(cr.cb, 0, &[gpu_mesh.vbo.handle], &[0]);
+                    .cmd_bind_vertex_buffers(cr.cb, 0, &[gpu_mesh.vbo.buffer], &[0]);
                 self.ctx.device.cmd_bind_index_buffer(
                     cr.cb,
-                    gpu_mesh.ibo.handle,
+                    gpu_mesh.ibo.buffer,
                     0,
                     vk::IndexType::UINT16,
                 );
@@ -942,14 +934,14 @@ impl RendererVk12 {
                 };
                 let pc_data = MeshPipelinePushConstant {
                     obj_id: i as _,
-                    material_id: material_ids[i],
+                    material_id: material_ids[i] as _,
                 };
                 self.ctx
                     .device
-                    .cmd_bind_vertex_buffers(cr.cb, 0, &[gpu_mesh.vbo.handle], &[0]);
+                    .cmd_bind_vertex_buffers(cr.cb, 0, &[gpu_mesh.vbo.buffer], &[0]);
                 self.ctx.device.cmd_bind_index_buffer(
                     cr.cb,
-                    gpu_mesh.ibo.handle,
+                    gpu_mesh.ibo.buffer,
                     0,
                     vk::IndexType::UINT16,
                 );

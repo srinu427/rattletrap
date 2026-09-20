@@ -4,6 +4,7 @@ use std::{
     ops::{AddAssign, Range},
 };
 
+use anyhow::Context;
 use ash::vk;
 use bytemuck::NoUninit;
 use gpu_allocator::{
@@ -14,68 +15,311 @@ use hashbrown::HashMap;
 
 use crate::vk12::device::{GpuCommandRecorder, GpuCtx};
 
-pub struct GpuBuffer {
-    pub handle: vk::Buffer,
-    pub allocation: Option<Allocation>,
-    pub len: u64,
+fn create_buffer(
+    ctx: &mut GpuCtx,
+    usage: vk::BufferUsageFlags,
+    size: u64,
+    cpu_write: bool,
+) -> anyhow::Result<(vk::Buffer, Allocation)> {
+    let buffer = unsafe {
+        ctx.device.create_buffer(
+            &vk::BufferCreateInfo::default().size(size).usage(usage),
+            None,
+        )?
+    };
+    let requirements = unsafe { ctx.device.get_buffer_memory_requirements(buffer) };
+    let allocation = ctx.allocator.allocate(&AllocationCreateDesc {
+        name: &format!("buffer_{:?}", buffer),
+        requirements,
+        location: if cpu_write {
+            MemoryLocation::CpuToGpu
+        } else {
+            MemoryLocation::GpuOnly
+        },
+        linear: true,
+        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+    })?;
+    unsafe {
+        ctx.device
+            .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())?;
+    }
+    Ok((buffer, allocation))
 }
 
-impl GpuBuffer {
-    pub fn new(
-        ctx: &mut GpuCtx,
-        len: u64,
-        usage: vk::BufferUsageFlags,
-        cpu_write: bool,
-    ) -> anyhow::Result<Self> {
-        let handle = unsafe {
-            ctx.device.create_buffer(
-                &vk::BufferCreateInfo::default().size(len).usage(usage),
-                None,
-            )?
-        };
-        let requirements = unsafe { ctx.device.get_buffer_memory_requirements(handle) };
-        let allocation = ctx.allocator.allocate(&AllocationCreateDesc {
-            name: &format!("buffer_{:?}", handle),
-            requirements,
-            location: if cpu_write {
-                MemoryLocation::CpuToGpu
-            } else {
-                MemoryLocation::GpuOnly
-            },
-            linear: true,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        })?;
-        unsafe {
-            ctx.device
-                .bind_buffer_memory(handle, allocation.memory(), allocation.offset())?;
-        }
+fn copy_b2b(
+    ctx: &mut GpuCtx,
+    cr: &mut GpuCommandRecorder,
+    src: vk::Buffer,
+    src_offset: u64,
+    dst: vk::Buffer,
+    dst_offset: u64,
+    len: u64,
+) -> anyhow::Result<()> {
+    cr.begin(ctx)?;
+    unsafe {
+        ctx.device.cmd_copy_buffer(
+            cr.cb,
+            src,
+            dst,
+            &[vk::BufferCopy {
+                src_offset,
+                dst_offset,
+                size: len,
+            }],
+        );
+        ctx.device.cmd_pipeline_barrier(
+            cr.cb,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[vk::BufferMemoryBarrier::default()
+                .buffer(dst)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_queue_family_index(ctx.graphics_q.family)
+                .offset(0)
+                .size(vk::WHOLE_SIZE)
+                .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .src_queue_family_index(ctx.graphics_q.family)],
+            &[],
+        );
+    }
+    Ok(())
+}
+
+pub struct GpuObj<T: NoUninit> {
+    pub buffer: vk::Buffer,
+    pub allocation: Option<Allocation>,
+    pub phantom: PhantomData<T>,
+}
+
+impl<T: NoUninit> GpuObj<T> {
+    pub fn new(ctx: &mut GpuCtx, usage: vk::BufferUsageFlags) -> anyhow::Result<Self> {
+        let size = size_of::<T>() as u64;
+        let (buffer, allocation) = create_buffer(ctx, usage, size, ctx.gpu_info.unified_mem)?;
         Ok(Self {
-            handle,
+            buffer,
             allocation: Some(allocation),
-            len,
+            phantom: Default::default(),
         })
     }
 
-    pub fn new_gpu_local_ro(
+    pub fn write(
+        &mut self,
         ctx: &mut GpuCtx,
-        len: u64,
-        mut usage: vk::BufferUsageFlags,
-    ) -> anyhow::Result<Self> {
-        usage |= vk::BufferUsageFlags::TRANSFER_DST;
+        cr: &mut GpuCommandRecorder,
+        t: &T,
+    ) -> anyhow::Result<()> {
+        let size = size_of::<T>();
         if ctx.gpu_info.unified_mem {
-            GpuBuffer::new(ctx, len, usage, true)
+            let mem_slice = self
+                .allocation
+                .as_mut()
+                .with_context(|| "no allocated memory")?
+                .mapped_slice_mut()
+                .with_context(|| "memory not cpu writeable")?;
+            mem_slice[..size].copy_from_slice(bytemuck::bytes_of(t));
         } else {
-            GpuBuffer::new(ctx, len, usage, false)
+            let (stage_buffer, mut stage_allocation) =
+                create_buffer(ctx, vk::BufferUsageFlags::TRANSFER_SRC, size as u64, true)?;
+            let mem_slice = stage_allocation
+                .mapped_slice_mut()
+                .with_context(|| "staging memory not cpu writeable")?;
+            mem_slice[..size].copy_from_slice(bytemuck::bytes_of(t));
+            copy_b2b(ctx, cr, stage_buffer, 0, self.buffer, 0, size as u64)?;
+            cr.preserve_buffers.push((stage_buffer, stage_allocation));
         }
+        Ok(())
     }
 
     pub fn destroy(&mut self, ctx: &mut GpuCtx) {
         if let Some(altn) = self.allocation.take() {
             unsafe {
-                ctx.device.destroy_buffer(self.handle, None);
+                ctx.device.destroy_buffer(self.buffer, None);
             }
             if let Err(e) = ctx.allocator.free(altn) {
-                log::warn!("freeing memory of buffer {:?} failed: {e}", self.handle)
+                log::warn!("freeing memory of gpu buffer {:?} failed: {e}", self.buffer)
+            };
+        }
+    }
+}
+
+pub struct GpuVec<T: NoUninit> {
+    pub buffer: vk::Buffer,
+    allocation: Option<Allocation>,
+    capacity: usize,
+    pub len: usize,
+    usage: vk::BufferUsageFlags,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: NoUninit> GpuVec<T> {
+    pub fn new_dynamic(ctx: &mut GpuCtx, mut usage: vk::BufferUsageFlags) -> anyhow::Result<Self> {
+        let buf_size = size_of::<T>() as u64;
+        usage |= vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST;
+        let (buffer, allocation) = create_buffer(ctx, usage, buf_size, ctx.gpu_info.unified_mem)?;
+        Ok(Self {
+            buffer,
+            allocation: Some(allocation),
+            capacity: 1,
+            len: 0,
+            usage,
+            _phantom: Default::default(),
+        })
+    }
+
+    pub fn new_static(
+        ctx: &mut GpuCtx,
+        usage: vk::BufferUsageFlags,
+        capacity: usize,
+    ) -> anyhow::Result<Self> {
+        let buf_size = capacity as u64 * size_of::<T>() as u64;
+        let (buffer, allocation) = create_buffer(ctx, usage, buf_size, ctx.gpu_info.unified_mem)?;
+        Ok(Self {
+            buffer,
+            allocation: Some(allocation),
+            capacity,
+            len: 0,
+            usage,
+            _phantom: Default::default(),
+        })
+    }
+
+    fn grow(
+        &mut self,
+        ctx: &mut GpuCtx,
+        cr: &mut GpuCommandRecorder,
+        atleast: usize,
+    ) -> anyhow::Result<()> {
+        let old_buf_size = (self.len * size_of::<T>()) as u64;
+        let new_capacity = atleast.next_power_of_two();
+        let new_buf_size = (new_capacity * size_of::<T>()) as u64;
+        let (new_buffer, new_allocation) =
+            create_buffer(ctx, self.usage, new_buf_size, ctx.gpu_info.unified_mem)?;
+        if self.len > 0 {
+            copy_b2b(ctx, cr, self.buffer, 0, new_buffer, 0, old_buf_size)?;
+            let old_buffer = mem::replace(&mut self.buffer, new_buffer);
+            let old_allocation = self.allocation.replace(new_allocation);
+            if let Some(old_allocation) = old_allocation {
+                cr.preserve_buffers.push((old_buffer, old_allocation));
+            }
+        } else {
+            let old_buffer = mem::replace(&mut self.buffer, new_buffer);
+            let old_allocation = self.allocation.replace(new_allocation);
+            if let Some(old_allocation) = old_allocation {
+                unsafe {
+                    ctx.device.destroy_buffer(old_buffer, None);
+                    ctx.allocator.free(old_allocation);
+                }
+            }
+        }
+        self.capacity = new_capacity;
+
+        Ok(())
+    }
+
+    pub fn write(
+        &mut self,
+        ctx: &mut GpuCtx,
+        offset: usize,
+        elems: &[T],
+        cr: &mut GpuCommandRecorder,
+    ) -> anyhow::Result<()> {
+        let size = size_of::<T>();
+        // Bounds check
+        if (offset + elems.len()) > self.capacity {
+            self.grow(ctx, cr, offset + elems.len())?;
+        }
+        let write_offset = offset * size;
+        let write_size = elems.len() * size;
+        if ctx.gpu_info.unified_mem {
+            let mem_slice = self
+                .allocation
+                .as_mut()
+                .with_context(|| "no allocated memory")?
+                .mapped_slice_mut()
+                .with_context(|| "memory not cpu writeable")?;
+            mem_slice[write_offset..(write_offset + write_size)]
+                .copy_from_slice(bytemuck::cast_slice(elems));
+        } else {
+            let (stage_buffer, mut stage_allocation) = create_buffer(
+                ctx,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                write_size as u64,
+                true,
+            )?;
+            let mem_slice = stage_allocation
+                .mapped_slice_mut()
+                .with_context(|| "staging memory not cpu writeable")?;
+            mem_slice[..write_size].copy_from_slice(bytemuck::cast_slice(elems));
+            copy_b2b(
+                ctx,
+                cr,
+                stage_buffer,
+                0,
+                self.buffer,
+                write_offset as u64,
+                write_size as u64,
+            )?;
+            cr.preserve_buffers.push((stage_buffer, stage_allocation));
+        }
+        Ok(())
+    }
+
+    pub fn push(
+        &mut self,
+        ctx: &mut GpuCtx,
+        elem: &T,
+        cr: &mut GpuCommandRecorder,
+    ) -> anyhow::Result<()> {
+        if self.len == self.capacity {
+            self.grow(ctx, cr, self.capacity + 1)?;
+        }
+        let insert_idx = self.len;
+        let size = size_of::<T>();
+        let write_offset = insert_idx * size;
+        self.len += 1;
+        if ctx.gpu_info.unified_mem {
+            let mem_slice = self
+                .allocation
+                .as_mut()
+                .with_context(|| "no allocated memory")?
+                .mapped_slice_mut()
+                .with_context(|| "memory not cpu writeable")?;
+            mem_slice[write_offset..(write_offset + size)]
+                .copy_from_slice(bytemuck::bytes_of(elem));
+        } else {
+            let (stage_buffer, mut stage_allocation) =
+                create_buffer(ctx, vk::BufferUsageFlags::TRANSFER_SRC, size as u64, true)?;
+            let mem_slice = stage_allocation
+                .mapped_slice_mut()
+                .with_context(|| "staging memory not cpu writeable")?;
+            mem_slice[..size].copy_from_slice(bytemuck::bytes_of(elem));
+            copy_b2b(
+                ctx,
+                cr,
+                stage_buffer,
+                0,
+                self.buffer,
+                write_offset as u64,
+                size as u64,
+            )?;
+            cr.preserve_buffers.push((stage_buffer, stage_allocation));
+        }
+        Ok(())
+    }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    pub fn destroy(&mut self, ctx: &mut GpuCtx) {
+        if let Some(altn) = self.allocation.take() {
+            unsafe {
+                ctx.device.destroy_buffer(self.buffer, None);
+            }
+            if let Err(e) = ctx.allocator.free(altn) {
+                log::warn!("freeing memory of gpu vector {:?} failed: {e}", self.buffer)
             };
         }
     }
@@ -373,73 +617,5 @@ impl GpuDsl {
             }
             self.sets.clear();
         }
-    }
-}
-
-pub struct GpuVecData<T: NoUninit> {
-    pub buffer: GpuBuffer,
-    capacity: u32,
-    pub len: u32,
-    _phantom: PhantomData<T>,
-}
-
-impl<T: NoUninit> GpuVecData<T> {
-    pub fn new(ctx: &mut GpuCtx) -> anyhow::Result<Self> {
-        let buf_size = 128 * size_of::<T>() as u64;
-        let buffer = GpuBuffer::new_gpu_local_ro(
-            ctx,
-            buf_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
-        )?;
-        Ok(Self {
-            buffer,
-            capacity: 1,
-            len: 0,
-            _phantom: Default::default(),
-        })
-    }
-
-    fn grow(&mut self, ctx: &mut GpuCtx, cr: &mut GpuCommandRecorder) -> anyhow::Result<()> {
-        let old_buf_size = self.buffer.len;
-        let new_buf_size = old_buf_size * 2;
-        let mut new_buffer = GpuBuffer::new_gpu_local_ro(
-            ctx,
-            new_buf_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
-        )?;
-        cr.copy_b2b(ctx, &mut self.buffer, 0, &mut new_buffer, 0, old_buf_size)?;
-        self.capacity *= 2;
-        mem::swap(&mut self.buffer, &mut new_buffer);
-        cr.preserve_buffers.push(new_buffer);
-        Ok(())
-    }
-
-    pub fn push(
-        &mut self,
-        ctx: &mut GpuCtx,
-        elem: T,
-        cr: &mut GpuCommandRecorder,
-    ) -> anyhow::Result<()> {
-        if self.len == self.capacity {
-            self.grow(ctx, cr)?;
-        }
-        let insert_idx = self.len;
-        let write_offset = insert_idx as u64 * size_of::<T>() as u64;
-        self.len += 1;
-        cr.write_to_gpu_buffer(
-            ctx,
-            &mut self.buffer,
-            write_offset,
-            bytemuck::bytes_of(&elem),
-        )?;
-        Ok(())
-    }
-
-    pub fn clear(&mut self) {
-        self.len = 0;
-    }
-
-    pub fn destroy(&mut self, ctx: &mut GpuCtx) {
-        self.buffer.destroy(ctx);
     }
 }
