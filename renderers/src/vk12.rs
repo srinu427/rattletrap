@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use ash::vk;
 use bytemuck::NoUninit;
+use ecs::EcsData;
 use hashbrown::HashMap;
 use naga::back::spv;
 use naga::front::glsl;
@@ -15,7 +16,7 @@ mod resource;
 mod swapchain;
 
 use crate::{
-    Camera3d, Light, Material, Mesh, MeshVertex, Scene,
+    Camera3d, DrawableMesh, Light, Material, Mesh, MeshVertex,
     vk12::{
         device::{GpuCommandRecorder, GpuCtx},
         resource::{
@@ -809,7 +810,7 @@ impl RendererVk12 {
     fn render_shadow_map(
         &mut self,
         cr: &mut GpuCommandRecorder,
-        scene: &Scene,
+        drawables: &[&DrawableMesh],
         light: &Light,
         output: &mut GpuImage,
     ) -> anyhow::Result<()> {
@@ -817,7 +818,7 @@ impl RendererVk12 {
         self.smap_pipeline
             .start(&mut self.ctx, cr.cb, vec![output])?;
         unsafe {
-            for (i, drawable) in scene.drawables.iter().enumerate() {
+            for (i, drawable) in drawables.iter().enumerate() {
                 let Some(gpu_mesh) = self.loaded_meshes.meshes.get(&drawable.mesh) else {
                     continue;
                 };
@@ -850,27 +851,32 @@ impl RendererVk12 {
         todo!()
     }
 
-    pub fn render(&mut self, scene: &Scene, camera: &Camera3d) -> anyhow::Result<()> {
+    pub fn render(&mut self, ecs_data: &mut EcsData, camera: &Camera3d) -> anyhow::Result<()> {
         let Some(idx) = self.swapchain.acquire(&mut self.ctx)? else {
             self.resize()?;
             return Ok(());
         };
 
-        let mut cr = self.get_deferred_cmd_buffer()?;
+        let drawables = match ecs_data.comp_data_vec::<DrawableMesh>() {
+            Some(it) => it.map(|dm| dm.1).collect(),
+            None => vec![],
+        };
 
-        let object_datas: Vec<_> = scene
-            .drawables
+        let object_datas: Vec<_> = drawables
             .iter()
             .map(|d| GpuMeshInfo {
                 transform: d.transform,
             })
             .collect();
+
+        let mut cr = self.get_deferred_cmd_buffer()?;
+
         self.loaded_meshes
             .write_data(&mut self.ctx, &mut cr, &object_datas)?;
         self.loaded_camera.udpate(&mut self.ctx, &mut cr, camera)?;
 
         let mut material_ids = vec![];
-        for drawable in &scene.drawables {
+        for drawable in &drawables {
             match self.loaded_materials.materials.get(&drawable.material) {
                 Some(idx) => {
                     material_ids.push(*idx);
@@ -928,7 +934,7 @@ impl RendererVk12 {
                 &[],
             );
 
-            for (i, drawable) in scene.drawables.iter().enumerate() {
+            for (i, drawable) in drawables.iter().enumerate() {
                 let Some(gpu_mesh) = self.loaded_meshes.meshes.get(&drawable.mesh) else {
                     continue;
                 };

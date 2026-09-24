@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 bytemuck.workspace = true
+ecs = { version = "0.1.0", path = "../ecs" }
 env_logger.workspace = true
 getset.workspace = true
 glam.workspace = true

@@ -1,5 +1,7 @@
+use core::slice;
 use std::sync::Arc;
 
+use ecs::EcsData;
 use glam::Mat4;
 
 use crate::{collision_shape::CollisionShape, intersection_info::IntersectionInfo};
@@ -121,7 +123,7 @@ impl PhysicsManager {
         Self {}
     }
 
-    fn resolve_penetrations(&mut self, rigid_bodies: &mut Vec<RigidBody>) {
+    fn resolve_penetrations(&mut self, rigid_bodies: &mut [&mut RigidBody]) {
         let rb_count = rigid_bodies.len();
         // Find penetrations
         let mut touch_dirs = vec![vec![]; rb_count];
@@ -166,9 +168,13 @@ impl PhysicsManager {
         }
     }
 
-    pub fn run_ms(&mut self, rigid_bodies: &mut Vec<RigidBody>) {
+    pub fn run_ms(&mut self, ecs_data: &mut EcsData) {
         // resolve existing penetrations
-        self.resolve_penetrations(rigid_bodies);
+        let Some(rigid_bodies) = ecs_data.comp_data_vec_mut::<RigidBody>() else {
+            return;
+        };
+        let mut rigid_bodies: Vec<_> = rigid_bodies.map(|(_, rb)| rb).collect();
+        self.resolve_penetrations(&mut rigid_bodies);
         // Find touches
         let rb_count = rigid_bodies.len();
         let mut touch_dirs = vec![vec![]; rb_count];
@@ -213,6 +219,6 @@ impl PhysicsManager {
             rb.fwd_ms();
         }
         // resolve existing penetrations
-        self.resolve_penetrations(rigid_bodies);
+        self.resolve_penetrations(&mut rigid_bodies);
     }
 }

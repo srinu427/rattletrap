@@ -1,3 +1,4 @@
+use core::slice;
 use hashbrown::HashMap;
 use std::{
     any::{Any, TypeId},
@@ -54,6 +55,36 @@ impl<T: 'static> ComponentStorage for ComponentData<T> {
     }
 }
 
+pub struct ComponentIterator<'a, T> {
+    iter: slice::Iter<'a, (Entity, T)>,
+}
+
+impl<'a, T: 'static> Iterator for ComponentIterator<'a, T> {
+    type Item = (Entity, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // .next() on slice::IterMut gives us a &mut (Entity, T)
+        // whose lifetime is correctly tied to the iterator borrow.
+        self.iter
+            .next()
+            .map(|(entity, component)| (*entity, component))
+    }
+}
+
+pub struct ComponentIteratorMut<'a, T> {
+    iter: slice::IterMut<'a, (Entity, T)>,
+}
+
+impl<'a, T: 'static> Iterator for ComponentIteratorMut<'a, T> {
+    type Item = (Entity, &'a mut T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter
+            .next()
+            .map(|(entity, component)| (*entity, component))
+    }
+}
+
 pub struct EcsData {
     last_ent: u64,
     bank: HashMap<TypeId, Box<dyn ComponentStorage>>,
@@ -61,6 +92,13 @@ pub struct EcsData {
 }
 
 impl EcsData {
+    pub fn new() -> Self {
+        Self {
+            last_ent: 0,
+            bank: Default::default(),
+            entity_idxs: Default::default(),
+        }
+    }
     // Helpers taking only `bank` to allow disjoint field borrowing with `entity_idxs`
     fn get_comp_data_mut<T: 'static>(
         bank: &mut HashMap<TypeId, Box<dyn ComponentStorage>>,
@@ -159,5 +197,19 @@ impl EcsData {
         }
         let (_, elem) = comp_data.data.pop()?;
         Some(elem)
+    }
+
+    pub fn comp_data_vec<T: 'static>(&self) -> Option<ComponentIterator<'_, T>> {
+        let comp_data = Self::get_comp_data::<T>(&self.bank)?;
+        Some(ComponentIterator {
+            iter: comp_data.data.iter(),
+        })
+    }
+
+    pub fn comp_data_vec_mut<T: 'static>(&mut self) -> Option<ComponentIteratorMut<'_, T>> {
+        let comp_data = Self::get_comp_data_mut::<T>(&mut self.bank)?;
+        Some(ComponentIteratorMut {
+            iter: comp_data.data.iter_mut(),
+        })
     }
 }

@@ -1,19 +1,14 @@
-use std::{
-    any::{Any, TypeId},
-    collections::BTreeSet,
-    fs,
-    sync::Arc,
-};
+use std::{fs, sync::Arc};
 
 // use physics::PhysicsManager;
 use crate::inputs::Inputs;
 
+use ecs::EcsData;
 use glam::{Mat4, Vec3};
-use hashbrown::HashMap;
 use physics::{
     Kinematics, Orientation, PhysicsManager, RigidBody, collision_shape::CollisionShape,
 };
-use renderers::{Camera3d, DrawableMesh, Mesh, Scene, vk12::RendererVk12};
+use renderers::{Camera3d, DrawableMesh, Mesh, vk12::RendererVk12};
 use serde::{Deserialize, Serialize};
 use winit::{
     keyboard::{KeyCode, PhysicalKey},
@@ -67,24 +62,11 @@ pub struct GameWorldDisk {
     objects: Vec<GameObjectDisk>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct GameObjectRef {
-    renderer_id: i64,
-    physics_id: i64,
-}
-
-pub struct GameWorld {
-    renderer_scene: Scene,
-    physics_sim: Vec<RigidBody>,
-    object_refs: Vec<GameObjectRef>,
-}
-
 pub struct Game {
+    pub ecs_data: EcsData,
     pub(crate) renderer_system: RendererVk12,
     camera: Camera3d,
     physics_system: PhysicsManager,
-    world: GameWorld,
-    // camera: Cam3d,
     window: Arc<Window>,
     is_cursor_grabbed: bool,
 }
@@ -105,15 +87,10 @@ impl Game {
         );
 
         Ok(Self {
+            ecs_data: EcsData::new(),
             renderer_system,
             camera,
             physics_system,
-            world: GameWorld {
-                renderer_scene: Scene { drawables: vec![] },
-                physics_sim: vec![],
-                object_refs: vec![],
-            },
-            // camera, d
             window,
             is_cursor_grabbed: true,
         })
@@ -186,49 +163,40 @@ impl Game {
 
     pub fn load_level(&mut self) -> anyhow::Result<()> {
         let level: GameWorldDisk = ron::de::from_bytes(&fs::read("data/levels/2.ron")?)?;
-        let mut drawables = vec![];
-        let mut physics_rbs = vec![];
-        let mut game_object_refs = vec![];
         for obj in level.objects {
-            let mut game_object = GameObjectRef {
-                renderer_id: -1,
-                physics_id: -1,
-            };
+            let new_ent = self.ecs_data.new_entity();
             if let Some(drawable) = &obj.renderable {
                 if !fs::exists(&drawable.mesh).unwrap_or(false) {
                     if let Some(physics_rb) = &obj.physics {
                         let mesh = Self::shape_to_mesh(&physics_rb.shape);
                         fs::write(&drawable.mesh, ron::ser::to_string(&mesh)?)?;
-                        game_object.renderer_id = drawables.len() as _;
-                        drawables.push(DrawableMesh {
-                            mesh: drawable.mesh.clone(),
-                            transform: drawable.transform,
-                            material: drawable.material.clone(),
-                        });
+                        self.ecs_data.insert_component(
+                            new_ent,
+                            DrawableMesh {
+                                mesh: drawable.mesh.clone(),
+                                transform: drawable.transform,
+                                material: drawable.material.clone(),
+                            },
+                        );
                     } else {
                         log::error!("cant find mesh {:?}. skipping loading it", &drawable.mesh);
                     }
                 } else {
-                    game_object.renderer_id = drawables.len() as _;
-                    drawables.push(DrawableMesh {
-                        mesh: drawable.mesh.clone(),
-                        transform: drawable.transform,
-                        material: drawable.material.clone(),
-                    });
+                    self.ecs_data.insert_component(
+                        new_ent,
+                        DrawableMesh {
+                            mesh: drawable.mesh.clone(),
+                            transform: drawable.transform,
+                            material: drawable.material.clone(),
+                        },
+                    );
                 }
             }
             if let Some(physics_rb) = &obj.physics {
                 let rb = Self::import_rb(physics_rb, obj.init_location);
-                game_object.physics_id = physics_rbs.len() as _;
-                physics_rbs.push(rb);
+                self.ecs_data.insert_component(new_ent, rb);
             }
-            game_object_refs.push(game_object);
         }
-        self.world = GameWorld {
-            renderer_scene: Scene { drawables },
-            physics_sim: physics_rbs,
-            object_refs: game_object_refs,
-        };
         Ok(())
     }
 
@@ -289,24 +257,31 @@ impl Game {
                 .move_up_down(glam::Vec3::Y, 0.01 * mouse_move.1 as f32);
         }
         for _ in 0..frame_time {
-            for rb in self.world.physics_sim.iter_mut() {
+            let Some(rb_data) = self.ecs_data.comp_data_vec_mut::<RigidBody>() else {
+                continue;
+            };
+            for (_, rb) in rb_data {
                 if rb.has_gravity {
                     rb.kinematics.acceleration.y = -10.0;
                 }
             }
-            self.physics_system.run_ms(&mut self.world.physics_sim);
+            self.physics_system.run_ms(&mut self.ecs_data);
         }
-        for gor in &self.world.object_refs {
-            if gor.physics_id < 0 || gor.renderer_id < 0 {
-                continue;
+
+        let mut phy_transforms = vec![];
+        if let Some(rb_iter) = self.ecs_data.comp_data_vec::<RigidBody>() {
+            for (ent, rb) in rb_iter {
+                phy_transforms.push((ent, rb.orient.to_transform()));
             }
-            self.world.renderer_scene.drawables[gor.renderer_id as usize].transform =
-                self.world.physics_sim[gor.physics_id as usize]
-                    .orient
-                    .to_transform();
+        }
+        for (ent, transform) in phy_transforms {
+            let Some(dm) = self.ecs_data.get_component_mut::<DrawableMesh>(ent) else {
+                continue;
+            };
+            dm.transform = transform;
         }
         self.renderer_system
-            .render(&self.world.renderer_scene, &self.camera)?;
+            .render(&mut self.ecs_data, &self.camera)?;
         inputs.advance_frame();
         Ok(())
     }
