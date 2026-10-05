@@ -12,6 +12,7 @@ ecs = { version = "0.1.0", path = "../ecs" }
 glam.workspace = true
 gpu-allocator = "0.28.0"
 hashbrown.workspace = true
+indexmap.workspace = true
 log.workspace = true
 naga.workspace = true
 ron.workspace = true

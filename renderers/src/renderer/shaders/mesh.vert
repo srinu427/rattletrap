@@ -26,6 +26,6 @@ layout(push_constant, std430) uniform PCData {
 
 void main() {
     worldPos = (mesh_info_ubo.infos[pc.obj_id].tr * vec4(inPosition, 1.0)).xyz;
-    worldNorm = (mesh_info_ubo.infos[pc.obj_id].tr * vec4(inNormal, 1.0)).xyz;
+    worldNorm = (mesh_info_ubo.infos[pc.obj_id].tr * vec4(inNormal, 0.0)).xyz;
     gl_Position = cam.tr * vec4(worldPos, 1.0);
 }

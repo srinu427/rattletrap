@@ -1,4 +1,3 @@
-use core::slice;
 use std::sync::Arc;
 
 use ecs::EcsData;
@@ -170,7 +169,7 @@ impl PhysicsManager {
 
     pub fn run_ms(&mut self, ecs_data: &mut EcsData) {
         // resolve existing penetrations
-        let Some(rigid_bodies) = ecs_data.comp_data_vec_mut::<RigidBody>() else {
+        let Some(rigid_bodies) = ecs_data.comp_data_iter_mut::<RigidBody>() else {
             return;
         };
         let mut rigid_bodies: Vec<_> = rigid_bodies.map(|(_, rb)| rb).collect();

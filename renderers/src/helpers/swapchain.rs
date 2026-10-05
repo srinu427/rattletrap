@@ -1,7 +1,7 @@
 use ash::vk::{self, Handle};
 use hashbrown::{HashMap, HashSet};
 
-use crate::vk12::{device::GpuCtx, resource::GpuImage};
+use crate::helpers::{device::GpuCtx, image::GpuImage};
 
 const COLOR_SPACE_PREF: &[vk::ColorSpaceKHR] = &[
     vk::ColorSpaceKHR::DCI_P3_NONLINEAR_EXT,

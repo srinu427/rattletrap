@@ -199,14 +199,26 @@ impl EcsData {
         Some(elem)
     }
 
-    pub fn comp_data_vec<T: 'static>(&self) -> Option<ComponentIterator<'_, T>> {
+    pub fn remove_component_all_entities<T: 'static>(&mut self) -> Vec<(Entity, T)> {
+        let mut out_vec = vec![];
+        if let Some(comp_data) = Self::get_comp_data_mut::<T>(&mut self.bank) {
+            mem::swap(&mut out_vec, &mut comp_data.data);
+        };
+        let type_id = TypeId::of::<T>();
+        for (_, map) in self.entity_idxs.iter_mut() {
+            map.remove(&type_id);
+        }
+        out_vec
+    }
+
+    pub fn comp_data_iter<T: 'static>(&self) -> Option<ComponentIterator<'_, T>> {
         let comp_data = Self::get_comp_data::<T>(&self.bank)?;
         Some(ComponentIterator {
             iter: comp_data.data.iter(),
         })
     }
 
-    pub fn comp_data_vec_mut<T: 'static>(&mut self) -> Option<ComponentIteratorMut<'_, T>> {
+    pub fn comp_data_iter_mut<T: 'static>(&mut self) -> Option<ComponentIteratorMut<'_, T>> {
         let comp_data = Self::get_comp_data_mut::<T>(&mut self.bank)?;
         Some(ComponentIteratorMut {
             iter: comp_data.data.iter_mut(),

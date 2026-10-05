@@ -3,12 +3,12 @@ use std::{fs, sync::Arc};
 // use physics::PhysicsManager;
 use crate::inputs::Inputs;
 
-use ecs::EcsData;
+use ecs::{EcsData, Entity};
 use glam::{Mat4, Vec3};
 use physics::{
     Kinematics, Orientation, PhysicsManager, RigidBody, collision_shape::CollisionShape,
 };
-use renderers::{Camera3d, DrawableMesh, Mesh, vk12::RendererVk12};
+use renderers::{Camera3d, DrawableMesh, Light, Mesh, renderer::RendererVk12};
 use serde::{Deserialize, Serialize};
 use winit::{
     keyboard::{KeyCode, PhysicalKey},
@@ -67,6 +67,7 @@ pub struct Game {
     pub(crate) renderer_system: RendererVk12,
     camera: Camera3d,
     physics_system: PhysicsManager,
+    entities: Vec<Entity>,
     window: Arc<Window>,
     is_cursor_grabbed: bool,
 }
@@ -91,6 +92,7 @@ impl Game {
             renderer_system,
             camera,
             physics_system,
+            entities: Default::default(),
             window,
             is_cursor_grabbed: true,
         })
@@ -163,8 +165,12 @@ impl Game {
 
     pub fn load_level(&mut self) -> anyhow::Result<()> {
         let level: GameWorldDisk = ron::de::from_bytes(&fs::read("data/levels/2.ron")?)?;
+        for ent in self.entities.drain(..) {
+            self.ecs_data.remove_entity(ent);
+        }
         for obj in level.objects {
             let new_ent = self.ecs_data.new_entity();
+            self.entities.push(new_ent);
             if let Some(drawable) = &obj.renderable {
                 if !fs::exists(&drawable.mesh).unwrap_or(false) {
                     if let Some(physics_rb) = &obj.physics {
@@ -197,6 +203,34 @@ impl Game {
                 self.ecs_data.insert_component(new_ent, rb);
             }
         }
+        // hardcode some lights
+        let lights_count = self
+            .ecs_data
+            .comp_data_iter::<Light>()
+            .map(|it| it.count())
+            .unwrap_or(0);
+        if lights_count == 0 {
+            let light1 = self.ecs_data.new_entity();
+            self.ecs_data.insert_component(
+                light1,
+                Light::new_directional_light(
+                    glam::vec3(1.0, 1.0, 1.0),
+                    4.0,
+                    glam::vec3(-1.0, -0.9, -0.8),
+                ),
+            );
+            let light2 = self.ecs_data.new_entity();
+            self.ecs_data.insert_component(
+                light2,
+                Light::new_point_light(
+                    glam::vec3(0.0, 6.0, 0.0),
+                    glam::vec3(1.0, 0.5, 0.0),
+                    1000.0,
+                    20.0,
+                ),
+            );
+        }
+        self.renderer_system.reload_resources(&mut self.ecs_data)?;
         Ok(())
     }
 
@@ -226,7 +260,6 @@ impl Game {
             self.load_level()
                 .inspect_err(|e| log::error!("loading level failed: {e:#}"))
                 .ok();
-            self.renderer_system.reset_data();
         }
         let mut up = 0;
         let mut front = 0;
@@ -257,7 +290,7 @@ impl Game {
                 .move_up_down(glam::Vec3::Y, 0.01 * mouse_move.1 as f32);
         }
         for _ in 0..frame_time {
-            let Some(rb_data) = self.ecs_data.comp_data_vec_mut::<RigidBody>() else {
+            let Some(rb_data) = self.ecs_data.comp_data_iter_mut::<RigidBody>() else {
                 continue;
             };
             for (_, rb) in rb_data {
@@ -269,7 +302,7 @@ impl Game {
         }
 
         let mut phy_transforms = vec![];
-        if let Some(rb_iter) = self.ecs_data.comp_data_vec::<RigidBody>() {
+        if let Some(rb_iter) = self.ecs_data.comp_data_iter::<RigidBody>() {
             for (ent, rb) in rb_iter {
                 phy_transforms.push((ent, rb.orient.to_transform()));
             }

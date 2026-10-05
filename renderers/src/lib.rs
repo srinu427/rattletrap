@@ -1,8 +1,11 @@
+use std::fs;
+
 use bytemuck::NoUninit;
 use glam::Vec4Swizzles;
 use serde::{Deserialize, Serialize};
 
-pub mod vk12;
+pub mod helpers;
+pub mod renderer;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, NoUninit)]
@@ -188,7 +191,7 @@ impl Default for Material {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::NoUninit, bytemuck::Zeroable)]
-struct Light {
+pub struct Light {
     pub position: glam::Vec4, // xyz = World Position, w = Type (0 = Directional, 1 = Point)
     pub color: glam::Vec4,    // rgb = Light Color, a = Intensity / Power
     pub direction: glam::Vec4, // xyz = Light Direction (for directional lights), w = Attenuation distance (for point lights)
@@ -208,14 +211,9 @@ impl Light {
         }
     }
 
-    pub fn new_directional_light(
-        pos: glam::Vec3,
-        color: glam::Vec3,
-        intensity: f32,
-        direction: glam::Vec3,
-    ) -> Self {
+    pub fn new_directional_light(color: glam::Vec3, intensity: f32, direction: glam::Vec3) -> Self {
         Self {
-            position: glam::Vec4::from((pos, 0.0)),
+            position: glam::Vec4::ZERO,
             color: glam::Vec4::from((color, intensity)),
             direction: glam::Vec4::from((direction, 0.0)),
         }
@@ -289,4 +287,10 @@ impl Camera3d {
         self.dir = (rot * glam::Vec4::from((self.dir, 0.0))).xyz();
         self.up = (rot * glam::Vec4::from((self.up, 0.0))).xyz();
     }
+}
+
+fn load_ron<T: for<'a> Deserialize<'a>>(name: &str) -> anyhow::Result<T> {
+    let t_bytes = fs::read(name)?;
+    let t = ron::de::from_bytes(&t_bytes)?;
+    Ok(t)
 }

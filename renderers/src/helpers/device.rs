@@ -8,6 +8,8 @@ use gpu_allocator::vulkan::{Allocation, Allocator, AllocatorCreateDesc};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::Window;
 
+use crate::helpers::free_allocation_logged;
+
 fn get_instance_layers() -> Vec<*const i8> {
     vec![
         #[cfg(debug_assertions)]
@@ -259,7 +261,7 @@ impl GpuCommandRecorder {
         for (buffer, allocation) in self.preserve_buffers.drain(..) {
             unsafe {
                 ctx.device.destroy_buffer(buffer, None);
-                ctx.allocator.free(allocation);
+                free_allocation_logged(&mut ctx.allocator, allocation);
             }
         }
     }
